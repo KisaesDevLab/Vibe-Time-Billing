@@ -15,6 +15,7 @@ const JOB_DESCRIPTIONS: Record<string, string> = {
   'milestone-date-trigger': 'Mark date-triggered milestones as TRIGGERED.',
   'hour-bank-expiration': 'Expire hour-bank residual at the expiration date.',
   'approval-escalation': 'Reassign stale approvals back to the unassigned pool.',
+  'ai-cost-sync': 'Pull per-client AI costs from the Vibe AI Router billing feed (router mode).',
 };
 
 interface QStat {

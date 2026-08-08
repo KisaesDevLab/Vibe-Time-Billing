@@ -1078,6 +1078,7 @@ function LogView({
               placeholder="What you worked on"
             />
             <AiDescribeButton
+              engagementId={engagementId || undefined}
               engagementName={engagements.find((e) => e.id === engagementId)?.name}
               workCodeName={workCodes.find((w) => w.id === workCodeId)?.name}
               hours={hours ? parseFloat(hours) : undefined}
@@ -2968,11 +2969,14 @@ function td(align: 'left' | 'right', emphasized = false): React.CSSProperties {
 }
 
 function AiDescribeButton({
+  engagementId,
   engagementName,
   workCodeName,
   hours,
   onPick,
 }: {
+  /** Router cost attribution (A1) — resolved to the client server-side. */
+  engagementId: string | undefined;
   engagementName: string | undefined;
   workCodeName: string | undefined;
   hours: number | undefined;
@@ -2989,7 +2993,7 @@ function AiDescribeButton({
     try {
       const r = await api<{ suggestion: string }>('/api/staff/ai/suggest-description', {
         method: 'POST',
-        body: JSON.stringify({ engagementName, workCodeName, hours }),
+        body: JSON.stringify({ engagementId, engagementName, workCodeName, hours }),
       });
       if (r.suggestion) {
         setLast(r.suggestion);

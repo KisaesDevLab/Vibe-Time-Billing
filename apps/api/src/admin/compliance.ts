@@ -20,6 +20,7 @@ import {
 } from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { appVersion } from '../version';
 
 export interface ComplianceRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -263,7 +264,9 @@ export function createComplianceRouter(deps: ComplianceRoutesDeps): Router {
       );
       res.json({
         exportedAt: new Date().toISOString(),
-        appVersion: process.env['VIBE_VERSION'] ?? 'dev',
+        // A8 — VIBE_VERSION still wins when ops sets it (appVersion checks
+        // it first); otherwise the real package version, not 'dev'.
+        appVersion: appVersion(),
         firm,
         clients: firmClients,
         engagements: firmEngagements,

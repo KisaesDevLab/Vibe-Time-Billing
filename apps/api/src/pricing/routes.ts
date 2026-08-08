@@ -57,15 +57,20 @@ const PRICING_COLS = {
 export function createPricingRouter(deps: AiRoutesDeps): Router {
   const router = express.Router();
 
-  // Confirm the engagement belongs to the caller's firm.
-  async function loadEngagementFirm(db: Database, engagementId: string): Promise<string | null> {
+  // Confirm the engagement belongs to the caller's firm. Also returns the
+  // owning client id — A1 threads it to the AI driver for router cost
+  // attribution (header-only; never in prompts).
+  async function loadEngagementFirm(
+    db: Database,
+    engagementId: string,
+  ): Promise<{ firmId: string; clientId: string } | null> {
     const [row] = await db
-      .select({ firmId: clients.firmId })
+      .select({ firmId: clients.firmId, clientId: clients.id })
       .from(engagements)
       .innerJoin(clients, eq(clients.id, engagements.clientId))
       .where(eq(engagements.id, engagementId))
       .limit(1);
-    return row?.firmId ?? null;
+    return row ?? null;
   }
 
   async function loadSettings(db: Database, firmId: string): Promise<PricingSettingsRow> {
@@ -96,7 +101,7 @@ export function createPricingRouter(deps: AiRoutesDeps): Router {
       const { firmId, appUserId } = req.staffSession!;
       const engagementId = req.params['id']!;
       const owner = await loadEngagementFirm(deps.db, engagementId);
-      if (owner !== firmId) return void res.status(404).json({ error: 'not_found' });
+      if (owner?.firmId !== firmId) return void res.status(404).json({ error: 'not_found' });
 
       const settings = await loadSettings(deps.db, firmId);
       const aiComplete: AiComplete = async (systemPrompt, userPrompt) => {
@@ -107,6 +112,8 @@ export function createPricingRouter(deps: AiRoutesDeps): Router {
           systemPrompt,
           userPrompt,
           maxTokens: 240,
+          clientId: owner.clientId,
+          engagementId,
         });
         if (text == null) throw new Error('ai_unavailable');
         return text;
@@ -138,7 +145,7 @@ export function createPricingRouter(deps: AiRoutesDeps): Router {
       const { firmId, appUserId } = req.staffSession!;
       const engagementId = req.params['id']!;
       const owner = await loadEngagementFirm(deps.db, engagementId);
-      if (owner !== firmId) return void res.status(404).json({ error: 'not_found' });
+      if (owner?.firmId !== firmId) return void res.status(404).json({ error: 'not_found' });
 
       const settings = await loadSettings(deps.db, firmId);
       const s = await computePricingSuggestion(deps.db, {

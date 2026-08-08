@@ -36,6 +36,7 @@ import {
   numeric,
   index,
   uniqueIndex,
+  unique,
   check,
   primaryKey,
   foreignKey,
@@ -3722,6 +3723,46 @@ export const aiRequestLog = pgTable(
   }),
 );
 
+// A1 (MIG-8 cost recovery) — per-client AI usage synced from the Vibe AI
+// Router billing feed. One row per (period, client, engagement, app, task
+// class); the sync job replace-upserts on the natural key because the feed
+// is already a full-period aggregate. Cost truth in router mode lives here
+// (ai_request_log deliberately records 0 cents in router mode).
+export const clientAiCosts = pgTable(
+  'client_ai_cost',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    /** 'yyyymm' — half-open UTC month, matching the router feed window. */
+    period: text('period').notNull(),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    engagementId: uuid('engagement_id').references(() => engagements.id, {
+      onDelete: 'set null',
+    }),
+    /** Emitting app (e.g. 'vibe-time-billing') — the feed is firm-scoped, not app-scoped. */
+    app: text('app').notNull(),
+    taskClass: text('task_class'),
+    requests: integer('requests').notNull().default(0),
+    promptTokens: bigint('prompt_tokens', { mode: 'number' }).notNull().default(0),
+    completionTokens: bigint('completion_tokens', { mode: 'number' }).notNull().default(0),
+    costCents: bigint('cost_cents', { mode: 'number' }).notNull().default(0),
+    syncedAt: timestamp('synced_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    periodChk: check('client_ai_cost_period_chk', sql`${t.period} ~ '^[0-9]{6}$'`),
+    // NULLS NOT DISTINCT: nullable dimensions must still collide so the
+    // sync job's ON CONFLICT upsert stays 1:1 with feed rows.
+    naturalUk: unique('client_ai_cost_natural_uk')
+      .on(t.firmId, t.period, t.clientId, t.engagementId, t.app, t.taskClass)
+      .nullsNotDistinct(),
+    firmPeriodIdx: index('client_ai_cost_firm_period_idx').on(t.firmId, t.period),
+  }),
+);
+
 // =====================================================================
 // RELATIONS (selected — extend as needed for query helpers)
 // =====================================================================
@@ -4785,6 +4826,7 @@ export type WebhookEndpoint = typeof webhookEndpoints.$inferSelect;
 export type WebhookDelivery = typeof webhookDeliveries.$inferSelect;
 export type McpToken = typeof mcpTokens.$inferSelect;
 export type AiRequestLogRow = typeof aiRequestLog.$inferSelect;
+export type ClientAiCostRow = typeof clientAiCosts.$inferSelect;
 
 // 0050 — tier 1-3 sweep
 export type EngagementAssignment = typeof engagementAssignments.$inferSelect;

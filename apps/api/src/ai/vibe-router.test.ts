@@ -124,6 +124,38 @@ describe('createVibeRouterProvider', () => {
     expect(result.model).toBe('ollama/qwen3:14b');
   });
 
+  // A1 — engagement attribution rides x-vibe-engagement; absent fields
+  // must not emit headers (credential-ping parity: bare requests stay bare).
+  it('sends x-vibe-engagement when engagementRef is set; omits absent attribution', async () => {
+    const { calls, fn } = captureFetch(completionResponse);
+    const provider = createVibeRouterProvider({
+      baseUrl: 'http://router.test:8220',
+      token: 'tok',
+      taskClass: TIMEBILL_TASK_CLASSES.INVOICE_NARRATIVE,
+      fetchImpl: fn,
+    });
+
+    await provider.complete({
+      userPrompt: 'draft it',
+      userId: 'user-9',
+      clientRef: 'client-3',
+      engagementRef: 'engagement-7',
+    });
+    const withRefs = calls[0]!.init.headers as Record<string, string>;
+    expect(withRefs['x-vibe-engagement']).toBe('engagement-7');
+    expect(withRefs['x-vibe-client']).toBe('client-3');
+
+    await provider.complete({ userPrompt: 'ping' });
+    const bare = calls[1]!.init.headers as Record<string, string>;
+    expect(bare['x-vibe-user']).toBeUndefined();
+    expect(bare['x-vibe-client']).toBeUndefined();
+    expect(bare['x-vibe-engagement']).toBeUndefined();
+    // Attribution must never leak into the prompt body.
+    const body = JSON.parse(String(calls[0]!.init.body));
+    expect(JSON.stringify(body.messages)).not.toContain('client-3');
+    expect(JSON.stringify(body.messages)).not.toContain('engagement-7');
+  });
+
   it('router errors surface with the code — never a fallback', async () => {
     const { fn } = captureFetch(
       () =>
@@ -153,6 +185,10 @@ describe('registerTimeBillingTaskClasses', () => {
     expect(calls[0]!.url).toContain('/v1/task-classes/register');
     const body = JSON.parse(String(calls[0]!.init.body));
     expect(body.app).toBe('vibe-time-billing');
+    // A8 — registration stamps the real package version (walk-up read at
+    // runtime), never 'unknown', even without npm_package_version.
+    expect(body.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(body.version).not.toBe('unknown');
     expect(body.classes.map((c: { key: string }) => c.key).sort()).toEqual([
       'tb_invoice_narrative',
       'timebill_practice_analytics',

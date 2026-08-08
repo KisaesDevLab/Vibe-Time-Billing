@@ -13,9 +13,16 @@
 // NO silent cross-mode fallback: a router outage surfaces as a failed AI call
 // (features already degrade gracefully); quietly retrying against a direct
 // provider would ship the prompt around the router's scrubber and ledger.
+//
+// Attribution headers (A1): x-vibe-user carries the internal `app_user` UUID
+// (the router's per-user budgets key on it; portal callers send none);
+// x-vibe-client / x-vibe-engagement carry internal client/engagement UUIDs
+// for the billing feed. Attribution never enters prompt text.
 
 import { VibeAiClient, VibeAiError, type ChatMessage } from '@kisaes/vibe-ai-client';
 import type { AiCompletionRequest, AiCompletionResult, AiProvider } from '@vibe/core/ai';
+
+import { appVersion } from '../version';
 
 // ── mode flag ────────────────────────────────────────────────────────────
 
@@ -105,6 +112,7 @@ export function createVibeRouterProvider(opts: VibeRouterProviderOptions): AiPro
           ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
           ...(req.userId ? { userId: req.userId } : {}),
           ...(req.clientRef ? { clientRef: req.clientRef } : {}),
+          ...(req.engagementRef ? { engagementRef: req.engagementRef } : {}),
         });
         return {
           text: result.content,
@@ -183,7 +191,9 @@ export function registerTimeBillingTaskClasses(o?: {
     try {
       await client.registerTaskClasses({
         app: 'vibe-time-billing',
-        version: process.env['npm_package_version'] ?? 'unknown',
+        // A8 — real version even under `node dist/...`, where
+        // npm_package_version is unset (see version.ts).
+        version: appVersion(),
         classes: [
           // Pack class — declaration matches the reviewed pack entry.
           {

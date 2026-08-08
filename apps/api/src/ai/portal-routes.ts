@@ -55,6 +55,9 @@ export function createPortalAiRouter(deps: PortalAiRoutesDeps): Router {
       audiences: PORTAL_AUDIENCES,
       actorAppUserId: null,
       feature: 'support_chat_portal',
+      // A1 — router cost attribution: the session's active client entity
+      // (session-validated FK). Never enters the prompt.
+      clientId: session.activeClientId,
     });
     sendKbChat(res, out);
   });

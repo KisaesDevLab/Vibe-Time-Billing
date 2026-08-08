@@ -12,12 +12,17 @@ export interface AiCompletionRequest {
   maxTokens?: number;
   temperature?: number;
   /**
-   * Router-mode attribution (MIG-8): ledger dimensions for the Vibe AI
-   * Router. Direct providers ignore both. userId is the staff app_user id;
-   * clientRef ties spend to a client for cost recovery.
+   * Router-mode attribution (MIG-8/A1): ledger dimensions for the Vibe AI
+   * Router. Direct providers ignore all three. These ride ONLY as request
+   * headers (x-vibe-user / x-vibe-client / x-vibe-engagement) — never in
+   * prompt text. userId is the internal `app_user` UUID (per-user budgets
+   * key on it; portal callers send null); clientRef/engagementRef are the
+   * internal client/engagement UUIDs that tie spend to a client for cost
+   * recovery via the router's billing feed.
    */
   userId?: string | null;
   clientRef?: string | null;
+  engagementRef?: string | null;
 }
 
 export interface AiCompletionResult {

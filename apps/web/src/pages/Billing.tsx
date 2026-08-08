@@ -1642,6 +1642,7 @@ function BatchDetailPage(): JSX.Element {
 
       <PrebillNarrativePanel
         summary={{
+          engagementId: detail.batch.engagementId ?? undefined,
           clientName: detail.engagement?.clientName ?? undefined,
           engagementName: detail.engagement?.name ?? detail.batch.engagementName ?? undefined,
           entryCount: detail.entries.length,
@@ -1677,6 +1678,8 @@ function BatchDetailPage(): JSX.Element {
 }
 
 interface PrebillSummary {
+  /** Router cost attribution (A1) — resolved to the client server-side. */
+  engagementId?: string;
   clientName?: string;
   engagementName?: string;
   entryCount: number;

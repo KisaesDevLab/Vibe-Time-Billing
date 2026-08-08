@@ -172,6 +172,8 @@ export function AiUsagePage(): JSX.Element {
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
       </Card>
 
+      <ClientAiCostsCard />
+
       <Card title={`Requests (${items.length})`}>
         <Table<LogRow>
           columns={[
@@ -218,6 +220,133 @@ export function AiUsagePage(): JSX.Element {
         />
       </Card>
     </div>
+  );
+}
+
+// A1 (MIG-8 cost recovery) — per-client AI costs from client_ai_cost,
+// synced daily from the router's billing feed. Router mode only: the
+// endpoint reports aiMode and the card self-hides in direct mode, where
+// ai_request_log above is already the cost truth.
+interface ClientCostRow {
+  clientId: string;
+  clientName: string;
+  engagementId: string | null;
+  engagementName: string | null;
+  app: string;
+  taskClass: string | null;
+  requests: number;
+  promptTokens: number;
+  completionTokens: number;
+  costCents: number;
+  syncedAt: string;
+}
+
+interface ClientCostsResponse {
+  period: string | null;
+  aiMode: 'direct' | 'router';
+  items: ClientCostRow[];
+  totals: {
+    requests: number;
+    promptTokens: number;
+    completionTokens: number;
+    costCents: number;
+  } | null;
+}
+
+/** Last 12 UTC months as 'yyyymm', newest first. */
+function recentPeriods(): string[] {
+  const out: string[] = [];
+  const now = new Date();
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+    out.push(`${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+  }
+  return out;
+}
+
+const periodLabel = (p: string): string => `${p.slice(0, 4)}-${p.slice(4)}`;
+
+function ClientAiCostsCard(): JSX.Element | null {
+  const [period, setPeriod] = useState(recentPeriods()[0]!);
+  const [data, setData] = useState<ClientCostsResponse | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const r = await api<ClientCostsResponse>(`/api/staff/ai/client-costs?period=${period}`);
+        setData(r);
+        setErr(null);
+      } catch (e) {
+        setErr(e instanceof Error ? e.message : 'failed');
+      }
+    })();
+  }, [period]);
+
+  // Hidden in direct mode — ai_request_log carries real costs there.
+  if (!data || data.aiMode !== 'router') return null;
+
+  const totals = data.totals ?? { requests: 0, promptTokens: 0, completionTokens: 0, costCents: 0 };
+  return (
+    <Card title="Client AI costs">
+      <div
+        style={{ display: 'flex', gap: 16, alignItems: 'center', fontSize: 13, marginBottom: 12 }}
+      >
+        <label>
+          Period:
+          <select
+            value={period}
+            onChange={(e) => setPeriod(e.target.value)}
+            style={{
+              marginLeft: 8,
+              padding: '4px 8px',
+              borderRadius: tokens.radius.sm,
+              border: `1px solid ${tokens.color.border}`,
+            }}
+          >
+            {recentPeriods().map((p) => (
+              <option key={p} value={p}>
+                {periodLabel(p)}
+              </option>
+            ))}
+          </select>
+        </label>
+        {err && <span style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</span>}
+      </div>
+      <Table<ClientCostRow>
+        columns={[
+          { key: 'client', header: 'Client', render: (r) => r.clientName },
+          { key: 'engagement', header: 'Engagement', render: (r) => r.engagementName ?? '—' },
+          { key: 'app', header: 'App', render: (r) => r.app },
+          { key: 'class', header: 'Task class', render: (r) => r.taskClass ?? '—' },
+          { key: 'req', header: 'Requests', align: 'right', render: (r) => String(r.requests) },
+          {
+            key: 'tokens',
+            header: 'Tokens (in/out)',
+            align: 'right',
+            render: (r) =>
+              `${r.promptTokens.toLocaleString()} / ${r.completionTokens.toLocaleString()}`,
+          },
+          { key: 'cost', header: 'Cost', align: 'right', render: (r) => formatCents(r.costCents) },
+        ]}
+        rows={data.items}
+        rowKey={(r) => `${r.clientId}:${r.engagementId ?? ''}:${r.app}:${r.taskClass ?? ''}`}
+        footer={[
+          'Total',
+          '',
+          '',
+          '',
+          String(totals.requests),
+          `${totals.promptTokens.toLocaleString()} / ${totals.completionTokens.toLocaleString()}`,
+          formatCents(totals.costCents),
+        ]}
+        empty="No synced usage for this period yet — the ai-cost-sync job runs nightly (Admin → Operations → Jobs to trigger now)."
+      />
+      <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 8 }}>
+        Rows at $0.00 were served by the local model (free by construction). The router ledger is
+        the source of truth for spend; this table reconciles against it per client.
+      </p>
+    </Card>
   );
 }
 

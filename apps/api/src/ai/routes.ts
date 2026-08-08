@@ -11,7 +11,7 @@ import { and, desc, eq, gte, sql, sum } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
-import { aiRequestLog, firmSettings } from '@vibe/db/schema';
+import { aiRequestLog, clientAiCosts, clients, engagements, firmSettings } from '@vibe/db/schema';
 import { checkBudget, type AiProvider } from '@vibe/core/ai';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -40,6 +40,9 @@ export interface AiRoutesDeps extends RbacDeps {
 }
 
 const DescribeSchema = z.object({
+  // A1 — router cost attribution only; resolved server-side to the owning
+  // client and never placed in the prompt.
+  engagementId: z.string().uuid().optional(),
   engagementName: z.string().max(200).optional(),
   workCodeName: z.string().max(120).optional(),
   hours: z.number().positive().max(24).optional(),
@@ -119,11 +122,14 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
 
+      const refs = await resolveEngagementRefs(deps, session.firmId, parsed.data.engagementId);
       const started = Date.now();
       let result;
       try {
         result = await provider.complete({
           userId: session.appUserId ?? null,
+          clientRef: refs?.clientRef ?? null,
+          engagementRef: refs?.engagementRef ?? null,
           systemPrompt:
             'You write concise, professional CPA time entry descriptions. ' +
             'Output exactly one sentence under 20 words. No quotes, no preface.',
@@ -319,6 +325,9 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         serviceLineName: z.string().max(120).optional(),
         clientName: z.string().max(120).optional(),
         complexity: z.enum(['LOW', 'MEDIUM', 'HIGH']).optional(),
+        // A1 — no current SPA caller sends this (the admin card is free-text);
+        // accepted so future entity-scoped callers can attribute cost.
+        engagementId: z.string().uuid().optional(),
       });
       const parsed = Schema.safeParse(req.body);
       if (!parsed.success) {
@@ -336,10 +345,13 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
         return;
       }
+      const refs = await resolveEngagementRefs(deps, session.firmId, parsed.data.engagementId);
       const started = Date.now();
       try {
         const result = await provider.complete({
           userId: session.appUserId ?? null,
+          clientRef: refs?.clientRef ?? null,
+          engagementRef: refs?.engagementRef ?? null,
           systemPrompt:
             'You are a CPA practice consultant. Given an engagement type, suggest a ' +
             'fixed-fee range and a typical effort range. Output 3 short lines: ' +
@@ -464,6 +476,8 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         context: z.string().max(1000),
         amountCents: z.number().int().optional(),
         availableReasons: z.array(z.string().max(80)).min(1).max(60),
+        // A1 — no current SPA caller; accepted for future attribution.
+        engagementId: z.string().uuid().optional(),
       });
       const parsed = Schema.safeParse(req.body);
       if (!parsed.success) {
@@ -481,10 +495,13 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
         return;
       }
+      const refs = await resolveEngagementRefs(deps, session.firmId, parsed.data.engagementId);
       const started = Date.now();
       try {
         const result = await provider.complete({
           userId: session.appUserId ?? null,
+          clientRef: refs?.clientRef ?? null,
+          engagementRef: refs?.engagementRef ?? null,
           systemPrompt:
             'You pick the best-matching reason code for a CPA write-down/up. Output exactly ' +
             'one of the supplied options, verbatim. No explanation, no quotes.',
@@ -532,6 +549,8 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     requirePermission(deps, 'billing_batch:read'),
     async (req: Request, res: Response) => {
       const Schema = z.object({
+        // A1 — attribution only; resolved server-side, never in the prompt.
+        engagementId: z.string().uuid().optional(),
         clientName: z.string().max(120).optional(),
         engagementName: z.string().max(200).optional(),
         entryCount: z.number().int().nonnegative(),
@@ -556,10 +575,13 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         res.status(402).json({ error: 'ai_budget_exhausted', resetsOn: budget.resetsOn });
         return;
       }
+      const refs = await resolveEngagementRefs(deps, session.firmId, parsed.data.engagementId);
       const started = Date.now();
       try {
         const result = await provider.complete({
           userId: session.appUserId ?? null,
+          clientRef: refs?.clientRef ?? null,
+          engagementRef: refs?.engagementRef ?? null,
           systemPrompt:
             'You write 2-3 sentence pre-bill summaries for CPA partners. Output plain text, no headers.',
           userPrompt: [
@@ -1002,6 +1024,62 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
     },
   );
 
+  // -------------------------------------------------------------------
+  // GET /client-costs — A1 (MIG-8 cost recovery). Per-client AI spend for
+  // a yyyymm period, read from client_ai_cost (synced daily from the
+  // router billing feed by the worker's ai-cost-sync job). Totals are
+  // computed server-side. Includes aiMode so the page can show/hide the
+  // card without a second (differently-permissioned) fetch.
+  // -------------------------------------------------------------------
+  router.get(
+    '/client-costs',
+    requirePermission(deps, 'admin:ai:manage'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      const mode = aiMode();
+      if (!deps.db) {
+        res.json({ period: null, aiMode: mode, items: [], totals: null });
+        return;
+      }
+      const raw = typeof req.query['period'] === 'string' ? req.query['period'] : '';
+      const nowDate = now();
+      const defaultPeriod = `${nowDate.getUTCFullYear()}${String(nowDate.getUTCMonth() + 1).padStart(2, '0')}`;
+      const period = /^\d{6}$/.test(raw) ? raw : defaultPeriod;
+
+      const items = await deps.db
+        .select({
+          clientId: clientAiCosts.clientId,
+          clientName: clients.name,
+          engagementId: clientAiCosts.engagementId,
+          engagementName: engagements.name,
+          app: clientAiCosts.app,
+          taskClass: clientAiCosts.taskClass,
+          requests: clientAiCosts.requests,
+          promptTokens: clientAiCosts.promptTokens,
+          completionTokens: clientAiCosts.completionTokens,
+          costCents: clientAiCosts.costCents,
+          syncedAt: clientAiCosts.syncedAt,
+        })
+        .from(clientAiCosts)
+        .innerJoin(clients, eq(clients.id, clientAiCosts.clientId))
+        .leftJoin(engagements, eq(engagements.id, clientAiCosts.engagementId))
+        .where(and(eq(clientAiCosts.firmId, session.firmId), eq(clientAiCosts.period, period)))
+        .orderBy(desc(clientAiCosts.costCents), clients.name);
+
+      const totals = items.reduce(
+        (t, r) => ({
+          requests: t.requests + r.requests,
+          promptTokens: t.promptTokens + r.promptTokens,
+          completionTokens: t.completionTokens + r.completionTokens,
+          costCents: t.costCents + r.costCents,
+        }),
+        { requests: 0, promptTokens: 0, completionTokens: 0, costCents: 0 },
+      );
+
+      res.json({ period, aiMode: mode, items, totals });
+    },
+  );
+
   // ---------------------------------------------------------------------
   // POST /chat — KB-grounded support assistant. Retrieves the most
   // relevant published knowledge-base articles for the question and asks
@@ -1249,6 +1327,34 @@ async function logAiRequest(deps: AiRoutesDeps, args: LogArgs): Promise<void> {
 }
 
 /**
+ * A1 — resolve an engagement id to router attribution refs. Callers never
+ * send a bare clientId (a client-supplied one can't be trusted for cost
+ * attribution); they send an engagementId and the owning client is derived
+ * here under firm scoping. Attribution is telemetry, not authz: an
+ * unresolvable or foreign id silently drops attribution rather than
+ * failing the request. IDs never enter prompt text.
+ */
+async function resolveEngagementRefs(
+  deps: AiRoutesDeps,
+  firmId: string,
+  engagementId: string | undefined,
+): Promise<{ clientRef: string; engagementRef: string } | null> {
+  if (!engagementId || !deps.db) return null;
+  try {
+    const [row] = await deps.db
+      .select({ clientId: clients.id })
+      .from(engagements)
+      .innerJoin(clients, eq(clients.id, engagements.clientId))
+      .where(and(eq(engagements.id, engagementId), eq(clients.firmId, firmId)))
+      .limit(1);
+    return row ? { clientRef: row.clientId, engagementRef: engagementId } : null;
+  } catch (err) {
+    logger.warn({ err, engagementId }, 'ai attribution resolve failed');
+    return null;
+  }
+}
+
+/**
  * Reusable best-effort completion for non-AI-first features (e.g. the pricing
  * rationale). Applies the same egress gate, budget cap, and request logging as
  * the AI endpoints. Returns null — never throws — when no provider is
@@ -1264,6 +1370,9 @@ export async function runAiCompletion(
     systemPrompt: string;
     userPrompt: string;
     maxTokens?: number;
+    /** A1 — router cost attribution (ledger dimensions, never in prompts). */
+    clientId?: string | null;
+    engagementId?: string | null;
   },
 ): Promise<string | null> {
   const provider = await pickProvider(deps, args.feature, args.firmId);
@@ -1274,6 +1383,8 @@ export async function runAiCompletion(
   try {
     const result = await provider.complete({
       userId: args.appUserId ?? null,
+      clientRef: args.clientId ?? null,
+      engagementRef: args.engagementId ?? null,
       systemPrompt: args.systemPrompt,
       userPrompt: args.userPrompt,
       maxTokens: args.maxTokens ?? 220,
@@ -1321,6 +1432,8 @@ export interface KbChatArgs {
   audiences?: KbAudience[];
   actorAppUserId?: string | null;
   feature?: string;
+  /** A1 — router cost attribution: the portal caller's active client. */
+  clientId?: string | null;
 }
 export type KbChatResult =
   | {
@@ -1371,6 +1484,8 @@ export async function runKbChat(deps: AiRoutesDeps, args: KbChatArgs): Promise<K
   const started = Date.now();
   try {
     const result = await provider.complete({
+      userId: args.actorAppUserId ?? null,
+      clientRef: args.clientId ?? null,
       systemPrompt,
       userPrompt: `${history}\n\nAnswer the user's latest question.`,
       maxTokens: args.maxTokens ?? 600,

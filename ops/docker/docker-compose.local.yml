@@ -73,6 +73,11 @@ services:
       # volume mount.
       FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # MIG-8/A1 — Vibe AI Router dual-mode (direct is the standalone
+      # default; router requires both URL and token or the api refuses boot).
+      VIBE_AI_MODE: ${VIBE_AI_MODE:-direct}
+      VIBE_AI_ROUTER_URL: ${VIBE_AI_ROUTER_URL:-}
+      VIBE_AI_TOKEN: ${VIBE_AI_TOKEN:-}
       # Q35 — OpenSign e-signature (AGPL). Deployed STANDALONE via
       # ops/docker/opensign/ (real upstream Parse 4-service stack), reached
       # over HTTP (see LICENSING.md). Self-host is a Parse Server: auth is
@@ -169,6 +174,11 @@ services:
       OPENSIGN_PUBLIC_URL: ${OPENSIGN_PUBLIC_URL:-}
       OPENSIGN_API_EMAIL: ${OPENSIGN_API_EMAIL:-}
       OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
+      # MIG-8/A1 — the worker runs the ai-cost-sync feed pull; same
+      # VIBE_AI_* set as the api. Skips cleanly when mode=direct.
+      VIBE_AI_MODE: ${VIBE_AI_MODE:-direct}
+      VIBE_AI_ROUTER_URL: ${VIBE_AI_ROUTER_URL:-}
+      VIBE_AI_TOKEN: ${VIBE_AI_TOKEN:-}
       PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:-}
       # Web Push (VAPID) — the worker signs/sends portal pushes.

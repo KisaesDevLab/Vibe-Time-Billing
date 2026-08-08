@@ -83,6 +83,7 @@ import {
 } from './jobs/staged-notification-send';
 import { runShieldHealthcheck } from './jobs/shield-healthcheck';
 import { runViewRefresh } from './jobs/view-refresh';
+import { runAiCostSync } from './jobs/ai-cost-sync';
 import { runArAgingSnapshot } from './jobs/ar-aging-snapshot';
 import { runLateFeeAccrual } from './jobs/late-fee-accrual';
 import { runLateEntryAlert } from './jobs/late-entry-alert';
@@ -343,6 +344,9 @@ const QUEUES = [
   // 0192 — recurring installment payment plans. Daily sweep charges each
   // ACTIVE plan due today off-session against the saved method.
   'payment-plan-charge',
+  // 0214 (A1) — daily pull of the Vibe AI Router billing feed into
+  // client_ai_cost. No-ops outside router mode.
+  'ai-cost-sync',
 ] as const;
 type QueueName = (typeof QUEUES)[number];
 
@@ -369,6 +373,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runArAgingSnapshot(db, logger);
     logger.info({ jobId: job.id, ...result }, 'ar-aging snapshot complete');
+  },
+  'ai-cost-sync': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'ai-cost-sync: no DB configured');
+      return;
+    }
+    const result = await runAiCostSync(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'ai-cost-sync complete');
   },
   'view-refresh': async (job) => {
     if (!db) {
@@ -811,6 +823,9 @@ function instrumentRetainerJob<T extends Job>(
 const CRON: Record<QueueName, string> = {
   'recurring-billing': '*/15 * * * *',
   'ar-aging-snapshot': '30 0 * * *',
+  // A1 — daily; the upsert replaces full-period aggregates so any missed
+  // day self-heals on the next tick.
+  'ai-cost-sync': '23 4 * * *',
   'view-refresh': '*/15 * * * *',
   'dunning-sweep': '0 * * * *',
   'late-fee-accrual': '15 1 * * *',

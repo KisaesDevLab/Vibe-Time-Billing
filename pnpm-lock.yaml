@@ -357,6 +357,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@kisaes/vibe-ai-client':
+        specifier: github:KisaesDevLab/Vibe-AI-Router#sdk-v0.2.0&path:packages/sdk
+        version: https://codeload.github.com/KisaesDevLab/Vibe-AI-Router/tar.gz/68d3e4be867eea5f12856ed2a1132911e5de1ac9#path:packages/sdk
       '@vibe/core':
         specifier: workspace:*
         version: link:../../packages/core
