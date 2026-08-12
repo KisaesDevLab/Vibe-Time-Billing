@@ -14,7 +14,7 @@ import type { RoleSlug } from '@vibe/core/rbac';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { createClientRouter } from '../clients/routes';
-import { buildImportTemplateCsv, parseCsv } from '../clients/import';
+import { CANONICAL_FIELDS, buildImportTemplateCsv, parseCsv } from '../clients/import';
 
 let harness: PgliteHarness;
 
@@ -169,6 +169,15 @@ describe('client import template', () => {
       (c) => !body.mappedColumns.includes(c) && !contactCols.includes(c),
     );
     expect(unmapped).toEqual([]);
+  });
+
+  it('every client-level field the importer supports is offered in the template', () => {
+    // The gap that let entity_type ship unimportable. Compared against
+    // CANONICAL_FIELDS, not against the template's own parsed headers —
+    // deriving the expectation from the template would make this vacuous.
+    const { header } = parseCsv(buildImportTemplateCsv());
+    const missing = CANONICAL_FIELDS.filter((f) => !header.includes(f));
+    expect(missing, `template omits importable field(s): ${missing.join(', ')}`).toEqual([]);
   });
 
   it('the unedited template imports cleanly: notes row skipped, examples created', async () => {
@@ -464,6 +473,64 @@ describe('client CSV import', () => {
       .map((c) => c.email)
       .sort();
     expect(emails).toEqual(['pat@acme.example', 'sam@acme.example']);
+  });
+
+  it('imports entity_type, normalising spreadsheet spellings', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const csv = [
+      'name,client_owner_email,client_type,entity_type',
+      'Acme SCorp,sarah@test.example,BUSINESS,S_CORP_1120S',
+      'Beta Partners,sarah@test.example,BUSINESS,partnership 1065', // loose spelling
+      'Gamma Trust,sarah@test.example,BUSINESS,Trust-1041', // hyphen + mixed case
+    ].join('\n');
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, { csv }),
+    );
+    expect((res.jsonBody as { created: number }).created).toBe(3);
+    const rows = await harness.db
+      .select({ name: clients.name, entityType: clients.entityType })
+      .from(clients)
+      .where(eq(clients.firmId, seed.firmId));
+    const byName = new Map(rows.map((x) => [x.name, x.entityType]));
+    expect(byName.get('Acme SCorp')).toBe('S_CORP_1120S');
+    expect(byName.get('Beta Partners')).toBe('PARTNERSHIP_1065');
+    expect(byName.get('Gamma Trust')).toBe('TRUST_1041');
+  });
+
+  it('rejects an unknown entity_type', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const csv = 'name,client_owner_email,entity_type\nBadEntity,sarah@test.example,LLC_SOMETHING\n';
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, { csv }),
+    );
+    const body = res.jsonBody as { created: number; skipped: Array<{ reason: string }> };
+    expect(body.created).toBe(0);
+    expect(body.skipped[0]!.reason).toBe('invalid_entity_type');
+  });
+
+  it('entity_type stays optional — a name-only import still works', async () => {
+    // client_type defaults to BUSINESS, so requiring entity_type would have
+    // broken every existing minimal import file.
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, {
+        csv: 'name\nNoEntityCo\n',
+        defaultOwnerId: seed.appUserId,
+      }),
+    );
+    expect((res.jsonBody as { created: number }).created).toBe(1);
   });
 
   it('within-file duplicate external_id is skipped', async () => {

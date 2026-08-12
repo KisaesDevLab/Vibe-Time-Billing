@@ -15,7 +15,14 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, clientContacts, clients, contactRoles, offices } from '@vibe/db/schema';
+import {
+  appUsers,
+  clientContacts,
+  clientEntityType,
+  clients,
+  contactRoles,
+  offices,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -107,8 +114,10 @@ export function isTemplateNotesRow(row: string[], rowIndex: number): boolean {
 const TEMPLATE_COLUMNS = [
   'name',
   'client_owner_email',
+  'client_owner_name',
   'office',
   'client_type',
+  'entity_type',
   'external_id',
   'filing_status',
   'pipeline_stage',
@@ -116,9 +125,11 @@ const TEMPLATE_COLUMNS = [
   'invoice_consolidation_preference',
   'tags',
   'mailing_street1',
+  'mailing_street2',
   'mailing_city',
   'mailing_state',
   'mailing_postal',
+  'mailing_country',
   'taxpayer_name',
   'taxpayer_email',
   'taxpayer_phone',
@@ -137,8 +148,11 @@ type TemplateColumn = (typeof TEMPLATE_COLUMNS)[number];
 const TEMPLATE_NOTES: Record<TemplateColumn, string> = {
   name: 'Client display name (required)',
   client_owner_email: "Existing staff owner's email; blank uses the import default",
+  client_owner_name: 'Alternative to client_owner_email; email wins when both are set',
   office: 'Office name, exact match; blank uses the import default',
-  client_type: 'INDIVIDUAL or BUSINESS',
+  client_type: 'INDIVIDUAL or BUSINESS (defaults to BUSINESS)',
+  entity_type:
+    'BUSINESS legal/tax entity: SOLE_PROPRIETOR, JOINT_VENTURE, PARTNERSHIP_1065, S_CORP_1120S, C_CORP_1120, EXEMPT_ORG_990, TRUST_1041, ESTATE_706, GIFT_709, OTHER',
   external_id: 'Your own record id; matches an existing client to update it',
   filing_status: 'SINGLE, MFJ, MFS, HOH, or QW',
   pipeline_stage: 'PROSPECT, CLIENT, or OTHER',
@@ -146,9 +160,11 @@ const TEMPLATE_NOTES: Record<TemplateColumn, string> = {
   invoice_consolidation_preference: 'CONSOLIDATED or SEPARATE',
   tags: 'Semicolon- or pipe-separated list',
   mailing_street1: 'Mailing address line 1',
+  mailing_street2: 'Mailing address line 2 (suite, unit)',
   mailing_city: 'Mailing city',
   mailing_state: 'Mailing state or province',
   mailing_postal: 'Mailing ZIP or postal code',
+  mailing_country: 'Mailing country',
   taxpayer_name: 'Primary contact full name',
   taxpayer_email: 'Primary contact email',
   taxpayer_phone: 'Primary contact phone',
@@ -167,8 +183,10 @@ const TEMPLATE_SAMPLE_ROWS: Record<TemplateColumn, string>[] = [
   {
     name: 'Doe, John & Jane',
     client_owner_email: '',
+    client_owner_name: '',
     office: '',
     client_type: 'INDIVIDUAL',
+    entity_type: '',
     external_id: '1040-DOE-2026',
     filing_status: 'MFJ',
     pipeline_stage: 'CLIENT',
@@ -176,9 +194,11 @@ const TEMPLATE_SAMPLE_ROWS: Record<TemplateColumn, string>[] = [
     invoice_consolidation_preference: 'CONSOLIDATED',
     tags: '1040;VIP',
     mailing_street1: '123 Main St',
+    mailing_street2: '',
     mailing_city: 'Springfield',
     mailing_state: 'IL',
     mailing_postal: '62704',
+    mailing_country: 'US',
     taxpayer_name: 'John Doe',
     taxpayer_email: 'john.doe@example.com',
     taxpayer_phone: '217-555-0101',
@@ -195,8 +215,10 @@ const TEMPLATE_SAMPLE_ROWS: Record<TemplateColumn, string>[] = [
   {
     name: 'Acme Manufacturing LLC',
     client_owner_email: '',
+    client_owner_name: '',
     office: '',
     client_type: 'BUSINESS',
+    entity_type: 'S_CORP_1120S',
     external_id: 'ACME-01',
     filing_status: '',
     pipeline_stage: 'CLIENT',
@@ -204,9 +226,11 @@ const TEMPLATE_SAMPLE_ROWS: Record<TemplateColumn, string>[] = [
     invoice_consolidation_preference: 'SEPARATE',
     tags: '1120-S;monthly-bookkeeping',
     mailing_street1: '500 Industrial Pkwy',
+    mailing_street2: 'Suite 210',
     mailing_city: 'Springfield',
     mailing_state: 'IL',
     mailing_postal: '62711',
+    mailing_country: 'US',
     taxpayer_name: 'Alex Owner',
     taxpayer_email: 'alex@acme.example',
     taxpayer_phone: '217-555-0201',
@@ -235,12 +259,16 @@ export function buildImportTemplateCsv(): string {
 
 // ---------------------------------------------------------------- columns
 
-const CANONICAL_FIELDS = [
+// Exported so a test can assert the template offers every one of them —
+// the template is meant to be a complete description of the client-level
+// import surface, not a subset someone remembered to update.
+export const CANONICAL_FIELDS = [
   'name',
   'client_owner_email',
   'client_owner_name',
   'office',
   'client_type',
+  'entity_type',
   'external_id',
   'filing_status',
   'pipeline_stage',
@@ -273,6 +301,12 @@ const ALIASES: Record<string, CanonicalField> = {
   office_name: 'office',
   client_type: 'client_type',
   type: 'client_type',
+  // 0212 — legal/tax entity for BUSINESS clients. Left optional here to
+  // match the API's own nullable contract: client_type defaults to
+  // BUSINESS, so requiring it would break every existing name-only import.
+  entity_type: 'entity_type',
+  entity: 'entity_type',
+  business_entity_type: 'entity_type',
   external_id: 'external_id',
   externalid: 'external_id',
   filing_status: 'filing_status',
@@ -455,6 +489,9 @@ function autoMap(header: string[]): Partial<Record<CanonicalField, number>> {
 // ---------------------------------------------------------------- validate
 
 const CLIENT_TYPES = new Set(['INDIVIDUAL', 'BUSINESS']);
+// 0212 — derived from the pgEnum rather than hand-copied, so a new entity
+// type becomes importable without a second edit here.
+const ENTITY_TYPES = new Set<string>(clientEntityType.enumValues);
 const FILING_STATUSES = new Set(['SINGLE', 'MFJ', 'MFS', 'HOH', 'QW']);
 const PIPELINE_STAGES = new Set(['PROSPECT', 'CLIENT', 'OTHER']);
 const CONSOLIDATION = new Set(['CONSOLIDATED', 'SEPARATE']);
@@ -606,6 +643,16 @@ export function validateImportRows(
     // Enum validation.
     const clientType = cell(row, mapping.client_type).toUpperCase();
     if (clientType && !CLIENT_TYPES.has(clientType)) return skip('invalid_client_type');
+    // Accept the friendlier spellings a spreadsheet is likely to carry
+    // ("S-Corp 1120S", "s_corp_1120s") by normalising to the enum shape.
+    const entityRaw = cell(row, mapping.entity_type);
+    const entityType = entityRaw
+      ? entityRaw
+          .toUpperCase()
+          .replace(/[^A-Z0-9]+/g, '_')
+          .replace(/^_+|_+$/g, '')
+      : '';
+    if (entityType && !ENTITY_TYPES.has(entityType)) return skip('invalid_entity_type');
     const filingStatus = cell(row, mapping.filing_status).toUpperCase();
     if (filingStatus && !FILING_STATUSES.has(filingStatus)) return skip('invalid_filing_status');
     const pipelineStage = cell(row, mapping.pipeline_stage).toUpperCase();
@@ -646,6 +693,7 @@ export function validateImportRows(
       officeId,
     };
     if (clientType) values['clientType'] = clientType;
+    if (entityType) values['entityType'] = entityType;
     if (externalId) values['externalId'] = externalId.slice(0, 120);
     if (filingStatus) values['filingStatus'] = filingStatus;
     if (pipelineStage) values['pipelineStage'] = pipelineStage;
