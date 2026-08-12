@@ -353,7 +353,7 @@ docker cp ~/restore/appliance-backup/staging/opensign-files/current/. \
    fstab line from the kit, `sudo mount -a`, then pick it in
    Admin → Operations → Backup.
 3. **Re-create the nightly staging cron:** `crontab -e` →
-   `30 1 * * * /home/<user>/appliance-backup/stage.sh`
+   `30 1 * * * /home/YOUR-USERNAME/appliance-backup/stage.sh`
    (copy `stage.sh` from the off-site backup or the repo).
 4. **Reinstall Duplicati** (if not already), point it at the same B2 bucket +
    off-site passphrase, run one backup to confirm.

@@ -4,7 +4,6 @@
 // share. Distinct cookie name, distinct JWT key, distinct session prefix.
 
 import type { NextFunction, Request, Response } from 'express';
-import { timingSafeEqual } from 'node:crypto';
 import { eq } from 'drizzle-orm';
 
 import type { PortalSession } from '@vibe/core/auth';
@@ -12,6 +11,7 @@ import type { Database } from '@vibe/db';
 import { firmSettings } from '@vibe/db/schema';
 
 import { loadConfig } from '../config';
+import { constantTimeEquals } from '../lib/constant-time';
 import { readSessionCookie } from './cookies';
 import type { SessionStore } from './session-store';
 
@@ -119,7 +119,7 @@ export function portalAuthDeps(store: SessionStore, db?: Database | null) {
       const csrfMethod = req.method.toUpperCase();
       if (csrfMethod !== 'GET' && csrfMethod !== 'HEAD' && csrfMethod !== 'OPTIONS') {
         const header = req.header('x-csrf-token') ?? '';
-        if (!portalCsrfEquals(header, s.csrfToken)) {
+        if (!constantTimeEquals(header, s.csrfToken)) {
           res.status(403).json({ error: 'csrf_mismatch' });
           return;
         }
@@ -130,11 +130,4 @@ export function portalAuthDeps(store: SessionStore, db?: Database | null) {
       next();
     },
   };
-}
-
-function portalCsrfEquals(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
 }

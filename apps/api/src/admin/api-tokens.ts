@@ -128,8 +128,19 @@ export function createApiTokenRouter(deps: ApiTokenRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
+      // The token must belong to the caller's firm — audit rows (tool
+      // arguments included) must not be readable across firms.
+      const session = req.staffSession!;
+      const [tok] = await deps.db
+        .select({ id: mcpTokens.id })
+        .from(mcpTokens)
+        .where(and(eq(mcpTokens.id, req.params['id']!), eq(mcpTokens.firmId, session.firmId)))
+        .limit(1);
+      if (!tok) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
       const { auditLog } = await import('@vibe/db/schema');
-      const { eq, desc } = await import('drizzle-orm');
       const items = await deps.db
         .select({
           id: auditLog.id,

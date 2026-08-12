@@ -23,6 +23,7 @@ import { sql as drz } from 'drizzle-orm';
 import type { AnySession } from '@vibe/core/auth';
 
 import { emitAudit } from '../auth/audit';
+import { constantTimeEquals } from '../lib/constant-time';
 import { logger } from '../logger';
 import { firmScope, renderTemplate } from '../notifications/templating';
 import { createClientSetupIntent, confirmClientSetupIntent } from '../payments/saved-methods';
@@ -940,7 +941,7 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       return;
     }
     const hash = createHash('sha256').update(parsed.data.code).digest('hex');
-    if (hash !== row.otpHash) {
+    if (!constantTimeEquals(hash, row.otpHash)) {
       await deps.db
         .update(portalAltContact)
         .set({ otpAttempts: row.otpAttempts + 1, updatedAt: new Date() })

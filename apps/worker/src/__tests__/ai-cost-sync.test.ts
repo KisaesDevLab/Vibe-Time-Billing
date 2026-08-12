@@ -38,6 +38,9 @@ const ENV_KEYS = ['VIBE_AI_MODE', 'VIBE_AI_ROUTER_URL', 'VIBE_AI_TOKEN'] as cons
 let savedEnv: Record<string, string | undefined>;
 
 beforeAll(async () => {
+  // Snapshot once, before any test mutates the env — restoring a per-test
+  // snapshot would re-apply the previous test's values after the suite.
+  savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   pglite = new PGlite();
   for (const f of readdirSync(migrationsDir)
     .filter((x) => x.endsWith('.sql'))
@@ -74,21 +77,17 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await pglite.close();
-});
-
-beforeEach(async () => {
-  savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
-  process.env['VIBE_AI_MODE'] = 'router';
-  process.env['VIBE_AI_ROUTER_URL'] = 'http://router.test:8220';
-  process.env['VIBE_AI_TOKEN'] = 'tok';
-  await db.execute(sql`DELETE FROM client_ai_cost`);
-});
-
-afterAll(() => {
   for (const k of ENV_KEYS) {
     if (savedEnv?.[k] === undefined) delete process.env[k];
     else process.env[k] = savedEnv[k];
   }
+});
+
+beforeEach(async () => {
+  process.env['VIBE_AI_MODE'] = 'router';
+  process.env['VIBE_AI_ROUTER_URL'] = 'http://router.test:8220';
+  process.env['VIBE_AI_TOKEN'] = 'tok';
+  await db.execute(sql`DELETE FROM client_ai_cost`);
 });
 
 type FeedItem = Record<string, unknown>;

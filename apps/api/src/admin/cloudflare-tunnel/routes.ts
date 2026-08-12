@@ -77,7 +77,7 @@ export interface CloudflareTunnelRoutesDeps extends RbacDeps {
   createClient?: (opts: CloudflareClientOptions) => CloudflareClient;
 }
 
-const FQDN_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
+const FQDN_RE = /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i;
 const HEX_ID_RE = /^[a-f0-9]{32,64}$/i;
 
 type Realm = 'STAFF' | 'PORTAL' | 'ESIGN' | 'INTAKE';

@@ -35,6 +35,7 @@ import { rollup, rollupBy, type AllocationRow } from '@vibe/core/reporting';
 
 import { emitAudit } from '../auth/audit';
 import { requireApiToken } from '../auth/api-token';
+import { findFirmEngagement, firmEngagementIdSet, tokenEntryFlags } from '../auth/token-scope';
 import { getBlockedClientIds } from '../clients/access';
 import { batchDecryptForThread } from '../engagement-messaging/thread-crypto';
 import { linkTimeEntryMessages } from '../time-entries/routes';
@@ -150,19 +151,6 @@ export function createMcpRouter(deps: McpRoutesDeps): Router {
  *  engagements, used to scope time-entry reads/writes for MCP tokens. The
  *  blocked set (0165) removes engagements of restricted clients the token's
  *  creator can't access. */
-async function firmEngagementIdSet(
-  db: Database,
-  firmId: string,
-  blocked: ReadonlySet<string>,
-): Promise<string[]> {
-  const rows = await db
-    .select({ id: engagements.id, clientId: engagements.clientId })
-    .from(engagements)
-    .innerJoin(clients, eq(clients.id, engagements.clientId))
-    .where(eq(clients.firmId, firmId));
-  return rows.filter((r) => !blocked.has(r.clientId)).map((r) => r.id);
-}
-
 async function dispatch(
   deps: McpRoutesDeps,
   tool: McpToolKey,
@@ -229,11 +217,18 @@ async function dispatch(
       const parsed = Schema.parse(args);
       // The target engagement must belong to the token's firm and not be a
       // restricted client the token's creator can't access (0165 — a blocked
-      // engagement is absent from this set so it reads as not-in-firm).
-      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId, blocked);
-      if (!firmEngagementIds.includes(parsed.engagementId)) {
-        throw new Error('engagement_not_in_firm');
-      }
+      // engagement reads as not-in-firm).
+      const eng = await findFirmEngagement(deps.db, token.firmId, blocked, parsed.engagementId);
+      if (!eng) throw new Error('engagement_not_in_firm');
+      // The attributed timekeeper must also be a user of the token's firm —
+      // otherwise a token can pin entries on another tenant's employee.
+      const [assignee] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, parsed.appUserId), eq(appUsers.firmId, token.firmId)))
+        .limit(1);
+      if (!assignee) throw new Error('user_not_in_firm');
+      const flags = tokenEntryFlags(eng, parsed.workCodeId);
       const [row] = await deps.db
         .insert(timeEntries)
         .values({
@@ -242,6 +237,8 @@ async function dispatch(
           workCodeId: parsed.workCodeId ?? null,
           entryDate: parsed.entryDate,
           hours: parsed.hours.toString(),
+          billableFlag: flags.billableFlag,
+          inScopeFlag: flags.inScopeFlag,
           description: parsed.description ?? '',
           standardRateSnapshotCents: parsed.standardRateSnapshotCents,
           standardAmountCents: Math.round(parsed.standardRateSnapshotCents * parsed.hours),
@@ -251,11 +248,16 @@ async function dispatch(
     }
     case 'query_recurring_plans': {
       const today = new Date().toISOString().slice(0, 10);
+      // Plans hang off engagements, so scope through the firm's engagement
+      // set — same guard as get_time_entries.
+      const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId, blocked);
+      if (firmEngagementIds.length === 0) return { items: [] };
       const items = await deps.db
         .select()
         .from(recurringBillingPlans)
         .where(
           and(
+            inArray(recurringBillingPlans.engagementId, firmEngagementIds),
             eq(recurringBillingPlans.status, 'ACTIVE'),
             lte(recurringBillingPlans.nextRunDate, today),
           ),

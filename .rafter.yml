@@ -1,0 +1,29 @@
+# Rafter scan suppressions — each entry documents why the finding is not
+# exploitable in this codebase. Re-review on architecture changes.
+
+suppressions:
+  # ESLint "Definition for rule ... was not found" (jsx-a11y/*,
+  # @typescript-eslint/*): the flagged lines are inline eslint-disable
+  # comments. The repo's ESLint config (.eslintrc.cjs) registers these
+  # plugins and they are installed; `pnpm lint` resolves them clean. The
+  # scanner ran ESLint without the workspace devDependencies, so every
+  # plugin-rule reference reported "not found". Tooling artifact, not a
+  # code issue.
+  - rules: [R-0C5C3, R-BFD19, R-2266A, R-58B50, R-3EF94, R-F202D, R-CF960, R-35D48, R-7889D]
+    reason: scanner ESLint env lacks workspace plugins; repo lint passes
+
+  # react-router / react-router-dom 6.30.4 CVEs. All three apps (web,
+  # portal, intake) are declarative client-side SPAs (BrowserRouter, no
+  # SSR / framework mode):
+  #   - CVE-2026-53666 (constructor injection via deserializeErrors) is
+  #     SSR-hydration only; the advisory states declarative mode is not
+  #     impacted.
+  #   - CVE-2026-53668 / CVE-2026-53669 (backslash open redirect via
+  #     <Link>/useNavigate) require attacker-controlled paths to reach a
+  #     navigation API. Audited 2026-08-12: no ?redirect=/returnTo params,
+  #     no location.state re-navigation, all navigate() targets are
+  #     hardcoded or internally constructed. No 6.x patch exists; the fix
+  #     is the react-router 7.18+ major migration — tracked as scheduled
+  #     upgrade work, not a hot fix.
+  - rules: [R-05ABC, R-88846]
+    reason: SSR-only or unreachable open-redirect surface; v7 migration scheduled

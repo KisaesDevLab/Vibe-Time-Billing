@@ -12,7 +12,7 @@ import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
 import { aiRequestLog, clientAiCosts, clients, engagements, firmSettings } from '@vibe/db/schema';
-import { checkBudget, type AiProvider } from '@vibe/core/ai';
+import { aiCostPeriod, checkBudget, type AiProvider } from '@vibe/core/ai';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { uuidQueryParam } from '../lib/uuid-guard';
@@ -1042,9 +1042,7 @@ export function createAiRouter(deps: AiRoutesDeps): Router {
         return;
       }
       const raw = typeof req.query['period'] === 'string' ? req.query['period'] : '';
-      const nowDate = now();
-      const defaultPeriod = `${nowDate.getUTCFullYear()}${String(nowDate.getUTCMonth() + 1).padStart(2, '0')}`;
-      const period = /^\d{6}$/.test(raw) ? raw : defaultPeriod;
+      const period = /^\d{6}$/.test(raw) ? raw : aiCostPeriod(now());
 
       const items = await deps.db
         .select({

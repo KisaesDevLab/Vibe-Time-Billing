@@ -32,6 +32,7 @@ import type { Database } from '@vibe/db';
 import { clients, portalIdentity, portalStepUpChallenge } from '@vibe/db/schema';
 
 import { loadConfig } from '../config';
+import { constantTimeEquals } from '../lib/constant-time';
 import { logger } from '../logger';
 import { firmScope, renderTemplate } from '../notifications/templating';
 import { emitAudit } from '../auth/audit';
@@ -324,7 +325,7 @@ export function createPortalStepUpRouter(deps: PortalStepUpDeps): Router {
 
     let ok = false;
     if (row.challengeType === 'email-otp' || row.challengeType === 'sms-otp') {
-      ok = row.otpHash !== null && row.otpHash === sha256Hex(parsed.data.value);
+      ok = row.otpHash !== null && constantTimeEquals(row.otpHash, sha256Hex(parsed.data.value));
     } else if (row.challengeType === 'ssn-last-4' || row.challengeType === 'ein') {
       // Look up the active client's stored hash + constant-time
       // compare. The session's activeClientId is the scope guard —

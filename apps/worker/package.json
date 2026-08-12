@@ -20,7 +20,7 @@
     "@vibe/db": "workspace:*",
     "@vibe/storage": "workspace:*",
     "@vibe/types": "workspace:*",
-    "adm-zip": "^0.5.17",
+    "adm-zip": "^0.6.0",
     "bullmq": "^5.7.0",
     "drizzle-orm": "^0.45.2",
     "fuse.js": "^7.0.0",

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { useEffect, useMemo, useState } from 'react';
 
+import { recentAiCostPeriods } from '@vibe/core/ai';
 import { AiPanel, Button, Card, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
@@ -253,40 +254,44 @@ interface ClientCostsResponse {
   } | null;
 }
 
-/** Last 12 UTC months as 'yyyymm', newest first. */
-function recentPeriods(): string[] {
-  const out: string[] = [];
-  const now = new Date();
-  for (let i = 0; i < 12; i++) {
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-    out.push(`${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
-  }
-  return out;
-}
-
 const periodLabel = (p: string): string => `${p.slice(0, 4)}-${p.slice(4)}`;
 
 function ClientAiCostsCard(): JSX.Element | null {
-  const [period, setPeriod] = useState(recentPeriods()[0]!);
+  const [period, setPeriod] = useState(recentAiCostPeriods(12)[0]!);
   const [data, setData] = useState<ClientCostsResponse | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   useEffect(() => {
+    // Stale-response guard: a slower earlier request must not overwrite a
+    // newer period's rows after the select changes again.
+    let cancelled = false;
     void (async () => {
       try {
         const r = await api<ClientCostsResponse>(`/api/staff/ai/client-costs?period=${period}`);
+        if (cancelled) return;
         setData(r);
         setErr(null);
       } catch (e) {
+        if (cancelled) return;
         setErr(e instanceof Error ? e.message : 'failed');
       }
     })();
+    return () => {
+      cancelled = true;
+    };
   }, [period]);
 
-  // Hidden in direct mode — ai_request_log carries real costs there.
-  if (!data || data.aiMode !== 'router') return null;
+  // Hidden in direct mode — ai_request_log carries real costs there. A
+  // fetch error still renders the card so the failure is visible instead
+  // of silently looking like direct mode.
+  if (!err && (!data || data.aiMode !== 'router')) return null;
 
-  const totals = data.totals ?? { requests: 0, promptTokens: 0, completionTokens: 0, costCents: 0 };
+  const totals = data?.totals ?? {
+    requests: 0,
+    promptTokens: 0,
+    completionTokens: 0,
+    costCents: 0,
+  };
   return (
     <Card title="Client AI costs">
       <div
@@ -304,7 +309,7 @@ function ClientAiCostsCard(): JSX.Element | null {
               border: `1px solid ${tokens.color.border}`,
             }}
           >
-            {recentPeriods().map((p) => (
+            {recentAiCostPeriods(12).map((p) => (
               <option key={p} value={p}>
                 {periodLabel(p)}
               </option>
@@ -329,7 +334,7 @@ function ClientAiCostsCard(): JSX.Element | null {
           },
           { key: 'cost', header: 'Cost', align: 'right', render: (r) => formatCents(r.costCents) },
         ]}
-        rows={data.items}
+        rows={data?.items ?? []}
         rowKey={(r) => `${r.clientId}:${r.engagementId ?? ''}:${r.app}:${r.taskClass ?? ''}`}
         footer={[
           'Total',

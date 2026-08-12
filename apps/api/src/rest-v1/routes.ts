@@ -11,10 +11,16 @@ import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import type { Redis } from 'ioredis';
-import { clients, engagements, invoices, timeEntries } from '@vibe/db/schema';
+import { appUsers, clients, engagements, invoices, timeEntries } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requireApiToken, requireApiTokenRateLimit, requireToolScope } from '../auth/api-token';
+import {
+  findFirmEngagement,
+  firmEngagementIdSet,
+  tokenBlockedClientIds,
+  tokenEntryFlags,
+} from '../auth/token-scope';
 import { logger } from '../logger';
 
 export interface RestRoutesDeps {
@@ -98,15 +104,38 @@ export function createRestV1Router(deps: RestRoutesDeps): Router {
         res.json({ items: [] });
         return;
       }
+      // Every read is bounded to the token's firm and excludes restricted
+      // clients (0165) — the same guards the MCP get_time_entries tool
+      // applies for this scope.
+      const token = req.apiToken!;
+      const blocked = await tokenBlockedClientIds(deps.db, token);
       const conds = [] as ReturnType<typeof eq>[];
-      if (parsed.data.engagementId)
+      if (parsed.data.engagementId) {
+        const eng = await findFirmEngagement(
+          deps.db,
+          token.firmId,
+          blocked,
+          parsed.data.engagementId,
+        );
+        if (!eng) {
+          res.json({ items: [] });
+          return;
+        }
         conds.push(eq(timeEntries.engagementId, parsed.data.engagementId));
+      } else {
+        const firmEngagementIds = await firmEngagementIdSet(deps.db, token.firmId, blocked);
+        if (firmEngagementIds.length === 0) {
+          res.json({ items: [] });
+          return;
+        }
+        conds.push(inArray(timeEntries.engagementId, firmEngagementIds));
+      }
       if (parsed.data.start) conds.push(gte(timeEntries.entryDate, parsed.data.start));
       if (parsed.data.end) conds.push(lte(timeEntries.entryDate, parsed.data.end));
       const items = await deps.db
         .select()
         .from(timeEntries)
-        .where(conds.length === 0 ? undefined : and(...conds))
+        .where(and(...conds))
         .orderBy(desc(timeEntries.entryDate))
         .limit(parsed.data.limit);
       res.json({ items });
@@ -127,19 +156,33 @@ export function createRestV1Router(deps: RestRoutesDeps): Router {
         res.status(503).json({ error: 'db_unavailable' });
         return;
       }
-      // The target engagement must belong to the token's firm before we
-      // insert — mirrors the MCP create_time_entry firm-scope guard so a
-      // caller can't write time against another firm's engagement.
-      const [eng] = await deps.db
-        .select({ id: engagements.id })
-        .from(engagements)
-        .innerJoin(clients, eq(clients.id, engagements.clientId))
-        .where(and(eq(engagements.id, parsed.data.engagementId), eq(clients.firmId, token.firmId)))
-        .limit(1);
+      // The target engagement must belong to the token's firm and not be a
+      // restricted client (0165) — mirrors the MCP create_time_entry guard
+      // so a caller can't write time against another firm's engagement.
+      const blocked = await tokenBlockedClientIds(deps.db, token);
+      const eng = await findFirmEngagement(
+        deps.db,
+        token.firmId,
+        blocked,
+        parsed.data.engagementId,
+      );
       if (!eng) {
         res.status(400).json({ error: 'engagement_not_in_firm' });
         return;
       }
+      // The attributed timekeeper must also belong to the token's firm —
+      // otherwise entries can be pinned on another tenant's employee and
+      // surface in that tenant's timekeeper reports.
+      const [assignee] = await deps.db
+        .select({ id: appUsers.id })
+        .from(appUsers)
+        .where(and(eq(appUsers.id, parsed.data.appUserId), eq(appUsers.firmId, token.firmId)))
+        .limit(1);
+      if (!assignee) {
+        res.status(400).json({ error: 'user_not_in_firm' });
+        return;
+      }
+      const flags = tokenEntryFlags(eng, parsed.data.workCodeId);
       const [row] = await deps.db
         .insert(timeEntries)
         .values({
@@ -148,6 +191,8 @@ export function createRestV1Router(deps: RestRoutesDeps): Router {
           workCodeId: parsed.data.workCodeId ?? null,
           entryDate: parsed.data.entryDate,
           hours: parsed.data.hours.toString(),
+          billableFlag: flags.billableFlag,
+          inScopeFlag: flags.inScopeFlag,
           description: parsed.data.description ?? '',
           standardRateSnapshotCents: parsed.data.standardRateSnapshotCents,
           standardAmountCents: Math.round(

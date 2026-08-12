@@ -1,0 +1,234 @@
+# Not part of upstream — host-specific hybrid compose.
+#
+# Runs the PRODUCTION app tier (real Caddyfile on :80, Cloudflare Tunnel
+# sidecar, no MailHog) against the postgres/redis containers already
+# brought up by docker-compose.dev.yml (which hold the restored
+# production data in the docker_vibe-pg-data volume). Uses the locally
+# built vibe-time-billing:local image (not GHCR) since that's the image
+# already proven against this restored DB, and inlines the migrate-then-
+# serve command the same way docker-compose.local.yml does, because the
+# locally built image doesn't ship ops/docker/entrypoint-api.sh.
+#
+# Usage:
+#   docker compose --project-name docker \
+#     --env-file ~/appliance-secrets/vibe-build.env \
+#     -f ops/docker/docker-compose.prod-local.yml up -d
+#
+# The env file lives in ~/appliance-secrets (0600), NOT /tmp: a /tmp copy
+# was used previously and got cleaned out from under the deploy, leaving
+# no way to bring the stack up. ~/appliance-secrets/vibe-build.env is the
+# single source of truth — verified to reproduce the running api/worker
+# environment exactly (32/32 vars each), and it is the only copy holding
+# BACKUP_KEYS_PASSPHRASE and VIBE_HOST.
+
+services:
+  init-static:
+    image: vibe-time-billing:local
+    container_name: vibe-tb-init-static
+    entrypoint: ['/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        rm -rf /static-out/web /static-out/portal /static-out/intake
+        cp -r /app/apps/web/dist /static-out/web
+        cp -r /app/apps/portal/dist /static-out/portal
+        cp -r /app/apps/intake/dist /static-out/intake
+        echo "init-static: copied web + portal + intake dists"
+    volumes:
+      - static-content:/static-out
+    restart: 'no'
+
+  api:
+    image: vibe-time-billing:local
+    container_name: vibe-tb-api
+    depends_on:
+      init-static:
+        condition: service_completed_successfully
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
+      REDIS_URL: redis://redis:6379
+      STAFF_JWT_SECRET: ${STAFF_JWT_SECRET:?STAFF_JWT_SECRET required}
+      PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?PORTAL_JWT_SECRET required}
+      KMS_KEY: ${KMS_KEY:?KMS_KEY required}
+      APP_BASE_URL: ${APP_BASE_URL}
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL}
+      INTAKE_BASE_URL: ${INTAKE_BASE_URL:-}
+      WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
+      WEBAUTHN_RP_NAME: ${WEBAUTHN_RP_NAME:-Vibe Practice Management}
+      WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-${APP_BASE_URL}}
+      FEATURE_CALENDAR_WRITE: ${FEATURE_CALENDAR_WRITE:-true}
+      FEATURE_PUBLIC_BOOKING: ${FEATURE_PUBLIC_BOOKING:-false}
+      COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
+      # Interim safe default — 'console' isn't a valid MAIL_PROVIDER per
+      # apps/api/src/config.ts's enum, but 'postmark' with no token set
+      # falls back to createConsoleMailProvider (logs mail, no crash, no
+      # MailHog fakeout). DB-configured firm mail settings (Admin UI)
+      # still take priority over this via wrapMailWithFirmConfig.
+      MAIL_PROVIDER: postmark
+      SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
+      FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      # MIG-8/A1 — Vibe AI Router dual-mode (router requires URL + token).
+      VIBE_AI_MODE: ${VIBE_AI_MODE:-direct}
+      VIBE_AI_ROUTER_URL: ${VIBE_AI_ROUTER_URL:-}
+      VIBE_AI_TOKEN: ${VIBE_AI_TOKEN:-}
+      OPENSIGN_URL: ${OPENSIGN_URL:-}
+      OPENSIGN_APP_ID: ${OPENSIGN_APP_ID:-opensign}
+      OPENSIGN_MASTER_KEY: ${OPENSIGN_MASTER_KEY:-}
+      OPENSIGN_PUBLIC_URL: ${OPENSIGN_PUBLIC_URL:-}
+      OPENSIGN_API_EMAIL: ${OPENSIGN_API_EMAIL:-}
+      OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
+      OPENSIGN_WEBHOOK_SECRET: ${OPENSIGN_WEBHOOK_SECRET:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@localhost}
+      CLOUDFLARED_TOKEN_FILE: /run/cloudflared/token
+      CLOUDFLARED_METRICS_URL: http://cloudflared:2000
+    entrypoint: ['/usr/bin/tini', '--', '/bin/sh', '-c']
+    command:
+      - |
+        set -eu
+        cd /app
+        echo "vibe-tb-api: applying migrations..."
+        node --experimental-transform-types --import /opt/hooks/esm-resolve-hook.mjs packages/db/dist/scripts/migrate.js
+        echo "vibe-tb-api: migrations done. starting server."
+        exec node --experimental-transform-types --import /opt/hooks/esm-resolve-hook.mjs apps/api/dist/apps/api/src/server.js
+    volumes:
+      - file-storage:/data/files
+      - storage-mock:/data/storage-mock
+      - firm-key:/data/firm-key
+      - cloudflared-run:/run/cloudflared
+      - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
+      - ${APPLIANCE_SECRETS_DIR:-.}:/secrets:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:3001/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - default
+      - opensign-net
+
+  worker:
+    image: vibe-time-billing:local
+    container_name: vibe-tb-worker
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
+      REDIS_URL: redis://redis:6379
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      OPENSIGN_URL: ${OPENSIGN_URL:-}
+      OPENSIGN_APP_ID: ${OPENSIGN_APP_ID:-opensign}
+      OPENSIGN_MASTER_KEY: ${OPENSIGN_MASTER_KEY:-}
+      OPENSIGN_PUBLIC_URL: ${OPENSIGN_PUBLIC_URL:-}
+      OPENSIGN_API_EMAIL: ${OPENSIGN_API_EMAIL:-}
+      OPENSIGN_API_PASSWORD: ${OPENSIGN_API_PASSWORD:-}
+      # MIG-8/A1 — worker runs the ai-cost-sync feed pull; same VIBE_AI_*
+      # set as the api. Skips cleanly when mode=direct.
+      VIBE_AI_MODE: ${VIBE_AI_MODE:-direct}
+      VIBE_AI_ROUTER_URL: ${VIBE_AI_ROUTER_URL:-}
+      VIBE_AI_TOKEN: ${VIBE_AI_TOKEN:-}
+      PROPOSAL_SIGNATURE_HMAC_SEED: ${PROPOSAL_SIGNATURE_HMAC_SEED:-}
+      PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:-}
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:support@localhost}
+      MAIL_PROVIDER: postmark
+      SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
+      KMS_KEY: ${KMS_KEY:?KMS_KEY required}
+      FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
+      SMS_TWILIO_ACCOUNT_SID: ${SMS_TWILIO_ACCOUNT_SID:-}
+      SMS_TWILIO_AUTH_TOKEN: ${SMS_TWILIO_AUTH_TOKEN:-}
+      SMS_TWILIO_FROM: ${SMS_TWILIO_FROM:-}
+      SMS_TEXTLINK_API_KEY: ${SMS_TEXTLINK_API_KEY:-}
+      VOICE_PROVIDER: ${VOICE_PROVIDER:-console}
+      VOICE_TWILIO_ACCOUNT_SID: ${VOICE_TWILIO_ACCOUNT_SID:-}
+      VOICE_TWILIO_AUTH_TOKEN: ${VOICE_TWILIO_AUTH_TOKEN:-}
+      VOICE_TWILIO_FROM: ${VOICE_TWILIO_FROM:-}
+      APP_BASE_URL: ${APP_BASE_URL}
+      FEATURE_CALENDAR_WRITE: ${FEATURE_CALENDAR_WRITE:-true}
+      CLAMD_HOST: ${CLAMD_HOST:-}
+      CLAMD_PORT: ${CLAMD_PORT:-3310}
+      CLOUDFLARED_METRICS_URL: http://cloudflared:2000
+    entrypoint: ['/usr/bin/tini', '--']
+    command:
+      [
+        'node',
+        '--experimental-transform-types',
+        '--import',
+        '/opt/hooks/esm-resolve-hook.mjs',
+        'apps/worker/dist/apps/worker/src/index.js',
+      ]
+    volumes:
+      - storage-mock:/data/storage-mock
+      - firm-key:/data/firm-key
+      - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://localhost:3003/health || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+    networks:
+      - default
+      - opensign-net
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: vibe-tb-caddy
+    depends_on:
+      api:
+        condition: service_healthy
+      init-static:
+        condition: service_completed_successfully
+    ports:
+      - '80:80'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - static-content:/srv:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    networks:
+      - default
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: vibe-tb-cloudflared
+    depends_on:
+      - api
+    # The image is distroless (no /bin/sh), so the file-wait wrapper
+    # docker-compose.prod.yml uses doesn't run here. TUNNEL_TOKEN env is
+    # what cloudflared reads natively for `tunnel run` with no token arg.
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?TUNNEL_TOKEN required}
+    command: ['tunnel', '--metrics', '0.0.0.0:2000', 'run']
+    restart: unless-stopped
+    networks:
+      - default
+
+volumes:
+  static-content:
+  file-storage:
+  storage-mock:
+  firm-key:
+    external: true
+    name: docker_firm-key
+  cloudflared-run:
+  caddy-data:
+  caddy-config:
+
+networks:
+  default:
+    name: docker_default
+    external: true
+  opensign-net:
+    external: true

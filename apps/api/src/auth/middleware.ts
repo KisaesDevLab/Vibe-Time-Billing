@@ -5,11 +5,11 @@
 // (Phase 16) is structurally identical but separate.
 
 import type { NextFunction, Request, Response } from 'express';
-import { timingSafeEqual } from 'node:crypto';
 
 import { isStepUpFresh, type StaffSession } from '@vibe/core/auth';
 
 import { loadConfig } from '../config';
+import { constantTimeEquals } from '../lib/constant-time';
 import { readSessionCookie } from './cookies';
 import type { SessionStore } from './session-store';
 
@@ -88,11 +88,4 @@ export function staffAuthDeps(store: SessionStore): {
       next();
     },
   };
-}
-
-function constantTimeEquals(a: string, b: string): boolean {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) return false;
-  return timingSafeEqual(ab, bb);
 }
