@@ -322,6 +322,10 @@ const ALIASES: Record<string, CanonicalField> = {
   preparer_name: 'client_owner_name',
   office: 'office',
   office_name: 'office',
+  // UltraTax data-mining office item labels.
+  client_office: 'office',
+  office_location: 'office',
+  location: 'office',
   client_type: 'client_type',
   type: 'client_type',
   // 0212 — legal/tax entity for BUSINESS clients. Left optional here to
