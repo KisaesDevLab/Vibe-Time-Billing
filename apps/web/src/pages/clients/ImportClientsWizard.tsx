@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
-// Q36 — CSV client-import wizard. Two steps: Upload (pick a .csv, set an
-// optional default owner/office) → Preview (dry-run validation showing
-// per-row create/skip with reasons) → commit. The server auto-maps
-// columns by header name; required column is `name`. Dedupe is
-// skip-existing (external_id, else case-insensitive name).
+// Q36 — CSV / Excel client-import wizard. Two steps: Upload (pick a .csv
+// or .xlsx, set an optional default owner/office, opt into updating
+// existing clients) → Preview (dry-run validation showing per-row
+// create/update/skip with reasons, resolved owner, warnings and the
+// columns an update would change) → commit. The server auto-maps columns
+// by header name — including the UltraTax CS "Data Mining" export layout
+// — so that workbook can be uploaded as exported; required column is
+// `name` (or UltraTax "Client name"). Rows matching an existing client
+// (external_id — the Client ID — or name) attach new people; with "Update
+// fields on existing clients" ticked they also rewrite the mapped columns.
 
 import { useState } from 'react';
 
@@ -37,6 +42,10 @@ interface RowOutcome {
   name: string;
   reason?: string;
   contactCount?: number;
+  ownerName?: string | null;
+  ownerResolved?: boolean;
+  fieldsChanged?: string[];
+  warnings?: string[];
 }
 
 interface PreviewResult {
@@ -49,11 +58,39 @@ interface PreviewResult {
   rows: RowOutcome[];
 }
 
+type Upload = { kind: 'csv'; csv: string } | { kind: 'xlsx'; xlsxBase64: string };
+
 const labelStyle: React.CSSProperties = {
   fontSize: 12,
   color: tokens.color.textMuted,
   marginBottom: 4,
   display: 'block',
+};
+
+const WARNING_LABEL: Record<string, string> = {
+  owner_fallback: 'owner not matched → default',
+  shared_email: 'spouse shares taxpayer email (dropped on spouse)',
+  shared_phone: 'spouse shares taxpayer phone (dropped on spouse)',
+};
+
+const FIELD_LABEL: Record<string, string> = {
+  name: 'name',
+  clientFacingName: 'client-facing name',
+  externalId: 'client id',
+  clientType: 'type',
+  entityType: 'entity type',
+  filingStatus: 'filing status',
+  pipelineStage: 'stage',
+  invoiceConsolidationPreference: 'consolidation',
+  termsDays: 'terms',
+  partnerInChargeId: 'owner',
+  officeId: 'office',
+  mailingStreet1: 'street 1',
+  mailingStreet2: 'street 2',
+  mailingCity: 'city',
+  mailingState: 'state',
+  mailingPostal: 'postal',
+  mailingCountry: 'country',
 };
 
 export function ImportClientsWizard({
@@ -64,26 +101,29 @@ export function ImportClientsWizard({
   offices,
 }: Props): JSX.Element {
   const [step, setStep] = useState<'upload' | 'preview'>('upload');
-  const [csvText, setCsvText] = useState('');
+  const [upload, setUpload] = useState<Upload | null>(null);
   const [fileName, setFileName] = useState('');
   const [defaultOwnerId, setDefaultOwnerId] = useState('');
   const [defaultOfficeName, setDefaultOfficeName] = useState('');
+  const [updateExisting, setUpdateExisting] = useState(false);
   const [preview, setPreview] = useState<PreviewResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState<{
     created: number;
     updated: number;
+    fieldUpdates: number;
     contactsAdded: number;
     skipped: number;
   } | null>(null);
 
   function reset(): void {
     setStep('upload');
-    setCsvText('');
+    setUpload(null);
     setFileName('');
     setDefaultOwnerId('');
     setDefaultOfficeName('');
+    setUpdateExisting(false);
     setPreview(null);
     setBusy(false);
     setError('');
@@ -99,21 +139,40 @@ export function ImportClientsWizard({
     const file = e.target.files?.[0];
     if (!file) return;
     setFileName(file.name);
+    setError('');
+    const isXlsx =
+      /\.xlsx$/i.test(file.name) ||
+      file.type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
     const reader = new FileReader();
-    reader.onload = () => setCsvText(String(reader.result ?? ''));
-    reader.readAsText(file);
+    if (isXlsx) {
+      reader.onload = () => {
+        const dataUrl = String(reader.result ?? '');
+        const b64 = dataUrl.slice(dataUrl.indexOf(',') + 1);
+        setUpload({ kind: 'xlsx', xlsxBase64: b64 });
+      };
+      reader.readAsDataURL(file);
+    } else {
+      reader.onload = () => setUpload({ kind: 'csv', csv: String(reader.result ?? '') });
+      reader.readAsText(file);
+    }
+  }
+
+  function body(): Record<string, unknown> {
+    const b: Record<string, unknown> =
+      upload?.kind === 'xlsx' ? { xlsxBase64: upload.xlsxBase64 } : { csv: upload?.csv ?? '' };
+    if (defaultOwnerId) b['defaultOwnerId'] = defaultOwnerId;
+    if (defaultOfficeName) b['defaultOfficeName'] = defaultOfficeName;
+    if (updateExisting) b['updateExisting'] = true;
+    return b;
   }
 
   async function runPreview(): Promise<void> {
     setBusy(true);
     setError('');
     try {
-      const body: Record<string, unknown> = { csv: csvText };
-      if (defaultOwnerId) body['defaultOwnerId'] = defaultOwnerId;
-      if (defaultOfficeName) body['defaultOfficeName'] = defaultOfficeName;
       const r = await api<PreviewResult>('/api/staff/clients/import/preview', {
         method: 'POST',
-        body: JSON.stringify(body),
+        body: JSON.stringify(body()),
       });
       setPreview(r);
       setStep('preview');
@@ -128,18 +187,17 @@ export function ImportClientsWizard({
     setBusy(true);
     setError('');
     try {
-      const body: Record<string, unknown> = { csv: csvText };
-      if (defaultOwnerId) body['defaultOwnerId'] = defaultOwnerId;
-      if (defaultOfficeName) body['defaultOfficeName'] = defaultOfficeName;
       const r = await api<{
         created: number;
         updated?: number;
+        fieldUpdates?: number;
         contactsAdded?: number;
         skipped: unknown[];
-      }>('/api/staff/clients/import/commit', { method: 'POST', body: JSON.stringify(body) });
+      }>('/api/staff/clients/import/commit', { method: 'POST', body: JSON.stringify(body()) });
       setDone({
         created: r.created,
         updated: r.updated ?? 0,
+        fieldUpdates: r.fieldUpdates ?? 0,
         contactsAdded: r.contactsAdded ?? 0,
         skipped: r.skipped.length,
       });
@@ -151,18 +209,31 @@ export function ImportClientsWizard({
     }
   }
 
+  const fieldsToUpdate = preview
+    ? preview.rows.reduce((n, r) => n + (r.fieldsChanged?.length ? 1 : 0), 0)
+    : 0;
+
   const uploadStep: WizardStep = {
     key: 'upload',
     label: '1 · Upload',
     content: (
       <div style={{ display: 'grid', gap: tokens.space.md, maxWidth: 560 }}>
         <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-          Upload a CSV of clients. The only required column is <code>name</code>. Columns are
-          matched by header name; unknown columns are ignored. Each client can carry multiple people
-          — <code>taxpayer_*</code>, <code>spouse_*</code>, <code>contact3_*</code> … and the legacy{' '}
-          <code>billing_contact_*</code> — with <code>_name/_email/_phone/_mobile/_role</code>. A
-          row matching an existing client (by <code>external_id</code>, else by name){' '}
-          <strong>adds any new contacts to it</strong> rather than being skipped.
+          Upload a CSV or Excel (.xlsx) file of clients — the first sheet is imported. The only
+          required column is <code>name</code>. Columns are matched by header name; unknown columns
+          are ignored. Each client can carry multiple people — <code>taxpayer_*</code>,{' '}
+          <code>spouse_*</code>, <code>contact3_*</code> … and the legacy{' '}
+          <code>billing_contact_*</code> — with <code>_name/_email/_phone/_mobile/_role</code>. An{' '}
+          <strong>UltraTax CS Data Mining export</strong> (Client ID, Client name, “1040, Tp first
+          name”, “Contact, Sp email address”, Preparer name, …) uploads as-is: the taxpayer becomes
+          the primary contact, the spouse is linked with the Spouse role, the Client ID becomes the
+          client’s ID (external id) and the preparer becomes the client owner when a staff member of
+          that name exists.
+        </p>
+        <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+          A row matching an existing client (by <code>external_id</code> / Client ID, else by name){' '}
+          <strong>adds any new people to it</strong>; tick the box below to also update the client’s
+          fields from the file.
         </p>
         <div>
           <a
@@ -181,11 +252,16 @@ export function ImportClientsWizard({
           </span>
         </div>
         <div>
-          <span style={labelStyle}>CSV file</span>
-          <input type="file" accept=".csv,text/csv" onChange={onFile} />
+          <span style={labelStyle}>CSV or Excel file</span>
+          <input
+            type="file"
+            accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            onChange={onFile}
+          />
           {fileName && (
             <span style={{ marginLeft: 8, fontSize: 12, color: tokens.color.textMuted }}>
               {fileName}
+              {upload?.kind === 'xlsx' ? ' (Excel)' : ''}
             </span>
           )}
         </div>
@@ -214,6 +290,15 @@ export function ImportClientsWizard({
             placeholder="Firm default office"
           />
         </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={updateExisting}
+            onChange={(e) => setUpdateExisting(e.target.checked)}
+          />
+          Update fields on existing clients (address, filing status, names, owner when the preparer
+          matches a staff member)
+        </label>
         {error && <p style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</p>}
       </div>
     ),
@@ -227,9 +312,10 @@ export function ImportClientsWizard({
         <p style={{ fontSize: 15 }}>
           Imported <strong>{done.created}</strong> client{done.created === 1 ? '' : 's'}.
           {done.updated > 0 &&
-            ` Updated ${done.updated} existing client${done.updated === 1 ? '' : 's'}.`}
+            ` Updated ${done.updated} existing client${done.updated === 1 ? '' : 's'}` +
+              (done.fieldUpdates > 0 ? ` (${done.fieldUpdates} with field changes).` : '.')}
           {done.contactsAdded > 0 &&
-            ` ${done.contactsAdded} contact${done.contactsAdded === 1 ? '' : 's'} linked.`}
+            ` ${done.contactsAdded} ${done.contactsAdded === 1 ? 'person' : 'people'} linked.`}
           {done.skipped > 0 && ` ${done.skipped} row${done.skipped === 1 ? '' : 's'} skipped.`}
         </p>
         <div>
@@ -247,6 +333,7 @@ export function ImportClientsWizard({
           </span>
           <span style={{ color: tokens.color.accent }}>
             Will update: <strong>{preview.willUpdate}</strong>
+            {updateExisting && preview.willUpdate > 0 && ` (${fieldsToUpdate} with field changes)`}
           </span>
           <span style={{ color: tokens.color.textMuted }}>
             Will skip: <strong>{preview.willSkip}</strong>
@@ -269,11 +356,48 @@ export function ImportClientsWizard({
                 ),
             },
             {
+              key: 'owner',
+              header: 'Owner',
+              render: (r) =>
+                r.action === 'skip' ? (
+                  ''
+                ) : r.ownerName ? (
+                  <span>
+                    {r.ownerName}
+                    {r.action === 'create' && r.ownerResolved === false && (
+                      <span style={{ color: tokens.color.textMuted }}> (default)</span>
+                    )}
+                  </span>
+                ) : (
+                  '—'
+                ),
+            },
+            {
               key: 'contacts',
-              header: 'Contacts',
+              header: 'People',
               render: (r) => (r.contactCount ? String(r.contactCount) : ''),
             },
-            { key: 'reason', header: 'Reason', render: (r) => r.reason ?? '' },
+            {
+              key: 'changes',
+              header: 'Changes',
+              render: (r) =>
+                r.fieldsChanged && r.fieldsChanged.length
+                  ? r.fieldsChanged.map((f) => FIELD_LABEL[f] ?? f).join(', ')
+                  : '',
+            },
+            {
+              key: 'reason',
+              header: 'Reason / warnings',
+              render: (r) =>
+                r.reason ??
+                (r.warnings && r.warnings.length ? (
+                  <span style={{ color: tokens.color.textMuted }}>
+                    {r.warnings.map((w) => WARNING_LABEL[w] ?? w).join('; ')}
+                  </span>
+                ) : (
+                  ''
+                )),
+            },
           ]}
           rows={preview.rows}
           rowKey={(r) => String(r.row)}
@@ -291,7 +415,7 @@ export function ImportClientsWizard({
       ? {
           label: busy ? 'Validating…' : 'Preview',
           onClick: () => void runPreview(),
-          disabled: busy || !csvText,
+          disabled: busy || !upload,
         }
       : done
         ? { label: 'Done', onClick: close }
@@ -313,7 +437,7 @@ export function ImportClientsWizard({
   return (
     <Wizard
       open={open}
-      title="Import clients from CSV"
+      title="Import clients from CSV / Excel"
       steps={[uploadStep, previewStep]}
       currentStepKey={step}
       onStepChange={(k) => {
@@ -322,7 +446,7 @@ export function ImportClientsWizard({
       onClose={close}
       primaryAction={primaryAction}
       secondaryAction={secondaryAction}
-      width={900}
+      width={960}
     />
   );
 }

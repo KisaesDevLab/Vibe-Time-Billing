@@ -65,6 +65,7 @@ interface Person {
 
 interface RoleEntry {
   id: string;
+  key?: string;
   name: string;
   status: string;
 }
@@ -95,7 +96,14 @@ function nameOf(p: Person): string {
   );
 }
 
-export function PeopleCard({ clientId }: { clientId: string }): JSX.Element {
+export function PeopleCard({
+  clientId,
+  clientType,
+}: {
+  clientId: string;
+  /** INDIVIDUAL clients pre-select Taxpayer / Spouse when adding people. */
+  clientType?: 'INDIVIDUAL' | 'BUSINESS' | null;
+}): JSX.Element {
   const [people, setPeople] = useState<Person[] | null>(null);
   const [roles, setRoles] = useState<RoleEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -206,6 +214,14 @@ export function PeopleCard({ clientId }: { clientId: string }): JSX.Element {
         <AddContactForm
           clientId={clientId}
           roles={roles}
+          // 1040 clients: first person added is the taxpayer, the next the spouse.
+          defaultRoleKey={
+            clientType === 'INDIVIDUAL'
+              ? (people ?? []).some((p) => p.contact?.isPrimary)
+                ? 'spouse'
+                : 'taxpayer'
+              : undefined
+          }
           onError={setError}
           onCreated={() => reset('Contact added.')}
         />
@@ -751,18 +767,22 @@ function ManagePanel({
 function AddContactForm({
   clientId,
   roles,
+  defaultRoleKey,
   onError,
   onCreated,
 }: {
   clientId: string;
   roles: RoleEntry[];
+  defaultRoleKey?: string;
   onError: (m: string) => void;
   onCreated: () => void;
 }): JSX.Element {
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
-  const [roleId, setRoleId] = useState('');
+  const [roleId, setRoleId] = useState(
+    () => (defaultRoleKey ? roles.find((r) => r.key === defaultRoleKey)?.id : undefined) ?? '',
+  );
   const [selected, setSelected] = useState<PersonSearchResult | null>(null);
   const [busy, setBusy] = useState(false);
 

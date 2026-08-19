@@ -365,6 +365,8 @@ export function createApp(deps: AppDeps): Express {
   // larger body on just that path. express.json no-ops once a body is parsed,
   // so the global 1mb parser below skips these already-parsed requests.
   app.use('/api/staff/admin/branding', express.json({ limit: '8mb' }));
+  // Client import carries a whole CSV or base64 .xlsx workbook in the body.
+  app.use('/api/staff/clients/import', express.json({ limit: '8mb' }));
   app.use(express.json({ limit: '1mb' }));
 
   // Liveness — used by Docker HEALTHCHECK. Cheap, no I/O.

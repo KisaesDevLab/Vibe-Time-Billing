@@ -11,6 +11,8 @@
 
 import { z } from 'zod';
 
+import { normalizeFilingStatus } from '../lib/filing-status';
+
 // Every field optional; the model emits '' when a field is absent. We keep
 // the shape permissive (default '') so a partial screen still validates and
 // the human review step fills the gaps.
@@ -115,17 +117,6 @@ function resolveClientType(x: ExtractedFields): ClientType {
   if (form) return 'BUSINESS';
   if (x.lastName.trim() && !x.clientName.trim()) return 'INDIVIDUAL';
   return 'BUSINESS';
-}
-
-function normalizeFilingStatus(raw: string): FilingStatus | undefined {
-  const s = raw.toLowerCase().replace(/[^a-z]/g, '');
-  if (!s) return undefined;
-  if (s === 'single' || s === 's') return 'SINGLE';
-  if (s.includes('jointly') || s === 'mfj') return 'MFJ';
-  if (s.includes('separately') || s === 'mfs') return 'MFS';
-  if (s.includes('household') || s === 'hoh') return 'HOH';
-  if (s.includes('widow') || s.includes('qualifying') || s === 'qw') return 'QW';
-  return undefined;
 }
 
 function individualName(x: ExtractedFields): string {

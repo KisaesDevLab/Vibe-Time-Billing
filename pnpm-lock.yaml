@@ -80,6 +80,9 @@ importers:
       '@vibe/types':
         specifier: workspace:*
         version: link:../../packages/types
+      adm-zip:
+        specifier: ^0.6.0
+        version: 0.6.0
       bullmq:
         specifier: ^5.7.0
         version: 5.76.10
@@ -156,9 +159,6 @@ importers:
       '@types/supertest':
         specifier: ^6.0.2
         version: 6.0.3
-      adm-zip:
-        specifier: ^0.6.0
-        version: 0.6.0
       ioredis-mock:
         specifier: ^8.9.0
         version: 8.13.1(@types/ioredis-mock@8.2.7(ioredis@5.10.1))(ioredis@5.10.1)

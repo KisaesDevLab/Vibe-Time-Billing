@@ -45,7 +45,7 @@ _Create and manage client records._
 - [Archiving and legal holds](clients/archiving-clients.md) — Clients are soft-deleted (archived), never erased; legal hold blocks archival.
 - [Printing a File Routing Sheet](clients/route-sheet.md) — Print a per-engagement routing sheet and update statuses in one step.
 - [Working the client list](clients/working-the-client-list.md) — Search, filter, sort, customize columns, export, bulk-email, and roll recurrences from the Clients list.
-- [Import clients from CSV](clients/bulk-import-clients.md) — Bulk-create clients with the Import wizard: upload a CSV, preview create/skip per row, then import.
+- [Import clients from CSV or Excel](clients/bulk-import-clients.md) — Bulk-create or update clients from a CSV/Excel file (UltraTax Data Mining exports upload as-is): preview create/update/skip per row, then import.
 
 ## People & Contacts
 

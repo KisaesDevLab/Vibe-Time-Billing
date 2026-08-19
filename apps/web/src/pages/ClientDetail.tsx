@@ -345,7 +345,7 @@ export function ClientDetailPage(): JSX.Element {
             onSaved={(updated) => setClient({ ...client, ...updated })}
           />
 
-          <PeopleCard clientId={client.id} />
+          <PeopleCard clientId={client.id} clientType={client.clientType ?? null} />
 
           <TasksCard clientId={client.id} compact users={staff} />
 

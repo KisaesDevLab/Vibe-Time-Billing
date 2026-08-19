@@ -8,13 +8,20 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { sql, eq, and } from 'drizzle-orm';
 import type express from 'express';
 
-import { clients, clientContacts, persons } from '@vibe/db/schema';
+import AdmZip from 'adm-zip';
+
+import { auditLog, clients, clientContacts, contactRoles, persons } from '@vibe/db/schema';
 
 import type { RoleSlug } from '@vibe/core/rbac';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { createClientRouter } from '../clients/routes';
-import { CANONICAL_FIELDS, buildImportTemplateCsv, parseCsv } from '../clients/import';
+import {
+  CANONICAL_FIELDS,
+  buildImportTemplateCsv,
+  looseNameKey,
+  parseCsv,
+} from '../clients/import';
 
 let harness: PgliteHarness;
 
@@ -577,5 +584,522 @@ describe('client CSV import', () => {
     );
     expect(res.statusCode).toBe(400);
     expect((res.jsonBody as { error: string }).error).toBe('missing_name_column');
+  });
+});
+
+// ---------------------------------------------------------------- UltraTax
+
+// The UltraTax CS "Data Mining" export header, verbatim.
+const UT_HEADER = [
+  'Client ID',
+  'Client name',
+  'Client name (first last)',
+  'Contact email address',
+  'Contact address 1',
+  'Contact address 2',
+  'Contact city',
+  'Contact state',
+  'Contact zip code',
+  'Filing status',
+  'Federal entity type',
+  '1040, Tp first name',
+  '1040, Tp last name',
+  'Contact, Tp email address',
+  '1040, Tp daytime phone number',
+  'Contact, Mobile telephone number',
+  '1040, Sp first name',
+  '1040, Sp last name',
+  'Contact, Sp email address',
+  '1040, Sp daytime phone number',
+  'Contact, Sp Mobile telephone number',
+  'Preparer name',
+];
+type UtRow = Partial<Record<(typeof UT_HEADER)[number], string>>;
+const ZIMMERMAN: UtRow = {
+  'Client ID': 'ZIMM4432',
+  'Client name': 'Zimmerman, Kyler S & Jenna L',
+  'Client name (first last)': 'Kyler S & Jenna L Zimmerman',
+  'Contact email address': 'kyler@bookworks.us',
+  'Contact address 1': '29371 Highway 52',
+  'Contact city': 'Cole Camp',
+  'Contact state': 'MO',
+  'Contact zip code': '65325',
+  'Filing status': 'Married filing joint',
+  'Federal entity type': 'I',
+  '1040, Tp first name': 'Kyler S',
+  '1040, Tp last name': 'Zimmerman',
+  'Contact, Tp email address': 'kyler@bookworks.us',
+  'Contact, Mobile telephone number': '563-203-4171',
+  '1040, Sp first name': 'Jenna L',
+  '1040, Sp last name': 'Zimmerman',
+  'Contact, Sp email address': 'kyszim@gmail.com',
+  'Contact, Sp Mobile telephone number': '563-203-1041',
+  'Preparer name': 'Kurt W. Krueger',
+};
+// Spouse on one return, HOH filer on her own — same email, and the HOH
+// row carries stray "Sp" email/mobile cells with no spouse name.
+const WAWRA_JOINT: UtRow = {
+  'Client ID': 'WAWR6673',
+  'Client name': 'Wawra, Dennis & Candace',
+  'Client name (first last)': 'Dennis & Candace Wawra',
+  'Contact email address': 'myworkshop47@gmail.com',
+  'Contact address 1': '5040 S Grasshill Court',
+  'Contact city': 'Battlefield',
+  'Contact state': 'MO',
+  'Contact zip code': '65619',
+  'Filing status': 'Married filing joint',
+  'Federal entity type': 'I',
+  '1040, Tp first name': 'Dennis',
+  '1040, Tp last name': 'Wawra',
+  'Contact, Tp email address': 'myworkshop47@gmail.com',
+  '1040, Tp daytime phone number': '417-887-8499',
+  'Contact, Mobile telephone number': '417-529-3149',
+  '1040, Sp first name': 'Candace',
+  '1040, Sp last name': 'Wawra',
+  'Contact, Sp email address': 'candace@hearlifewell.com',
+  '1040, Sp daytime phone number': '417-887-8499',
+  'Contact, Sp Mobile telephone number': '417-887-8499',
+  'Preparer name': 'Kurt W. Krueger',
+};
+const WAWRA_HOH: UtRow = {
+  'Client ID': 'WAWR3954',
+  'Client name': 'Wawra, Candace',
+  'Client name (first last)': 'Candace Wawra',
+  'Contact email address': 'candace@hearlifewell.com',
+  'Contact address 1': '5040 S Grasshill Court',
+  'Contact city': 'Battlefield',
+  'Contact state': 'MO',
+  'Contact zip code': '65619',
+  'Filing status': 'Head of household',
+  'Federal entity type': 'I',
+  '1040, Tp first name': 'Candace',
+  '1040, Tp last name': 'Wawra',
+  'Contact, Tp email address': 'candace@hearlifewell.com',
+  '1040, Tp daytime phone number': '417-887-8499',
+  'Contact, Mobile telephone number': '417-887-8499',
+  'Contact, Sp email address': 'candace@hearlifewell.com',
+  'Contact, Sp Mobile telephone number': '417-887-8499',
+  'Preparer name': 'Dawnata E. Hopkins',
+};
+// Taxpayer row where the export put the spouse's email on both people.
+const WITT: UtRow = {
+  'Client ID': 'WITT6869',
+  'Client name': 'Witt, Vincent W. & Janelle R.',
+  'Client name (first last)': 'Vincent W. & Janelle R. Witt',
+  'Contact email address': 'Janelle.witt1961@gmail.com',
+  'Contact address 1': '2886 Highway 97',
+  'Contact city': 'Pierce City',
+  'Contact state': 'MO',
+  'Contact zip code': '65723',
+  'Filing status': 'Married filing joint',
+  'Federal entity type': 'I',
+  '1040, Tp first name': 'Vincent W.',
+  '1040, Tp last name': 'Witt',
+  'Contact, Tp email address': 'Janelle.witt1961@gmail.com',
+  '1040, Tp daytime phone number': '417-466-2774',
+  'Contact, Mobile telephone number': '417-825-6089',
+  '1040, Sp first name': 'Janelle R.',
+  '1040, Sp last name': 'Witt',
+  'Contact, Sp email address': 'Janelle.witt1961@gmail.com',
+  '1040, Sp daytime phone number': '417-476-2297',
+  'Contact, Sp Mobile telephone number': '417-849-6049',
+  'Preparer name': 'Dawnata E. Hopkins',
+};
+
+function utCsv(rows: UtRow[]): string {
+  const q = (v: string): string => (/[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  return [
+    UT_HEADER.map(q).join(','),
+    ...rows.map((r) => UT_HEADER.map((h) => q(r[h] ?? '')).join(',')),
+  ].join('\r\n');
+}
+
+/** A workbook shaped like UltraTax's: shared-string header, blanks omitted. */
+function utXlsxBase64(rows: UtRow[]): string {
+  const col = (i: number): string => {
+    let n = i + 1;
+    let s = '';
+    while (n > 0) {
+      const m = (n - 1) % 26;
+      s = String.fromCharCode(65 + m) + s;
+      n = Math.floor((n - 1) / 26);
+    }
+    return s;
+  };
+  const esc = (v: string): string => v.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  const shared = [...UT_HEADER];
+  const sst = `<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${shared
+    .map((s) => `<si><t>${esc(s)}</t></si>`)
+    .join('')}</sst>`;
+  const headerRow = `<row r="1">${UT_HEADER.map((_, i) => `<c r="${col(i)}1" t="s"><v>${i}</v></c>`).join('')}</row>`;
+  const dataRows = rows
+    .map(
+      (r, ri) =>
+        `<row r="${ri + 2}">${UT_HEADER.map((h, i) =>
+          r[h] ? `<c r="${col(i)}${ri + 2}" t="inlineStr"><is><t>${esc(r[h]!)}</t></is></c>` : '',
+        ).join('')}</row>`,
+    )
+    .join('');
+  const zip = new AdmZip();
+  zip.addFile(
+    'xl/workbook.xml',
+    Buffer.from(
+      `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    ),
+  );
+  zip.addFile(
+    'xl/_rels/workbook.xml.rels',
+    Buffer.from(
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="x" Target="worksheets/sheet1.xml"/></Relationships>`,
+    ),
+  );
+  zip.addFile('xl/sharedStrings.xml', Buffer.from(sst));
+  zip.addFile(
+    'xl/worksheets/sheet1.xml',
+    Buffer.from(
+      `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${headerRow}${dataRows}</sheetData></worksheet>`,
+    ),
+  );
+  return zip.toBuffer().toString('base64');
+}
+
+async function seedUltraTaxFirm(
+  db: PgliteHarness['db'],
+): Promise<{ firmId: string; appUserId: string; kurtId: string }> {
+  const seed = await seedMinimalFirm(db);
+  // Staff record spelled without the middle initial — the loose match target.
+  const kurt = await db.execute(
+    sql`INSERT INTO app_user (firm_id, email, full_name, first_name, last_name)
+        VALUES (${seed.firmId}, 'kurt@test.example', 'Kurt Krueger', 'Kurt', 'Krueger') RETURNING id`,
+  );
+  const kurtId = (kurt as unknown as { rows: { id: string }[] }).rows[0]!.id;
+  await db.insert(contactRoles).values([
+    { firmId: seed.firmId, key: 'spouse', name: 'Spouse' },
+    { firmId: seed.firmId, key: 'taxpayer', name: 'Taxpayer' },
+  ]);
+  return { firmId: seed.firmId, appUserId: seed.appUserId, kurtId };
+}
+
+async function contactsOf(db: PgliteHarness['db'], clientId: string) {
+  return db
+    .select({
+      fullName: persons.fullName,
+      email: persons.email,
+      phone: persons.phone,
+      mobile: persons.mobile,
+      personId: persons.id,
+      roleKey: contactRoles.key,
+      isPrimary: clientContacts.isPrimary,
+      isBilling: clientContacts.isBilling,
+    })
+    .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
+    .leftJoin(contactRoles, eq(contactRoles.id, clientContacts.roleId))
+    .where(eq(clientContacts.clientId, clientId));
+}
+
+describe('looseNameKey', () => {
+  it('keeps first + last, drops middle initials and punctuation', () => {
+    expect(looseNameKey('Kurt W. Krueger')).toBe('kurt krueger');
+    expect(looseNameKey('Dawnata E. Hopkins')).toBe('dawnata hopkins');
+    expect(looseNameKey('Sarah Chen')).toBe('sarah chen');
+    expect(looseNameKey('Cher')).toBe('cher');
+  });
+});
+
+describe('UltraTax data-mining import', () => {
+  it('preview auto-maps the UltraTax headers and resolves the preparer loosely', async () => {
+    const f = await seedUltraTaxFirm(harness.db);
+    const r = router(harness.db, f.appUserId);
+    const res = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(f.firmId, f.appUserId, {
+        csv: utCsv([ZIMMERMAN, WAWRA_HOH]),
+        defaultOwnerId: f.appUserId,
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    const body = res.jsonBody as {
+      mappedColumns: string[];
+      willCreate: number;
+      rows: Array<{
+        action: string;
+        ownerName: string | null;
+        warnings: string[];
+        contactCount: number;
+      }>;
+    };
+    expect(body.willCreate).toBe(2);
+    for (const f2 of [
+      'name',
+      'client_facing_name',
+      'external_id',
+      'filing_status',
+      'entity_type',
+      'client_owner_name',
+      'mailing_street1',
+      'mailing_street2',
+      'mailing_city',
+      'mailing_state',
+      'mailing_postal',
+    ])
+      expect(body.mappedColumns).toContain(f2);
+    // "Kurt W. Krueger" → staff "Kurt Krueger"; "Dawnata E. Hopkins" → default owner + warning.
+    expect(body.rows[0]!.ownerName).toBe('Kurt Krueger');
+    expect(body.rows[0]!.warnings).toEqual([]);
+    expect(body.rows[0]!.contactCount).toBe(2);
+    expect(body.rows[1]!.ownerName).toBe('Sarah Chen');
+    expect(body.rows[1]!.warnings).toContain('owner_fallback');
+    // Stray "Sp email" with no spouse name does not become a person.
+    expect(body.rows[1]!.contactCount).toBe(1);
+  });
+
+  it('commit writes client fields (Client ID → external id) and taxpayer/spouse people with roles', async () => {
+    const f = await seedUltraTaxFirm(harness.db);
+    const r = router(harness.db, f.appUserId);
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(f.firmId, f.appUserId, { csv: utCsv([ZIMMERMAN]), defaultOwnerId: f.appUserId }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect((res.jsonBody as { created: number }).created).toBe(1);
+    const [c] = await harness.db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.firmId, f.firmId), eq(clients.externalId, 'ZIMM4432')));
+    expect(c).toBeDefined();
+    expect(c!.name).toBe('Zimmerman, Kyler S & Jenna L');
+    expect(c!.clientFacingName).toBe('Kyler S & Jenna L Zimmerman');
+    expect(c!.externalId).toBe('ZIMM4432');
+    expect(c!.clientType).toBe('INDIVIDUAL');
+    expect(c!.entityType).toBeNull();
+    expect(c!.filingStatus).toBe('MFJ');
+    expect(c!.mailingStreet1).toBe('29371 Highway 52');
+    expect(c!.mailingCity).toBe('Cole Camp');
+    expect(c!.mailingState).toBe('MO');
+    expect(c!.mailingPostal).toBe('65325');
+    expect(c!.partnerInChargeId).toBe(f.kurtId);
+
+    const people = await contactsOf(harness.db, c!.id);
+    expect(people).toHaveLength(2);
+    const kyler = people.find((p) => p.fullName === 'Kyler S Zimmerman')!;
+    const jenna = people.find((p) => p.fullName === 'Jenna L Zimmerman')!;
+    expect(kyler.email).toBe('kyler@bookworks.us');
+    expect(kyler.mobile).toBe('+15632034171');
+    expect(kyler.isPrimary).toBe(true);
+    expect(kyler.isBilling).toBe(true);
+    expect(kyler.roleKey).toBe('taxpayer');
+    expect(jenna.email).toBe('kyszim@gmail.com');
+    expect(jenna.mobile).toBe('+15632031041');
+    expect(jenna.isPrimary).toBe(false);
+    expect(jenna.roleKey).toBe('spouse');
+  });
+
+  it('accepts the workbook itself (xlsxBase64) with identical results', async () => {
+    const f = await seedUltraTaxFirm(harness.db);
+    const r = router(harness.db, f.appUserId);
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(f.firmId, f.appUserId, {
+        xlsxBase64: utXlsxBase64([ZIMMERMAN, WAWRA_HOH]),
+        defaultOwnerId: f.appUserId,
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    const body = res.jsonBody as { created: number; contactsAdded: number };
+    expect(body.created).toBe(2);
+    expect(body.contactsAdded).toBe(3);
+    const [c] = await harness.db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.firmId, f.firmId), eq(clients.externalId, 'WAWR3954')));
+    expect(c!.filingStatus).toBe('HOH');
+    expect(c!.mailingStreet2).toBeNull();
+  });
+
+  it('rejects a non-workbook xlsxBase64 and a body with both csv and xlsx', async () => {
+    const f = await seedUltraTaxFirm(harness.db);
+    const r = router(harness.db, f.appUserId);
+    const bad = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(f.firmId, f.appUserId, { xlsxBase64: Buffer.from('name\nAcme\n').toString('base64') }),
+    );
+    expect(bad.statusCode).toBe(400);
+    expect((bad.jsonBody as { error: string }).error).toBe('invalid_xlsx');
+    const both = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(f.firmId, f.appUserId, { csv: 'name\nAcme\n', xlsxBase64: 'AAAA' }),
+    );
+    expect(both.statusCode).toBe(400);
+    expect((both.jsonBody as { error: string }).error).toBe('invalid_payload');
+  });
+
+  it('links one person across clients (spouse on one return, taxpayer on her own) and keeps a same-email spouse separate', async () => {
+    const f = await seedUltraTaxFirm(harness.db);
+    const r = router(harness.db, f.appUserId);
+    const preview = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(f.firmId, f.appUserId, {
+        csv: utCsv([WAWRA_JOINT, WAWRA_HOH, WITT]),
+        defaultOwnerId: f.appUserId,
+      }),
+    );
+    const prows = (
+      preview.jsonBody as { rows: Array<{ warnings: string[]; contactCount: number }> }
+    ).rows;
+    // Witt: spouse shares the taxpayer's email → kept as two people, email dropped on the spouse.
+    expect(prows[2]!.warnings).toContain('shared_email');
+    expect(prows[2]!.contactCount).toBe(2);
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(f.firmId, f.appUserId, {
+        csv: utCsv([WAWRA_JOINT, WAWRA_HOH, WITT]),
+        defaultOwnerId: f.appUserId,
+      }),
+    );
+    expect((res.jsonBody as { created: number }).created).toBe(3);
+    const byTaxId = async (id: string) =>
+      (
+        await harness.db
+          .select()
+          .from(clients)
+          .where(and(eq(clients.firmId, f.firmId), eq(clients.externalId, id)))
+      )[0]!;
+    const joint = await contactsOf(harness.db, (await byTaxId('WAWR6673')).id);
+    const hoh = await contactsOf(harness.db, (await byTaxId('WAWR3954')).id);
+    expect(joint).toHaveLength(2);
+    expect(hoh).toHaveLength(1);
+    const candaceOnJoint = joint.find((p) => p.email === 'candace@hearlifewell.com')!;
+    expect(candaceOnJoint.roleKey).toBe('spouse');
+    // Same person row on both clients.
+    expect(hoh[0]!.personId).toBe(candaceOnJoint.personId);
+    expect(hoh[0]!.roleKey).toBe('taxpayer');
+    expect(hoh[0]!.isPrimary).toBe(true);
+    // Dennis/Candace share the daytime phone but both have emails — Candace keeps hers.
+    expect(candaceOnJoint.phone).toBeNull(); // dropped: equals the taxpayer's phone
+    expect(candaceOnJoint.email).toBe('candace@hearlifewell.com');
+
+    const witt = await contactsOf(harness.db, (await byTaxId('WITT6869')).id);
+    expect(witt).toHaveLength(2);
+    const vincent = witt.find((p) => p.fullName === 'Vincent W. Witt')!;
+    const janelle = witt.find((p) => p.fullName === 'Janelle R. Witt')!;
+    expect(vincent.email).toBe('janelle.witt1961@gmail.com'); // normalized on store
+    expect(janelle.email).toBeNull();
+    expect(janelle.mobile).toBe('+14178496049');
+    expect(janelle.personId).not.toBe(vincent.personId);
+
+    // Persons: Dennis, Candace, Vincent, Janelle — no duplicates.
+    const count = await harness.db
+      .select({ n: sql<number>`count(*)::int` })
+      .from(persons)
+      .where(eq(persons.firmId, f.firmId));
+    expect(count[0]!.n).toBe(4);
+  });
+
+  it('re-importing the same file is idempotent, and updateExisting rewrites only changed columns', async () => {
+    const f = await seedUltraTaxFirm(harness.db);
+    const r = router(harness.db, f.appUserId);
+    const body = (rows: UtRow[], extra: Record<string, unknown> = {}) =>
+      req(f.firmId, f.appUserId, { csv: utCsv(rows), defaultOwnerId: f.appUserId, ...extra });
+    await invoke(r, 'post', '/import/commit', body([ZIMMERMAN]));
+    // Same file again, default mode: nothing created, no new people.
+    const again = await invoke(r, 'post', '/import/commit', body([ZIMMERMAN]));
+    const a = again.jsonBody as {
+      created: number;
+      updated: number;
+      contactsAdded: number;
+      fieldUpdates: number;
+    };
+    expect(a.created).toBe(0);
+    expect(a.contactsAdded).toBe(0);
+    expect(a.fieldUpdates).toBe(0);
+    const personCount = async () =>
+      (
+        await harness.db
+          .select({ n: sql<number>`count(*)::int` })
+          .from(persons)
+          .where(eq(persons.firmId, f.firmId))
+      )[0]!.n;
+    expect(await personCount()).toBe(2);
+
+    // Moved house + now a different preparer that does NOT resolve.
+    const moved: UtRow = {
+      ...ZIMMERMAN,
+      'Contact address 1': '1 New Rd',
+      'Contact city': 'Sedalia',
+      'Preparer name': 'Gary T Shaffer',
+    };
+    // Flag off: preview says update with no field changes; the row is untouched.
+    const offPreview = await invoke(r, 'post', '/import/preview', body([moved]));
+    const offRow = (
+      offPreview.jsonBody as { rows: Array<{ action: string; fieldsChanged: string[] }> }
+    ).rows[0]!;
+    expect(offRow.action).toBe('update');
+    expect(offRow.fieldsChanged).toEqual([]);
+    await invoke(r, 'post', '/import/commit', body([moved]));
+    const [stillOld] = await harness.db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.firmId, f.firmId), eq(clients.externalId, 'ZIMM4432')));
+    expect(stillOld!.mailingStreet1).toBe('29371 Highway 52');
+
+    // Flag on: preview lists the changed columns; commit rewrites them, keeps
+    // the owner (unresolved preparer → no overwrite), audits before/after.
+    const onPreview = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      body([moved], { updateExisting: true }),
+    );
+    const onRow = (
+      onPreview.jsonBody as {
+        willUpdate: number;
+        rows: Array<{ action: string; fieldsChanged: string[]; warnings: string[] }>;
+      }
+    ).rows[0]!;
+    expect(onRow.action).toBe('update');
+    expect(onRow.fieldsChanged.sort()).toEqual(['mailingCity', 'mailingStreet1']);
+    expect(onRow.warnings).toContain('owner_fallback');
+    const commit = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      body([moved], { updateExisting: true }),
+    );
+    const cb = commit.jsonBody as { created: number; updated: number; fieldUpdates: number };
+    expect(cb.created).toBe(0);
+    expect(cb.updated).toBe(1);
+    expect(cb.fieldUpdates).toBe(1);
+    const [now] = await harness.db
+      .select()
+      .from(clients)
+      .where(and(eq(clients.firmId, f.firmId), eq(clients.externalId, 'ZIMM4432')));
+    expect(now!.mailingStreet1).toBe('1 New Rd');
+    expect(now!.mailingCity).toBe('Sedalia');
+    expect(now!.partnerInChargeId).toBe(f.kurtId); // not replaced by the default owner
+    expect(await personCount()).toBe(2);
+    const audits = await harness.db
+      .select({ action: auditLog.action, before: auditLog.beforeJson, after: auditLog.afterJson })
+      .from(auditLog)
+      .where(and(eq(auditLog.entityId, now!.id), eq(auditLog.action, 'UPDATE')));
+    expect(audits).toHaveLength(1);
+    expect((audits[0]!.before as { mailingStreet1: string }).mailingStreet1).toBe(
+      '29371 Highway 52',
+    );
+    expect((audits[0]!.after as { mailingStreet1: string }).mailingStreet1).toBe('1 New Rd');
   });
 });
