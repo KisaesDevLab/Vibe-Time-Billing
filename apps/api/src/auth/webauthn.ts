@@ -33,18 +33,28 @@ import {
 
 const RP_NAME = 'Vibe Practice Management';
 
-/** Relying Party domain. Required when WebAuthn endpoints are hit. */
-export function rpId(): string {
-  const v = process.env['WEBAUTHN_RP_ID'];
-  if (!v) throw new Error('WEBAUTHN_RP_ID not configured');
+/** Full origin URL (with scheme). Falls back to APP_BASE_URL — the host staff sign in on. */
+export function rpOrigin(): string {
+  const v = process.env['WEBAUTHN_ORIGIN'] || process.env['APP_BASE_URL'];
+  if (!v) throw new Error('WEBAUTHN_ORIGIN not configured');
   return v;
 }
 
-/** Full origin URL (with scheme). */
-export function rpOrigin(): string {
-  const v = process.env['WEBAUTHN_ORIGIN'];
-  if (!v) throw new Error('WEBAUTHN_ORIGIN not configured');
-  return v;
+/**
+ * Relying Party domain. WEBAUTHN_RP_ID when set; otherwise derived from
+ * the origin's hostname so an appliance that only configured APP_BASE_URL
+ * still gets working passkeys (bound to that exact host).
+ */
+export function rpId(): string {
+  const v = process.env['WEBAUTHN_RP_ID'];
+  if (v) return v;
+  try {
+    const host = new URL(rpOrigin()).hostname;
+    if (host) return host;
+  } catch {
+    // fall through
+  }
+  throw new Error('WEBAUTHN_RP_ID not configured');
 }
 
 export interface StoredCredentialRow {
