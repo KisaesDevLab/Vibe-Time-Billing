@@ -178,4 +178,20 @@ describe('0183 invoice template', () => {
     expect(html).toContain('Riverside Bakery &amp; Co., LLC');
     expect(html).toContain('<style>');
   });
+
+  it('sample fallback shows the real firm identity, not the built-in one', async () => {
+    const f = await setup();
+    const r = await invoke(f.router, 'post', '/invoice/preview', {
+      ...makeReq(f),
+      body: {
+        bodyHtml: '<h1>{{ firm.name }}</h1><span>{{ client.name }}</span>',
+        css: 'h1{}',
+      },
+    });
+    const html = r.sentBody as string;
+    // Firm block comes from the seeded firm; client/lines stay sample data.
+    expect(html).toContain('Test Firm');
+    expect(html).not.toContain('Northwind');
+    expect(html).toContain('Riverside Bakery &amp; Co., LLC');
+  });
 });

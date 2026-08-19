@@ -20,6 +20,72 @@ import {
 import type { InvoiceTemplateInput } from '@vibe/core/invoicing';
 import { composeFirmMailingAddress } from '../firm/mailing-address';
 
+/**
+ * The firm's real identity blocks (name/logo/address + branding) in the
+ * shape both InvoiceTemplateInput and StatementTemplateInput use. Lets the
+ * template-editor previews show the actual firm even when there is no
+ * invoice yet and the rest of the preview is built-in sample data.
+ */
+export async function loadFirmIdentity(
+  db: Database,
+  firmId: string,
+): Promise<{
+  firm: { name: string; logoUrl: string | null; address: string };
+  branding: InvoiceTemplateInput['branding'];
+}> {
+  const [firm] = await db
+    .select({ name: firms.name })
+    .from(firms)
+    .where(eq(firms.id, firmId))
+    .limit(1);
+  const [branding] = await db
+    .select({
+      displayName: firmSettings.brandDisplayName,
+      logoUrl: firmSettings.brandLogoUrl,
+      accentColor: firmSettings.brandAccentColor,
+      supportEmail: firmSettings.brandSupportEmail,
+      supportPhone: firmSettings.brandSupportPhone,
+      supportFax: firmSettings.brandSupportFax,
+      supportWeb: firmSettings.brandSupportWeb,
+      footerHtml: firmSettings.brandFooterHtml,
+      arTermsText: firmSettings.arTermsText,
+      mailingStreet1: firmSettings.mailingStreet1,
+      mailingStreet2: firmSettings.mailingStreet2,
+      mailingCity: firmSettings.mailingCity,
+      mailingState: firmSettings.mailingState,
+      mailingPostal: firmSettings.mailingPostal,
+      mailingCountry: firmSettings.mailingCountry,
+    })
+    .from(firmSettings)
+    .where(eq(firmSettings.firmId, firmId))
+    .limit(1);
+  return {
+    firm: {
+      name: branding?.displayName || firm?.name || 'Firm',
+      logoUrl: branding?.logoUrl ?? null,
+      address: composeFirmMailingAddress(branding),
+    },
+    branding: branding
+      ? {
+          accentColor: branding.accentColor ?? null,
+          supportEmail: branding.supportEmail ?? null,
+          supportPhone: branding.supportPhone ?? null,
+          supportFax: branding.supportFax ?? null,
+          supportWeb: branding.supportWeb ?? null,
+          // A/R terms win over the generic footer when both set.
+          footerHtml: branding.arTermsText
+            ? branding.arTermsText
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/\n/g, '<br />')
+            : (branding.footerHtml ?? null),
+        }
+      : null,
+  };
+}
+
 export async function loadRandomInvoiceInput(
   db: Database,
   firmId: string,
@@ -41,32 +107,7 @@ export async function loadRandomInvoiceInput(
   const inv = (await pick(true)) ?? (await pick(false));
   if (!inv) return null;
 
-  const [firm] = await db
-    .select({ name: firms.name })
-    .from(firms)
-    .where(eq(firms.id, inv.firmId))
-    .limit(1);
-  const [branding] = await db
-    .select({
-      displayName: firmSettings.brandDisplayName,
-      logoUrl: firmSettings.brandLogoUrl,
-      accentColor: firmSettings.brandAccentColor,
-      supportEmail: firmSettings.brandSupportEmail,
-      supportPhone: firmSettings.brandSupportPhone,
-      supportFax: firmSettings.brandSupportFax,
-      supportWeb: firmSettings.brandSupportWeb,
-      footerHtml: firmSettings.brandFooterHtml,
-      arTermsText: firmSettings.arTermsText,
-      mailingStreet1: firmSettings.mailingStreet1,
-      mailingStreet2: firmSettings.mailingStreet2,
-      mailingCity: firmSettings.mailingCity,
-      mailingState: firmSettings.mailingState,
-      mailingPostal: firmSettings.mailingPostal,
-      mailingCountry: firmSettings.mailingCountry,
-    })
-    .from(firmSettings)
-    .where(eq(firmSettings.firmId, inv.firmId))
-    .limit(1);
+  const identity = await loadFirmIdentity(db, inv.firmId);
   const [client] = await db
     .select({
       name: clients.name,
@@ -101,29 +142,8 @@ export async function loadRandomInvoiceInput(
     invoiceNumber: inv.invoiceNumber,
     issueDate: inv.issueDate,
     dueDate: inv.dueDate,
-    firm: {
-      name: branding?.displayName || firm?.name || 'Firm',
-      logoUrl: branding?.logoUrl ?? null,
-      address: composeFirmMailingAddress(branding),
-    },
-    branding: branding
-      ? {
-          accentColor: branding.accentColor ?? null,
-          supportEmail: branding.supportEmail ?? null,
-          supportPhone: branding.supportPhone ?? null,
-          supportFax: branding.supportFax ?? null,
-          supportWeb: branding.supportWeb ?? null,
-          // A/R terms win over the generic footer when both set.
-          footerHtml: branding.arTermsText
-            ? branding.arTermsText
-                .replace(/&/g, '&amp;')
-                .replace(/</g, '&lt;')
-                .replace(/>/g, '&gt;')
-                .replace(/"/g, '&quot;')
-                .replace(/\n/g, '<br />')
-            : (branding.footerHtml ?? null),
-        }
-      : null,
+    firm: identity.firm,
+    branding: identity.branding,
     reference: inv.invoiceNumber,
     engagementName,
     client: {

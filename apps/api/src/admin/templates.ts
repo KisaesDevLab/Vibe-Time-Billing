@@ -39,7 +39,7 @@ import {
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { loadRandomInvoiceInput } from '../invoices/sample-render-input';
+import { loadFirmIdentity, loadRandomInvoiceInput } from '../invoices/sample-render-input';
 import { loadRandomStatementInput } from '../statements/sample-render-input';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
@@ -143,8 +143,9 @@ const InvoiceTemplateSchema = z.object({
   builtinStyle: z.enum(['modern', 'classic', 'minimal']).nullable().optional(),
 });
 
-// Representative invoice used to render the editor's live preview. Keeps
-// the preview deterministic and dependency-free (no DB read).
+// Representative invoice used for the editor preview when the firm has
+// no invoices yet (otherwise a random real invoice is used). Even then,
+// the firm/branding blocks are replaced with the real firm's identity.
 const SAMPLE_INVOICE: InvoiceTemplateInput = {
   invoiceNumber: 'INV-2025-0042',
   issueDate: '2025-12-10',
@@ -199,6 +200,8 @@ const StatementTemplateSchema = z.object({
 
 // Representative statement used for the editor preview when the firm has
 // no invoices yet (otherwise a random real client's statement is used).
+// Even then, the firm/branding blocks are replaced with the real firm's
+// identity.
 const SAMPLE_STATEMENT: StatementTemplateInput = {
   statementDate: '2025-12-31',
   firm: {
@@ -871,6 +874,12 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
       try {
         const real = await loadRandomInvoiceInput(deps.db, firmId);
         if (real) sample = real;
+        else {
+          // No invoices yet — keep the sample client/lines but show the
+          // real firm identity/branding instead of the built-in one.
+          const identity = await loadFirmIdentity(deps.db, firmId);
+          sample = { ...SAMPLE_INVOICE, firm: identity.firm, branding: identity.branding };
+        }
       } catch (err) {
         logger.warn({ err }, 'invoice preview: random invoice load failed; using sample');
       }
@@ -1014,6 +1023,12 @@ export function createTemplateRouter(deps: TemplateRoutesDeps): Router {
       try {
         const real = await loadRandomStatementInput(deps.db, firmId);
         if (real && real.lines.length > 0) sample = real;
+        else {
+          // No billing activity yet — keep the sample client/lines but
+          // show the real firm identity/branding instead of the built-in one.
+          const identity = await loadFirmIdentity(deps.db, firmId);
+          sample = { ...SAMPLE_STATEMENT, firm: identity.firm, branding: identity.branding };
+        }
       } catch (err) {
         logger.warn({ err }, 'statement preview: random statement load failed; using sample');
       }
