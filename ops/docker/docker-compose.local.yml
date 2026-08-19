@@ -47,8 +47,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: '3001'
-      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://vibe:${POSTGRES_PASSWORD}@postgres:5432/vibe_tb
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       STAFF_JWT_SECRET: ${STAFF_JWT_SECRET:?STAFF_JWT_SECRET required (export from .env)}
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?PORTAL_JWT_SECRET required (export from .env)}
       KMS_KEY: ${KMS_KEY:?KMS_KEY required (export from .env, 32 bytes base64)}
@@ -163,8 +163,8 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://vibe:${POSTGRES_PASSWORD}@postgres:5432/vibe_tb
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Q35 — OpenSign completion poll (safety net for the webhook). Parse
       # App-Id + Master-Key auth; standalone deploy (see ops/docker/opensign/).
@@ -333,7 +333,7 @@ services:
     image: postgres:16-alpine
     container_name: vibe-tb-backup
     environment:
-      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
+      DATABASE_URL: postgresql://vibe:${POSTGRES_PASSWORD}@postgres:5432/vibe_tb
       BACKUP_POLL_SECONDS: ${BACKUP_POLL_SECONDS:-300}
       BACKUP_DIR: /backups
       BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}

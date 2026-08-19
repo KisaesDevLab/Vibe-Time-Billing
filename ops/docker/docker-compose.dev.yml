@@ -3,10 +3,17 @@ services:
     image: postgres:16-alpine
     container_name: vibe-tb-postgres
     ports:
-      - '5432:5432'
+      # Loopback-only: DB reachable from the host (admin/pg_dump) and from
+      # other containers over the docker network, but NOT the LAN/tailnet.
+      - '127.0.0.1:5432:5432'
     environment:
       POSTGRES_USER: vibe
-      POSTGRES_PASSWORD: vibe
+      # Rotated off the 'vibe' default. Value lives in the git-ignored
+      # env-file (~/appliance-secrets/vibe-build.env); pass it with
+      #   docker compose -f docker-compose.dev.yml --env-file <that file> up -d
+      # NOTE: on an already-initialized volume Postgres ignores this and the
+      # live password is whatever `ALTER ROLE` set — kept in sync here.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the env-file}
       POSTGRES_DB: vibe_tb
     volumes:
       - vibe-pg-data:/var/lib/postgresql/data
@@ -21,12 +28,14 @@ services:
     image: redis:7-alpine
     container_name: vibe-tb-redis
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
     volumes:
       - vibe-redis-data:/data
-    command: redis-server --appendonly yes
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in the env-file}
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in the env-file}
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test: ['CMD-SHELL', 'redis-cli -a "$$REDIS_PASSWORD" ping | grep -q PONG']
       interval: 5s
       timeout: 3s
       retries: 5
@@ -36,15 +45,18 @@ services:
     image: mailhog/mailhog
     container_name: vibe-tb-mailhog
     ports:
-      - '1025:1025' # SMTP server
-      - '8025:8025' # Web UI
+      # Loopback-only. MailHog has no auth and captures sign-in magic links,
+      # so it must never be on the LAN/tailnet. Read the UI via an SSH tunnel:
+      #   ssh -L 8025:127.0.0.1:8025 adminvibe@<tailscale-host>
+      - '127.0.0.1:1025:1025' # SMTP server
+      - '127.0.0.1:8025:8025' # Web UI
     restart: unless-stopped
 
   ollama:
     image: ollama/ollama:latest
     container_name: vibe-tb-ollama
     ports:
-      - '11434:11434'
+      - '127.0.0.1:11434:11434'
     volumes:
       - vibe-ollama-data:/root/.ollama
     restart: unless-stopped
@@ -57,7 +69,7 @@ services:
     image: clamav/clamav:stable
     container_name: vibe-tb-clamd
     ports:
-      - '3310:3310'
+      - '127.0.0.1:3310:3310'
     volumes:
       - vibe-clamav-data:/var/lib/clamav
     healthcheck:

@@ -47,8 +47,8 @@ services:
     environment:
       NODE_ENV: production
       PORT: '3001'
-      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://vibe:${POSTGRES_PASSWORD}@postgres:5432/vibe_tb
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       STAFF_JWT_SECRET: ${STAFF_JWT_SECRET:?STAFF_JWT_SECRET required}
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?PORTAL_JWT_SECRET required}
       KMS_KEY: ${KMS_KEY:?KMS_KEY required}
@@ -121,8 +121,8 @@ services:
         condition: service_healthy
     environment:
       NODE_ENV: production
-      DATABASE_URL: postgresql://vibe:vibe@postgres:5432/vibe_tb
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://vibe:${POSTGRES_PASSWORD}@postgres:5432/vibe_tb
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       LOG_LEVEL: ${LOG_LEVEL:-info}
       OPENSIGN_URL: ${OPENSIGN_URL:-}
       OPENSIGN_APP_ID: ${OPENSIGN_APP_ID:-opensign}
@@ -190,7 +190,12 @@ services:
       init-static:
         condition: service_completed_successfully
     ports:
-      - '80:80'
+      # Off the LAN. Public traffic arrives via the Cloudflare tunnel
+      # (cloudflared -> caddy:80 over the docker network, not this host port).
+      # Direct access is limited to loopback (local admin) and the Tailscale
+      # interface. If this node's tailscale IP ever changes, update it here.
+      - '127.0.0.1:80:80'
+      - '100.99.110.88:80:80'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - static-content:/srv:ro

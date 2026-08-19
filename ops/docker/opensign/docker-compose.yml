@@ -27,7 +27,10 @@ services:
     volumes:
       - opensign-files:/usr/src/app/files
     ports:
-      - '8080:8080'
+      # Loopback-only. The Parse API is reached by the appliance over the
+      # shared opensign-net docker network and publicly via the Cloudflare
+      # tunnel — neither uses this host port, so it must not be on LAN/tailnet.
+      - '127.0.0.1:8080:8080'
     depends_on:
       - mongo
     env_file: .env.prod
@@ -62,7 +65,7 @@ services:
     image: caddy:2-alpine
     container_name: opensign-caddy
     ports:
-      - '4001:4001'
+      - '127.0.0.1:4001:4001'
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
       - opensign-caddy-data:/data
@@ -73,6 +76,13 @@ services:
       - HOST_URL=${HOST_URL:-localhost:4001}
     networks:
       - opensign-net
+    # NOTE (ops): vibe-tb-cloudflared reaches this proxy as
+    # http://opensign-caddy:4001 over the T&B `docker_default` network. That
+    # attachment is done OUT of compose on purpose —
+    #   docker network connect docker_default opensign-caddy
+    # — because declaring it here would add the implicit service alias
+    # `caddy` on docker_default, colliding with vibe-tb-caddy (the tunnel's
+    # http://caddy:80 origin). Re-run the connect after any recreate.
     restart: unless-stopped
 
 networks:
