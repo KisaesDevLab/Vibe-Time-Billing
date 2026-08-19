@@ -57,6 +57,7 @@ const KINDS: ReadonlyArray<KindEntry> = [
   { key: 'dunning_second', label: 'Second dunning', channels: ['EMAIL', 'SMS'] },
   { key: 'payment_received', label: 'Payment received', channels: ['EMAIL'] },
   { key: 'magic_link', label: 'Magic link sign-in', channels: ['EMAIL'] },
+  { key: 'password_reset', label: 'Password reset link', channels: ['EMAIL'] },
   { key: 'sms_otp', label: 'SMS OTP', channels: ['SMS'] },
   // BK-6 — appointment booking emails.
   { key: 'appointment_confirmation', label: 'Appointment confirmation', channels: ['EMAIL'] },
@@ -128,6 +129,7 @@ const SAMPLE_VARIABLES = [
   'firm.web',
   // Authentication tokens.
   'auth.magic_url',
+  'auth.reset_url',
   'auth.code',
   // BK-6 — appointment tokens.
   'appointment.subject',

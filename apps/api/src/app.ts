@@ -207,6 +207,7 @@ export interface AppDeps {
   redis: Redis;
   sessionStore: SessionStore;
   sendMagicLink?: StaffRoutesDeps['sendMagicLink'];
+  sendPasswordReset?: StaffRoutesDeps['sendPasswordReset'];
   sendEmailOtp?: StaffRoutesDeps['sendEmailOtp'];
   sendSmsOtp?: StaffRoutesDeps['sendSmsOtp'];
   sendPortalEmail?: PortalRoutesDeps['sendEmail'];
@@ -546,6 +547,7 @@ export function createApp(deps: AppDeps): Express {
   const authRouter = createStaffAuthRouter({
     ...deps,
     sendMagicLink: deps.sendMagicLink ?? (async () => undefined),
+    sendPasswordReset: deps.sendPasswordReset,
     sendEmailOtp: deps.sendEmailOtp,
     sendSmsOtp: deps.sendSmsOtp,
     requireAuth: auth.requireAuth,

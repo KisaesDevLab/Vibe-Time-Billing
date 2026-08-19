@@ -269,6 +269,44 @@ const sendMagicLink = async (args: {
   });
 };
 
+// "Forgot password" email — same shape as the magic link but its own
+// template kind so firms can word it separately; the URL lands on
+// /auth/reset-password, which can only set a password, never sign in.
+const sendPasswordReset = async (args: {
+  email: string;
+  firmId: string;
+  link: string;
+}): Promise<void> => {
+  const escaped = args.link
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  const ttlMinutes = config.MAGIC_LINK_TTL_MINUTES * 2;
+  const rendered = await renderTemplate({
+    db,
+    firmId: args.firmId,
+    kind: 'password_reset',
+    channel: 'EMAIL',
+    fallback: {
+      subject: 'Reset your password',
+      body:
+        `We received a request to reset the password for your account. Use this link to choose a new password: ${args.link}\n\n` +
+        `This link works once and expires in ${ttlMinutes} minutes. If you did not request a reset, you can ignore this email — your password has not changed.`,
+    },
+    context: { firm: await firmScope(db, args.firmId), auth: { reset_url: args.link } },
+  });
+  await mailer.send({
+    to: args.email,
+    subject: rendered.subject ?? 'Reset your password',
+    body: rendered.body,
+    html:
+      `<p>We received a request to reset the password for your account. Use this link to choose a new password:</p>` +
+      `<p><a href="${escaped}">${escaped}</a></p>` +
+      `<p style="color:#666;font-size:13px">This link works once and expires in ${ttlMinutes} minutes. If you did not request a reset, you can ignore this email — your password has not changed.</p>`,
+  });
+};
+
 const sendPortalEmail = async (args: {
   to: string;
   subject: string;
@@ -408,6 +446,7 @@ const app = createApp({
   stripeSecretKey,
   stripePublishableKey,
   sendMagicLink,
+  sendPasswordReset,
   sendEmailOtp,
   sendSmsOtp,
   sendPortalEmail,

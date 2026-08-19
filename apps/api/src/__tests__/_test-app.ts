@@ -15,6 +15,7 @@ export interface TestHarness {
   app: ReturnType<typeof createApp>;
   redis: Redis;
   capturedMagicLinks: { email: string; firmId: string; link: string }[];
+  capturedPasswordResets: { email: string; firmId: string; link: string }[];
   capturedEmailOtps: { email: string; firmId: string; code: string }[];
   capturedSmsOtps: { phone: string; firmId: string; code: string }[];
 }
@@ -34,6 +35,7 @@ export async function buildTestApp(overrides: Partial<AppDeps> = {}): Promise<Te
   await redis.flushall();
   const sessionStore = createSessionStore(redis);
   const captured: TestHarness['capturedMagicLinks'] = [];
+  const capturedPasswordResets: TestHarness['capturedPasswordResets'] = [];
   const capturedEmailOtps: TestHarness['capturedEmailOtps'] = [];
   const capturedSmsOtps: TestHarness['capturedSmsOtps'] = [];
 
@@ -45,6 +47,11 @@ export async function buildTestApp(overrides: Partial<AppDeps> = {}): Promise<Te
       overrides.sendMagicLink ??
       (async (args) => {
         captured.push(args);
+      }),
+    sendPasswordReset:
+      overrides.sendPasswordReset ??
+      (async (args) => {
+        capturedPasswordResets.push(args);
       }),
     sendEmailOtp:
       overrides.sendEmailOtp ??
@@ -59,5 +66,12 @@ export async function buildTestApp(overrides: Partial<AppDeps> = {}): Promise<Te
     fakeUserRoles: overrides.fakeUserRoles,
   });
 
-  return { app, redis, capturedMagicLinks: captured, capturedEmailOtps, capturedSmsOtps };
+  return {
+    app,
+    redis,
+    capturedMagicLinks: captured,
+    capturedPasswordResets,
+    capturedEmailOtps,
+    capturedSmsOtps,
+  };
 }

@@ -190,6 +190,7 @@ export function App(): JSX.Element {
         <Routes>
           <Route path="/auth/login" element={<LoginPage />} />
           <Route path="/auth/verify" element={<LoginPage />} />
+          <Route path="/auth/reset-password" element={<LoginPage />} />
           <Route
             path="/auth/totp"
             element={

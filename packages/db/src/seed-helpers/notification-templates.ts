@@ -160,6 +160,17 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
       '{{ firm.displayName }}',
   },
   {
+    kind: 'password_reset',
+    channel: 'EMAIL',
+    subject: 'Reset your {{ firm.displayName }} password',
+    body:
+      'Hello,\n\n' +
+      'We received a request to reset the password for your {{ firm.displayName }} account. Use the link below to choose a new password:\n\n' +
+      '{{ auth.reset_url }}\n\n' +
+      'This link works only once and expires shortly. If you did not request a reset, you can safely ignore this email — your password has not changed.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
     kind: 'sms_otp',
     channel: 'SMS',
     body: '{{ firm.displayName }}: your verification code is {{ auth.code }}. It expires in 10 minutes. For your security, do not share this code with anyone.',

@@ -16,9 +16,11 @@ import {
   generateSmsOtp,
   hashSmsOtp,
   issueMagicLink,
+  issuePasswordResetToken,
   newEnrollment,
   randomNonce,
   verifyMagicLink,
+  verifyPasswordResetToken,
   verifyTotp,
   hashRecoveryCode,
   type StaffSession,
@@ -52,6 +54,10 @@ export interface StaffRoutesDeps {
   sessionStore: SessionStore;
   // Email delivery is pluggable (Q11); in tests we just capture the link.
   sendMagicLink: (args: { email: string; firmId: string; link: string }) => Promise<void>;
+  // "Forgot password" email. Optional so existing test harnesses need no
+  // change; when absent the request is still accepted (enumeration-safe)
+  // but nothing is delivered.
+  sendPasswordReset?: (args: { email: string; firmId: string; link: string }) => Promise<void>;
   // 0087 — second-factor OTP delivery. Both are pluggable so tests can
   // capture the code instead of actually sending.
   sendEmailOtp?: (args: { email: string; firmId: string; code: string }) => Promise<void>;
@@ -119,6 +125,20 @@ const ENUM_RESPONSE = {
   ok: true,
   message: 'If your account exists, a sign-in code has been sent.',
 };
+
+const RESET_ENUM_RESPONSE = {
+  ok: true,
+  message: 'If your account exists, a password reset link has been sent.',
+};
+const ForgotPasswordSchema = z.object({ email: z.string().regex(EMAIL_RE).max(254) });
+const ResetPasswordSchema = z.object({
+  token: z.string().min(1),
+  newPassword: z.string().min(1).max(256),
+});
+// Reset links live for twice the magic-link TTL (default 30 min) — long
+// enough to fetch the mail on another device, short enough that a stale
+// inbox isn't a standing credential.
+const PASSWORD_RESET_TTL_FACTOR = 2;
 
 export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
   const router = express.Router();
@@ -278,6 +298,125 @@ export function createStaffAuthRouter(deps: StaffRoutesDeps): Router {
       // enrolled — the SPA should route them straight to enrollment.
       needsFactorEnrollment: secondFactorRequired && available.length === 0,
     });
+  });
+
+  // ===================================================================
+  // Forgot / reset password (public). Two steps:
+  //   1. POST /password/forgot { email } → always 200 (no enumeration);
+  //      when the user exists a single-use signed reset token is emailed as
+  //      {APP_BASE_URL}/auth/reset-password?token=…
+  //   2. POST /password/reset { token, newPassword } → 200 { ok } after
+  //      policy check + argon2id hash; revokes every live staff session of
+  //      that user. The user then signs in normally (password + 2FA) — the
+  //      reset never mints a session.
+  // ===================================================================
+
+  router.post('/password/forgot', async (req: Request, res: Response) => {
+    const parsed = ForgotPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const ip = clientIp(req);
+    const cfg = loadConfig();
+    // Same Q29 limits as magic-link requests: 5 per contact / 15 min,
+    // 20 per IP / 15 min. Over-limit → same 200 as success.
+    const contactLimit = await checkAndIncrement(deps.redis, {
+      key: `rl:auth:pwreset:contact:${parsed.data.email.toLowerCase()}`,
+      windowSeconds: 15 * 60,
+      max: 5,
+    });
+    const ipLimit = await checkAndIncrement(deps.redis, {
+      key: `rl:auth:pwreset:ip:${ip}`,
+      windowSeconds: 15 * 60,
+      max: 20,
+    });
+    if (!contactLimit.allowed || !ipLimit.allowed) {
+      res.status(200).json(RESET_ENUM_RESPONSE);
+      return;
+    }
+    const user = await findStaffByEmail(deps.db, parsed.data.email);
+    if (user && deps.sendPasswordReset) {
+      const ttl = cfg.MAGIC_LINK_TTL_MINUTES * PASSWORD_RESET_TTL_FACTOR * 60;
+      const nonce = randomNonce();
+      const token = await issuePasswordResetToken({
+        subjectId: user.id,
+        firmId: user.firmId,
+        realm: 'staff',
+        signingKey: new TextEncoder().encode(cfg.STAFF_JWT_SECRET),
+        ttlSeconds: ttl,
+        nonce,
+      });
+      await deps.redis.set(`pwreset:nonce:staff:${nonce}`, '1', 'EX', ttl);
+      const link = `${cfg.APP_BASE_URL}/auth/reset-password?token=${encodeURIComponent(token)}`;
+      try {
+        await deps.sendPasswordReset({ email: user.email, firmId: user.firmId, link });
+      } catch (err) {
+        logger.error({ err }, 'password reset delivery failed');
+      }
+    }
+    res.status(200).json(RESET_ENUM_RESPONSE);
+  });
+
+  router.post('/password/reset', async (req: Request, res: Response) => {
+    const parsed = ResetPasswordSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const cfg = loadConfig();
+    let payload;
+    try {
+      payload = await verifyPasswordResetToken({
+        token: parsed.data.token,
+        realm: 'staff',
+        signingKey: new TextEncoder().encode(cfg.STAFF_JWT_SECRET),
+      });
+    } catch {
+      res.status(401).json({ error: 'invalid_token' });
+      return;
+    }
+    // Policy before burning the nonce, so a too-short password can be
+    // retried with the same link.
+    const { checkPasswordPolicy, hashPassword } = await import('./password');
+    const policy = checkPasswordPolicy(parsed.data.newPassword);
+    if (!policy.ok) {
+      res.status(400).json({ error: 'password_policy', reason: policy.reason });
+      return;
+    }
+    if (!deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    // Single-use: the nonce must still be present; delete it atomically.
+    const deleted = await deps.redis.del(`pwreset:nonce:staff:${payload.nce}`);
+    if (deleted === 0) {
+      res.status(401).json({ error: 'token_already_used' });
+      return;
+    }
+    const user = await findStaffById(deps.db, payload.sub);
+    if (!user || user.firmId !== payload.fid) {
+      res.status(401).json({ error: 'unknown_user' });
+      return;
+    }
+    const digest = await hashPassword(parsed.data.newPassword);
+    await deps.db
+      .update(appUsers)
+      .set({ passwordHash: digest, passwordSetAt: new Date(), updatedAt: new Date() })
+      .where(eq(appUsers.id, user.id));
+    // Anyone holding an older session (including whoever prompted the
+    // reset) has to sign in again with the new password.
+    await deps.sessionStore.destroyAllForUser('staff', user.id).catch(() => 0);
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'app_user',
+      entityId: user.id,
+      actorAppUserId: user.id,
+      after: { passwordChanged: true, via: 'password_reset' },
+      ip: clientIp(req),
+      userAgent: req.header('user-agent') ?? null,
+    }).catch(() => undefined);
+    res.json({ ok: true });
   });
 
   // ===================================================================

@@ -9,7 +9,7 @@
 // so existing emailed magic links open the right screen automatically.
 
 import { useEffect, useState, type FormEvent } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   startAuthentication,
   type PublicKeyCredentialRequestOptionsJSON,
@@ -26,7 +26,11 @@ type Factor = 'TOTP' | 'EMAIL' | 'SMS' | 'PASSKEY';
 
 export function LoginPage(): JSX.Element {
   const [searchParams] = useSearchParams();
+  const { pathname } = useLocation();
   const tokenFromUrl = searchParams.get('token');
+  // /auth/reset-password?token=… — emailed "forgot password" link. Its
+  // token can only set a new password (distinct audience), never sign in.
+  if (pathname.endsWith('/reset-password')) return <ResetPasswordPage token={tokenFromUrl} />;
   if (tokenFromUrl) return <VerifyPage token={tokenFromUrl} />;
   return <SignInPage />;
 }
@@ -184,11 +188,89 @@ interface PendingState {
 
 function PasswordFlow(): JSX.Element {
   const [pending, setPending] = useState<PendingState | null>(null);
+  const [forgot, setForgot] = useState(false);
   if (pending) return <FactorChallenge pending={pending} reset={() => setPending(null)} />;
-  return <PasswordForm onPending={setPending} />;
+  if (forgot) return <ForgotPasswordForm onBack={() => setForgot(false)} />;
+  return <PasswordForm onPending={setPending} onForgot={() => setForgot(true)} />;
 }
 
-function PasswordForm({ onPending }: { onPending: (p: PendingState) => void }): JSX.Element {
+const linkButtonStyle: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  padding: 0,
+  color: tokens.color.accent,
+  fontSize: 12,
+  cursor: 'pointer',
+  textDecoration: 'underline',
+  justifySelf: 'start',
+};
+
+// "Forgot password?" — emails a single-use reset link. Same
+// no-enumeration contract as the magic-link request: the response is
+// identical whether or not the address belongs to a staff account.
+function ForgotPasswordForm({ onBack }: { onBack: () => void }): JSX.Element {
+  const [email, setEmail] = useState('');
+  const [status, setStatus] = useState<'idle' | 'sending' | 'sent'>('idle');
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    setStatus('sending');
+    setError(null);
+    try {
+      await api('/api/auth/password/forgot', { method: 'POST', body: JSON.stringify({ email }) });
+      setStatus('sent');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'unexpected error');
+      setStatus('idle');
+    }
+  }
+
+  if (status === 'sent') {
+    return (
+      <div style={{ display: 'grid', gap: 12 }}>
+        <p style={{ fontSize: 14, margin: 0 }}>
+          If your account exists, a password reset link has been sent. Check your email — the link
+          works once and expires shortly.
+        </p>
+        <button type="button" style={linkButtonStyle} onClick={onBack}>
+          Back to sign in
+        </button>
+      </div>
+    );
+  }
+  return (
+    <form onSubmit={submit} style={{ display: 'grid', gap: 12 }}>
+      <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+        Enter your email and we&apos;ll send you a link to choose a new password.
+      </p>
+      <Input
+        type="email"
+        label="Email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        required
+        placeholder="you@firm.example"
+        autoComplete="username"
+      />
+      {error && <div style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</div>}
+      <Button type="submit" disabled={status === 'sending' || email.length === 0}>
+        {status === 'sending' ? 'Sending…' : 'Send reset link'}
+      </Button>
+      <button type="button" style={linkButtonStyle} onClick={onBack}>
+        Back to sign in
+      </button>
+    </form>
+  );
+}
+
+function PasswordForm({
+  onPending,
+  onForgot,
+}: {
+  onPending: (p: PendingState) => void;
+  onForgot: () => void;
+}): JSX.Element {
   const navigate = useNavigate();
   const { refresh } = useAuth();
   const [email, setEmail] = useState('');
@@ -246,6 +328,9 @@ function PasswordForm({ onPending }: { onPending: (p: PendingState) => void }): 
       <Button type="submit" disabled={submitting || !email || !password}>
         {submitting ? 'Signing in…' : 'Continue'}
       </Button>
+      <button type="button" style={linkButtonStyle} onClick={onForgot}>
+        Forgot password?
+      </button>
     </form>
   );
 }
@@ -540,6 +625,125 @@ function VerifyPage({ token }: { token: string }): JSX.Element {
           </Button>
           {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
         </>
+      )}
+    </AuthLayout>
+  );
+}
+
+// ---------------------------------------------------------------------
+// /auth/reset-password?token=… — choose a new password from an emailed
+// reset link. On success the user signs in normally (password + second
+// factor); the reset itself never creates a session.
+// ---------------------------------------------------------------------
+
+const MIN_PASSWORD_LENGTH = 12;
+
+function humanizeResetError(raw: string, reason?: string): string {
+  if (raw === 'invalid_token' || raw === 'token_already_used')
+    return 'This reset link is invalid, expired, or has already been used. Request a new one from the sign-in page.';
+  if (raw === 'password_policy') {
+    if (reason === 'too_short')
+      return `Password must be at least ${MIN_PASSWORD_LENGTH} characters.`;
+    if (reason === 'too_long') return 'Password is too long (256 characters max).';
+    if (reason === 'whitespace_only') return 'Password cannot be blank.';
+    return 'Password does not meet the policy.';
+  }
+  if (raw === 'unknown_user') return 'This account no longer exists.';
+  return raw;
+}
+
+function ResetPasswordPage({ token }: { token: string | null }): JSX.Element {
+  const navigate = useNavigate();
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const mismatch = confirm.length > 0 && confirm !== password;
+
+  async function submit(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    if (!token || mismatch) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api('/api/auth/password/reset', {
+        method: 'POST',
+        body: JSON.stringify({ token, newPassword: password }),
+      });
+      setDone(true);
+    } catch (err) {
+      const body = (err as { body?: { error?: string; reason?: string } }).body;
+      const msg = err instanceof Error ? err.message : 'reset failed';
+      setError(humanizeResetError(body?.error ?? msg, body?.reason));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <AuthLayout
+      brand={BRAND}
+      title="Choose a new password"
+      subtitle={
+        done ? 'Your password has been updated.' : `At least ${MIN_PASSWORD_LENGTH} characters.`
+      }
+      footer="Reset links work once and expire shortly. Any existing sessions on this account are signed out when the password changes."
+    >
+      {done ? (
+        <div style={{ display: 'grid', gap: 12 }}>
+          <p style={{ fontSize: 14, margin: 0 }}>
+            You can now sign in with your new password and your second factor.
+          </p>
+          <Button onClick={() => navigate('/auth/login', { replace: true })}>Go to sign in</Button>
+        </div>
+      ) : !token ? (
+        <div style={{ display: 'grid', gap: 12 }}>
+          <p style={{ fontSize: 14, margin: 0, color: tokens.color.danger }}>
+            This reset link is missing its token. Open the link from your email again, or request a
+            new one.
+          </p>
+          <Button variant="secondary" onClick={() => navigate('/auth/login', { replace: true })}>
+            Back to sign in
+          </Button>
+        </div>
+      ) : (
+        <form onSubmit={submit} style={{ display: 'grid', gap: 12 }}>
+          <Input
+            type="password"
+            label="New password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            required
+            autoComplete="new-password"
+            minLength={MIN_PASSWORD_LENGTH}
+          />
+          <Input
+            type="password"
+            label="Confirm new password"
+            value={confirm}
+            onChange={(e) => setConfirm(e.target.value)}
+            required
+            autoComplete="new-password"
+          />
+          {mismatch && (
+            <div style={{ color: tokens.color.danger, fontSize: 12 }}>Passwords do not match.</div>
+          )}
+          {error && <div style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</div>}
+          <Button
+            type="submit"
+            disabled={submitting || password.length < MIN_PASSWORD_LENGTH || mismatch || !confirm}
+          >
+            {submitting ? 'Saving…' : 'Set new password'}
+          </Button>
+          <button
+            type="button"
+            style={linkButtonStyle}
+            onClick={() => navigate('/auth/login', { replace: true })}
+          >
+            Back to sign in
+          </button>
+        </form>
       )}
     </AuthLayout>
   );
