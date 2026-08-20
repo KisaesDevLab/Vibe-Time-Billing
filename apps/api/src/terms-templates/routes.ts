@@ -42,17 +42,19 @@ export interface TermsTemplateRoutesDeps extends RbacDeps {
   db: Database | null;
 }
 
-const CATEGORIES = ['TAX', 'BOOKKEEPING', 'AUDIT', 'ADVISORY', 'PAYROLL', 'CFO'] as const;
+// 0216 — categories are firm-managed text (Taxonomy service-line
+// categories), no longer the fixed service_category enum.
+const CategorySchema = z.string().trim().min(1).max(120);
 
 const CreateSchema = z.object({
-  category: z.enum(CATEGORIES),
+  category: CategorySchema,
   name: z.string().min(1).max(240),
   contentMd: z.string().max(200_000).optional(),
   isDefault: z.boolean().optional(),
 });
 
 const PatchSchema = z.object({
-  category: z.enum(CATEGORIES).optional(),
+  category: CategorySchema.optional(),
   name: z.string().min(1).max(240).optional(),
   contentMd: z.string().max(200_000).optional(),
 });
@@ -73,8 +75,8 @@ export function createTermsTemplateRouter(deps: TermsTemplateRoutesDeps): Router
     }
     const conds = [eq(termsTemplates.firmId, session.firmId)];
     const category = typeof req.query['category'] === 'string' ? req.query['category'] : null;
-    if (category && (CATEGORIES as readonly string[]).includes(category)) {
-      conds.push(eq(termsTemplates.category, category as (typeof CATEGORIES)[number]));
+    if (category && category.trim().length > 0) {
+      conds.push(eq(termsTemplates.category, category.trim()));
     }
     if (req.query['includeArchived'] !== 'true') {
       conds.push(isNull(termsTemplates.archivedAt));

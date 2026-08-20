@@ -15,8 +15,9 @@ import { api } from '../../api-client';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 import { RichTextEditor, type RichTextVariable } from '../../proposal-editor/RichTextEditor';
 
-const CATEGORIES = ['TAX', 'BOOKKEEPING', 'AUDIT', 'ADVISORY', 'PAYROLL', 'CFO'] as const;
-type Category = (typeof CATEGORIES)[number];
+// 0216 — categories are firm-managed: the option list is the Taxonomy
+// service-line categories (Admin → Taxonomy), plus any value already in use.
+type Category = string;
 
 interface TermsRow {
   id: string;
@@ -56,7 +57,8 @@ export function TermsTemplatesPage(): JSX.Element {
 
   // Create form
   const [newName, setNewName] = useState('');
-  const [newCategory, setNewCategory] = useState<Category>('TAX');
+  const [newCategory, setNewCategory] = useState<Category>('');
+  const [taxonomyCategories, setTaxonomyCategories] = useState<string[]>([]);
 
   async function load(): Promise<void> {
     const params = new URLSearchParams();
@@ -72,6 +74,29 @@ export function TermsTemplatesPage(): JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterCategory, includeArchived]);
 
+  // Category options come from the Taxonomy service lines (best-effort).
+  useEffect(() => {
+    void api<{ items: { category: string }[] }>('/api/staff/taxonomy/service-lines')
+      .then((r) =>
+        setTaxonomyCategories([...new Set((r.items ?? []).map((i) => i.category).filter(Boolean))]),
+      )
+      .catch(() => setTaxonomyCategories([]));
+  }, []);
+
+  // Taxonomy categories first, then anything already in use on templates
+  // (legacy enum values keep working until re-categorized).
+  const categoryOptions = useMemo(() => {
+    const set = new Set<string>(taxonomyCategories);
+    for (const i of items) set.add(i.category);
+    return [...set].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  }, [taxonomyCategories, items]);
+
+  // Default the create-form category once options exist.
+  useEffect(() => {
+    if (!newCategory && categoryOptions.length > 0) setNewCategory(categoryOptions[0]!);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryOptions]);
+
   useEffect(() => {
     const found = selectedId ? (items.find((i) => i.id === selectedId) ?? null) : null;
     setDraft(found);
@@ -82,6 +107,10 @@ export function TermsTemplatesPage(): JSX.Element {
   async function createTemplate(e: FormEvent): Promise<void> {
     e.preventDefault();
     setErr(null);
+    if (!newCategory.trim()) {
+      setErr('Pick a category — define them under Admin → Taxonomy → Service lines.');
+      return;
+    }
     try {
       await api('/api/staff/terms-templates', {
         method: 'POST',
@@ -244,8 +273,8 @@ export function TermsTemplatesPage(): JSX.Element {
             <Combobox
               ariaLabel="Category"
               value={newCategory}
-              onChange={(v) => setNewCategory((v as Category) ?? 'TAX')}
-              options={CATEGORIES.map((c) => ({ value: c, label: c }))}
+              onChange={(v) => setNewCategory(v ?? '')}
+              options={categoryOptions.map((c) => ({ value: c, label: c }))}
             />
           </div>
           <Button type="submit" size="sm">
@@ -256,10 +285,10 @@ export function TermsTemplatesPage(): JSX.Element {
             <Combobox
               ariaLabel="Filter category"
               value={filterCategory}
-              onChange={(v) => setFilterCategory((v as Category | '') ?? '')}
+              onChange={(v) => setFilterCategory(v ?? '')}
               options={[
                 { value: '', label: 'All categories' },
-                ...CATEGORIES.map((c) => ({ value: c, label: c })),
+                ...categoryOptions.map((c) => ({ value: c, label: c })),
               ]}
             />
           </div>
@@ -285,87 +314,89 @@ export function TermsTemplatesPage(): JSX.Element {
             starter language across all six categories.
           </p>
         ) : (
-          CATEGORIES.filter((c) => byCategory[c]?.length).map((cat) => (
-            <div key={cat} style={{ marginBottom: 12 }}>
-              <div
-                style={{
-                  fontSize: 11,
-                  color: tokens.color.textMuted,
-                  textTransform: 'uppercase',
-                  letterSpacing: 0.5,
-                  marginBottom: 6,
-                }}
-              >
-                {cat}
+          categoryOptions
+            .filter((c) => byCategory[c]?.length)
+            .map((cat) => (
+              <div key={cat} style={{ marginBottom: 12 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: tokens.color.textMuted,
+                    textTransform: 'uppercase',
+                    letterSpacing: 0.5,
+                    marginBottom: 6,
+                  }}
+                >
+                  {cat}
+                </div>
+                <div style={{ display: 'grid', gap: 4 }}>
+                  {byCategory[cat]!.map((row) => (
+                    <button
+                      key={row.id}
+                      type="button"
+                      onClick={() => setSelectedId(row.id)}
+                      style={{
+                        textAlign: 'left',
+                        padding: tokens.space.sm,
+                        border: `1px solid ${
+                          row.id === selectedId ? tokens.color.accent : tokens.color.border
+                        }`,
+                        borderRadius: tokens.radius.sm,
+                        background:
+                          row.id === selectedId ? tokens.color.accentMuted : tokens.color.surface,
+                        cursor: 'pointer',
+                        display: 'flex',
+                        gap: 8,
+                        alignItems: 'center',
+                      }}
+                    >
+                      <span style={{ fontWeight: 500 }}>{row.name}</span>
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        v{row.version}
+                      </span>
+                      {row.isDefault && <Pill tone="accent">Default</Pill>}
+                      {row.archivedAt && <Pill tone="warning">Archived</Pill>}
+                      <div style={{ flex: 1 }} />
+                      {!row.isDefault && !row.archivedAt && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void makeDefault(row.id);
+                          }}
+                        >
+                          Make default
+                        </Button>
+                      )}
+                      {row.archivedAt ? (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void restore(row.id);
+                          }}
+                        >
+                          Restore
+                        </Button>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void archive(row.id);
+                          }}
+                        >
+                          Archive
+                        </Button>
+                      )}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div style={{ display: 'grid', gap: 4 }}>
-                {byCategory[cat]!.map((row) => (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => setSelectedId(row.id)}
-                    style={{
-                      textAlign: 'left',
-                      padding: tokens.space.sm,
-                      border: `1px solid ${
-                        row.id === selectedId ? tokens.color.accent : tokens.color.border
-                      }`,
-                      borderRadius: tokens.radius.sm,
-                      background:
-                        row.id === selectedId ? tokens.color.accentMuted : tokens.color.surface,
-                      cursor: 'pointer',
-                      display: 'flex',
-                      gap: 8,
-                      alignItems: 'center',
-                    }}
-                  >
-                    <span style={{ fontWeight: 500 }}>{row.name}</span>
-                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                      v{row.version}
-                    </span>
-                    {row.isDefault && <Pill tone="accent">Default</Pill>}
-                    {row.archivedAt && <Pill tone="warning">Archived</Pill>}
-                    <div style={{ flex: 1 }} />
-                    {!row.isDefault && !row.archivedAt && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void makeDefault(row.id);
-                        }}
-                      >
-                        Make default
-                      </Button>
-                    )}
-                    {row.archivedAt ? (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void restore(row.id);
-                        }}
-                      >
-                        Restore
-                      </Button>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          void archive(row.id);
-                        }}
-                      >
-                        Archive
-                      </Button>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))
+            ))
         )}
       </Card>
 

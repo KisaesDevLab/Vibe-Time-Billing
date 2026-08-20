@@ -41,7 +41,9 @@ export interface ServiceRoutesDeps extends RbacDeps {
   db: Database | null;
 }
 
-const CATEGORIES = ['TAX', 'BOOKKEEPING', 'AUDIT', 'ADVISORY', 'PAYROLL', 'CFO'] as const;
+// 0216 — categories are firm-managed text (Taxonomy service-line
+// categories), no longer the fixed service_category enum.
+const CategorySchema = z.string().trim().min(1).max(120);
 const BILLING_TYPES = [
   'ONE_TIME',
   'RECURRING',
@@ -53,7 +55,7 @@ const INTERVALS = ['MONTHLY', 'QUARTERLY', 'SEMIANNUALLY', 'ANNUALLY'] as const;
 const CreateSchema = z.object({
   name: z.string().min(1).max(240),
   description: z.string().max(8000).optional(),
-  category: z.enum(CATEGORIES),
+  category: CategorySchema,
   defaultPriceCents: z.number().int().min(0).max(999_999_999),
   billingType: z.enum(BILLING_TYPES),
   recurringInterval: z.enum(INTERVALS).nullable().optional(),
@@ -66,7 +68,7 @@ const CreateSchema = z.object({
 const PatchSchema = z.object({
   name: z.string().min(1).max(240).optional(),
   description: z.string().max(8000).optional(),
-  category: z.enum(CATEGORIES).optional(),
+  category: CategorySchema.optional(),
   defaultPriceCents: z.number().int().min(0).max(999_999_999).optional(),
   billingType: z.enum(BILLING_TYPES).optional(),
   recurringInterval: z.enum(INTERVALS).nullable().optional(),
@@ -109,8 +111,8 @@ export function createServiceRouter(deps: ServiceRoutesDeps): Router {
     }
     const conds = [eq(servicesCatalog.firmId, session.firmId)];
     const category = typeof req.query['category'] === 'string' ? req.query['category'] : null;
-    if (category && (CATEGORIES as readonly string[]).includes(category)) {
-      conds.push(eq(servicesCatalog.category, category as (typeof CATEGORIES)[number]));
+    if (category && category.trim().length > 0) {
+      conds.push(eq(servicesCatalog.category, category.trim()));
     }
     const includeArchived = req.query['includeArchived'] === 'true';
     if (!includeArchived) {

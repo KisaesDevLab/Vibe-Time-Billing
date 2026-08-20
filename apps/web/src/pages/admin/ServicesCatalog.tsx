@@ -18,8 +18,9 @@ import { Button, Card, Combobox, Input, Pill, SectionHeading, Table, tokens } fr
 import { api } from '../../api-client';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
 
-const CATEGORIES = ['TAX', 'BOOKKEEPING', 'AUDIT', 'ADVISORY', 'PAYROLL', 'CFO'] as const;
-type Category = (typeof CATEGORIES)[number];
+// 0216 — categories are firm-managed: the option list is the Taxonomy
+// service-line categories (Admin → Taxonomy), plus any value already in use.
+type Category = string;
 
 const BILLING_TYPES = [
   'ONE_TIME',
@@ -71,7 +72,7 @@ function emptyDraft(): DraftService {
   return {
     name: '',
     description: '',
-    category: 'TAX',
+    category: '',
     defaultPriceCents: 0,
     billingType: 'ONE_TIME',
     recurringInterval: null,
@@ -105,9 +106,21 @@ export function ServicesCatalogPage(): JSX.Element {
   const [err, setErr] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
 
+  const [taxonomyCategories, setTaxonomyCategories] = useState<string[]>([]);
+
   async function loadTags(): Promise<void> {
     const r = await api<{ items: TagRow[] }>('/api/staff/service-tags');
     setTags(r.items ?? []);
+  }
+
+  // Category options come from the Taxonomy service lines (best-effort).
+  async function loadTaxonomyCategories(): Promise<void> {
+    try {
+      const r = await api<{ items: { category: string }[] }>('/api/staff/taxonomy/service-lines');
+      setTaxonomyCategories([...new Set((r.items ?? []).map((i) => i.category).filter(Boolean))]);
+    } catch {
+      setTaxonomyCategories([]);
+    }
   }
 
   async function loadServices(): Promise<void> {
@@ -124,6 +137,7 @@ export function ServicesCatalogPage(): JSX.Element {
 
   useEffect(() => {
     void loadTags();
+    void loadTaxonomyCategories();
   }, []);
 
   useEffect(() => {
@@ -134,6 +148,10 @@ export function ServicesCatalogPage(): JSX.Element {
   async function saveDraft(): Promise<void> {
     if (!draft) return;
     setErr(null);
+    if (!draft.category.trim()) {
+      setErr('Pick a category — define them under Admin → Taxonomy → Service lines.');
+      return;
+    }
     try {
       const body = {
         name: draft.name,
@@ -215,6 +233,14 @@ export function ServicesCatalogPage(): JSX.Element {
     });
   }
 
+  // Taxonomy categories first, then anything already in use on services
+  // (legacy enum values keep working until re-categorized).
+  const categoryOptions = useMemo(() => {
+    const set = new Set<string>(taxonomyCategories);
+    for (const s of services) set.add(s.category);
+    return [...set].filter(Boolean).sort((a, b) => a.localeCompare(b));
+  }, [taxonomyCategories, services]);
+
   const filteredByQuery = useMemo(() => {
     // Server-side filter is the source of truth — search is client-side
     // only for instant feel; the actual list reflects whatever the
@@ -251,10 +277,10 @@ export function ServicesCatalogPage(): JSX.Element {
             <Combobox
               ariaLabel="Category"
               value={filterCategory}
-              onChange={(v) => setFilterCategory((v as Category | '') ?? '')}
+              onChange={(v) => setFilterCategory(v ?? '')}
               options={[
                 { value: '', label: 'All categories' },
-                ...CATEGORIES.map((c) => ({ value: c, label: c })),
+                ...categoryOptions.map((c) => ({ value: c, label: c })),
               ]}
             />
           </div>
@@ -290,7 +316,10 @@ export function ServicesCatalogPage(): JSX.Element {
               Bulk price… ({selectedIds.size})
             </Button>
           )}
-          <Button size="sm" onClick={() => setDraft(emptyDraft())}>
+          <Button
+            size="sm"
+            onClick={() => setDraft({ ...emptyDraft(), category: categoryOptions[0] ?? '' })}
+          >
             New service
           </Button>
         </div>
@@ -394,6 +423,7 @@ export function ServicesCatalogPage(): JSX.Element {
         <ServiceEditor
           draft={draft}
           tags={tags}
+          categories={categoryOptions}
           allServices={services}
           onChange={setDraft}
           onSave={() => void saveDraft()}
@@ -579,6 +609,7 @@ function TagsPanel({
 function ServiceEditor({
   draft,
   tags,
+  categories,
   allServices,
   onChange,
   onSave,
@@ -586,6 +617,7 @@ function ServiceEditor({
 }: {
   draft: DraftService;
   tags: TagRow[];
+  categories: string[];
   allServices: ServiceRow[];
   onChange: (d: DraftService) => void;
   onSave: () => void;
@@ -619,9 +651,21 @@ function ServiceEditor({
           <Combobox
             ariaLabel="Category"
             value={draft.category}
-            onChange={(v) => onChange({ ...draft, category: (v as Category) ?? 'TAX' })}
-            options={CATEGORIES.map((c) => ({ value: c, label: c }))}
+            onChange={(v) => onChange({ ...draft, category: v ?? '' })}
+            options={[
+              // Keep the current value selectable even if its taxonomy
+              // category was renamed since this service was created.
+              ...(draft.category && !categories.includes(draft.category)
+                ? [{ value: draft.category, label: draft.category }]
+                : []),
+              ...categories.map((c) => ({ value: c, label: c })),
+            ]}
           />
+          {categories.length === 0 && (
+            <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+              No categories yet — add service lines under Admin → Taxonomy.
+            </span>
+          )}
         </div>
         <div style={{ display: 'grid', gap: 4 }}>
           <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Billing type</span>

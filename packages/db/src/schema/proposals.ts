@@ -63,6 +63,8 @@ export const proposalStatus = pgEnum('proposal_status', [
   'COUNTERED',
 ]);
 
+// 0216 — no column uses this any more (services_catalog + terms_templates
+// relaxed to firm-managed text); the DB TYPE remains, so keep the definition.
 export const serviceCategory = pgEnum('service_category', [
   'TAX',
   'BOOKKEEPING',
@@ -165,7 +167,9 @@ export const servicesCatalog = pgTable(
       .references(() => firms.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     description: text('description').notNull().default(''),
-    category: serviceCategory('category').notNull(),
+    // 0216 — was the service_category enum; firm-managed text now, sourced
+    // from the Taxonomy service-line categories (same relaxation as 0148).
+    category: text('category').notNull(),
     defaultPriceCents: bigint('default_price_cents', { mode: 'number' }).notNull().default(0),
     billingType: proposalBillingType('billing_type').notNull().default('ONE_TIME'),
     recurringInterval: proposalRecurringInterval('recurring_interval'),
@@ -294,7 +298,9 @@ export const termsTemplates = pgTable(
     firmId: uuid('firm_id')
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
-    category: serviceCategory('category').notNull(),
+    // 0216 — was the service_category enum; firm-managed text now (see
+    // services_catalog.category).
+    category: text('category').notNull(),
     name: text('name').notNull(),
     contentMd: text('content_md').notNull().default(''),
     version: integer('version').notNull().default(1),

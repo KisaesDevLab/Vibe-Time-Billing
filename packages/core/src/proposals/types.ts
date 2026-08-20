@@ -1,3 +1,5 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 
-export type ServiceCategory = 'TAX' | 'BOOKKEEPING' | 'AUDIT' | 'ADVISORY' | 'PAYROLL' | 'CFO';
+// 0216 — firm-managed free text (Taxonomy service-line categories); was a
+// fixed six-value union mirroring the service_category enum.
+export type ServiceCategory = string;
