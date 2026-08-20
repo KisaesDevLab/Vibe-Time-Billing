@@ -1008,6 +1008,9 @@ export function validateImportRows(
     if (externalId) values['externalId'] = externalId.slice(0, 120);
     const facing = cell(row, mapping.client_facing_name);
     if (facing) values['clientFacingName'] = facing.slice(0, 200);
+    // New clients with no facing name in the file default to the client
+    // name (updates leave the stored value untouched).
+    else if (!isUpdate) values['clientFacingName'] = name.slice(0, 200);
     if (filingStatus) values['filingStatus'] = filingStatus;
     if (pipelineStage) values['pipelineStage'] = pipelineStage;
     if (consolidation) values['invoiceConsolidationPreference'] = consolidation;

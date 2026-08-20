@@ -1009,7 +1009,16 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     }
     const [row] = await deps.db
       .insert(clients)
-      .values({ firmId, ...parsed.data, name: parsed.data.name.trim(), officeId })
+      .values({
+        firmId,
+        ...parsed.data,
+        name: parsed.data.name.trim(),
+        // Blank client-facing name defaults to the client name — portal,
+        // letters, and labels render it directly, so a NULL here leaks an
+        // empty display name anywhere the read-time fallback was missed.
+        clientFacingName: parsed.data.clientFacingName?.trim() || parsed.data.name.trim(),
+        officeId,
+      })
       .returning({ id: clients.id });
     await emitAudit(deps.db, {
       action: 'CREATE',
@@ -1059,10 +1068,22 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         res.status(409).json({ error: 'duplicate_name' });
         return;
       }
-      const patch =
-        parsed.data.name !== undefined
-          ? { ...parsed.data, name: parsed.data.name.trim() }
-          : parsed.data;
+      const patch: Record<string, unknown> = { ...parsed.data };
+      if (parsed.data.name !== undefined) patch['name'] = parsed.data.name.trim();
+      // Blanking the client-facing name normalizes it back to the client
+      // name (mirrors the create default) instead of storing ''/NULL.
+      if (parsed.data.clientFacingName !== undefined && !parsed.data.clientFacingName?.trim()) {
+        let fallback = parsed.data.name?.trim();
+        if (!fallback) {
+          const [cur] = await deps.db
+            .select({ name: clients.name })
+            .from(clients)
+            .where(and(eq(clients.firmId, firmId), eq(clients.id, req.params['id']!)))
+            .limit(1);
+          fallback = cur?.name;
+        }
+        if (fallback) patch['clientFacingName'] = fallback;
+      }
       await deps.db
         .update(clients)
         .set(patch)
