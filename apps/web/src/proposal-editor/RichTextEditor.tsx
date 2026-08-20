@@ -65,12 +65,16 @@ export function RichTextEditor({
     immediatelyRender: false,
     extensions: [
       StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
-      Link.configure({ openOnClick: false, autolink: true }),
+      // autolink/linkify stay OFF: they turn merge-token paths whose tail is
+      // a real TLD (`{{ client.name }}` — `.name`) into links, mangling the
+      // token so the server can't resolve it. Explicit links still work via
+      // the 🔗 toolbar button and pasted/typed markdown links.
+      Link.configure({ openOnClick: false, autolink: false }),
       // Markdown storage only drives markdown mode; in HTML mode we read
       // getHTML() directly and skip it (it would rewrite the HTML).
       ...(isHtml
         ? []
-        : [Markdown.configure({ html: false, linkify: true, transformPastedText: true })]),
+        : [Markdown.configure({ html: false, linkify: false, transformPastedText: true })]),
     ],
     editorProps: {
       attributes: {

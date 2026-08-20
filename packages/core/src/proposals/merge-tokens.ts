@@ -35,9 +35,22 @@ export interface MergeResult {
 
 const TOKEN_RE = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*\}\}/g;
 
+// Rich-text editors auto-link dotted token paths whose tail looks like a
+// TLD (`client.name` — `.name` is a real TLD), mangling `{{ client.name }}`
+// into `{{ [client.name](http://client.name) }}` (markdown) or
+// `{{ <a href="…">client.name</a> }}` (HTML letter templates). Unwrap the
+// link back to the bare path before token matching.
+const MD_LINKED_TOKEN_RE =
+  /\{\{\s*\[([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\]\([^)]*\)\s*\}\}/g;
+const HTML_LINKED_TOKEN_RE =
+  /\{\{\s*<a\s[^>]*>([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)<\/a>\s*\}\}/g;
+
 export function resolveMergeTokens(input: string, ctx: MergeContext): MergeResult {
   const unresolved: string[] = [];
-  const output = input.replace(TOKEN_RE, (_match, raw: string) => {
+  const normalized = input
+    .replace(MD_LINKED_TOKEN_RE, (_m, path: string) => `{{ ${path} }}`)
+    .replace(HTML_LINKED_TOKEN_RE, (_m, path: string) => `{{ ${path} }}`);
+  const output = normalized.replace(TOKEN_RE, (_match, raw: string) => {
     const value = lookup(ctx, raw);
     if (value == null) {
       unresolved.push(raw);

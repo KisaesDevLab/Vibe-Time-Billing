@@ -57,4 +57,25 @@ describe('merge token resolver', () => {
     expect(r.unresolvedTokens).toEqual(['client']);
     expect(r.output).toBe('');
   });
+
+  it('unwraps tokens auto-linked as markdown links (editor autolink mangling)', () => {
+    const r = resolveMergeTokens('Hi {{ [client.name](http://client.name) }}!', {
+      client: { name: 'Acme Co' },
+    });
+    expect(r.output).toBe('Hi Acme Co!');
+    expect(r.unresolvedTokens).toEqual([]);
+  });
+
+  it('unwraps tokens auto-linked as HTML anchors (letter templates)', () => {
+    const r = resolveMergeTokens('<p>{{ <a href="http://client.name">client.name</a> }}</p>', {
+      client: { name: 'Acme Co' },
+    });
+    expect(r.output).toBe('<p>Acme Co</p>');
+  });
+
+  it('leaves genuine links outside token braces alone', () => {
+    const input = 'See [our site](https://example.com) — {{ firm.name }}';
+    const r = resolveMergeTokens(input, { firm: { name: 'Smith CPAs' } });
+    expect(r.output).toBe('See [our site](https://example.com) — Smith CPAs');
+  });
 });
