@@ -57,6 +57,7 @@ import { TaxPaymentCatalogPage } from './TaxPaymentCatalog';
 import { TermsTemplatesPage } from './TermsTemplates';
 import { StripeConnectPage } from './StripeConnect';
 import { TerminalPage } from './Terminal';
+import { EngagementCreatePage } from '../EngagementCreate';
 import { StorageOnboardingPage } from './StorageOnboarding';
 import { StorageSettingsPage } from './StorageSettings';
 import { StorageConflictsListPage } from './StorageConflictsList';
@@ -108,6 +109,7 @@ const GROUPS: Group[] = [
     tabs: [
       { key: 'taxonomy', label: 'Taxonomy', href: '/admin/taxonomy' },
       { key: 'statuses', label: 'Engagement statuses', href: '/admin/engagement-statuses' },
+      { key: 'bulk-engagements', label: 'Bulk engagements', href: '/admin/bulk-engagements' },
       { key: 'status-history', label: 'Status history', href: '/admin/status-history' },
       { key: 'tpl', label: 'Templates', href: '/admin/templates' },
       {
@@ -335,6 +337,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="users/:id" element={<UserDetailPage />} />
         <Route path="taxonomy/*" element={<TaxonomyPage />} />
         <Route path="engagement-statuses" element={<EngagementStatusesPage />} />
+        <Route path="bulk-engagements" element={<EngagementCreatePage bulk />} />
         <Route path="intake-settings" element={<IntakeSettingsPage />} />
         <Route path="calendar" element={<CalendarSettingsPage />} />
         <Route path="calendar-overview" element={<CalendarOverviewPage />} />

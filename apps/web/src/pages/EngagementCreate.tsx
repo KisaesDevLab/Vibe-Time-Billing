@@ -12,7 +12,16 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  Combobox,
+  Input,
+  MultiCombobox,
+  Pill,
+  tokens,
+  type ComboboxOption,
+} from '@vibe/ui';
 import { advancePeriod, resolveEngagementName } from '@vibe/core/engagements';
 
 import { api } from '../api-client';
@@ -129,7 +138,20 @@ const FEE_STRUCTURES = [
 ] as const;
 type FeeStructure = (typeof FEE_STRUCTURES)[number];
 
-export function EngagementCreatePage(): JSX.Element {
+// Result row for bulk mode — one create attempt per selected client.
+interface BulkResult {
+  clientId: string;
+  clientName: string;
+  ok: boolean;
+  engagementId?: string;
+  error?: string;
+}
+
+// `bulk` (Admin → Bulk engagements) swaps the single Client picker for a
+// multi-select and creates one engagement per selected client with the same
+// form values; the server re-resolves template name patterns and the default
+// partner per client.
+export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.Element {
   const [search] = useSearchParams();
   const navigate = useNavigate();
   const initialClientId = search.get('clientId') ?? '';
@@ -153,6 +175,10 @@ export function EngagementCreatePage(): JSX.Element {
   const [pickedRole, setPickedRole] = useState<AssignmentRole>('STAFF');
 
   const [clientId, setClientId] = useState(initialClientId);
+  // Bulk mode — selected clients + per-client create results.
+  const [clientIds, setClientIds] = useState<string[]>([]);
+  const [bulkResults, setBulkResults] = useState<BulkResult[]>([]);
+  const [bulkDone, setBulkDone] = useState(false);
   const [name, setName] = useState('');
   // While true, the Name field mirrors the template's rendered name pattern
   // (and re-renders as the client/period changes). Set false once the user
@@ -232,6 +258,10 @@ export function EngagementCreatePage(): JSX.Element {
   // Keep the Name field showing the template's rendered name pattern until the
   // user edits it (e.g. "2025 - 1040 Preparation" from {{period.year}} - …).
   useEffect(() => {
+    // Bulk mode leaves the name blank so the server resolves the template's
+    // name pattern per client — auto-filling here would stamp one client's
+    // rendered name onto every engagement.
+    if (bulk) return;
     if (!nameAutoFilled) return;
     const tpl = templates.find((t) => t.id === pickedTemplateId);
     if (!tpl?.namePattern) return;
@@ -247,6 +277,7 @@ export function EngagementCreatePage(): JSX.Element {
     }).output.trim();
     if (rendered) setName(rendered);
   }, [
+    bulk,
     nameAutoFilled,
     pickedTemplateId,
     templates,
@@ -361,7 +392,8 @@ export function EngagementCreatePage(): JSX.Element {
   // the name field blank → preview what the server will resolve. Used
   // in the UI hint below the name input.
   const pickedTpl = templates.find((t) => t.id === pickedTemplateId) ?? null;
-  const pickedClientName = clients.find((c) => c.id === clientId)?.name ?? null;
+  const previewClientId = bulk ? (clientIds[0] ?? '') : clientId;
+  const pickedClientName = clients.find((c) => c.id === previewClientId)?.name ?? null;
   const periodPreview = {
     year: periodYear.trim() ? Number(periodYear) : null,
     month: periodMonth.trim() ? Number(periodMonth) : null,
@@ -376,6 +408,121 @@ export function EngagementCreatePage(): JSX.Element {
         })
       : null;
 
+  // Shared by single + bulk submit — the same form values, targeted at one
+  // client. In bulk mode the name is omitted when blank so the server
+  // resolves the template's name pattern per client.
+  function buildCreateBody(forClientId: string): Record<string, unknown> {
+    const body: Record<string, unknown> = {
+      clientId: forClientId,
+      feeStructure,
+      mixedModeEnabled,
+      feePassthroughEnabled,
+    };
+    if (name.trim()) body.name = name.trim();
+    if (status) body.status = status;
+    if (pickedTemplateId) body.templateId = pickedTemplateId;
+    if (periodPreview.year != null || periodPreview.month != null || periodPreview.label) {
+      body.period = periodPreview;
+    }
+    const feeCents = dollarsInputToCents(feeAmountDollars);
+    if (feeCents != null) body.feeAmountCents = feeCents;
+    if (budgetHours.trim()) body.budgetHours = Number(budgetHours);
+    const nteCents = dollarsInputToCents(nteCapDollars);
+    if (nteCents != null) body.nteCapCents = nteCents;
+    if (startDate) body.startDate = startDate;
+    if (endDate) body.endDate = endDate;
+    if (dueDate) body.dueDate = dueDate;
+    if (inScopeIds.length > 0) body.inScopeWorkCodeIds = inScopeIds;
+    if (defaultRateCodeId) body.defaultRateCodeId = defaultRateCodeId;
+    if (engagementTypeId) body.engagementTypeId = engagementTypeId;
+    if (partnerId) body.partnerId = partnerId;
+    if (managerId) body.managerId = managerId;
+    if (assignments.length > 0) body.assignments = assignments;
+    // v2 — tax + surcharge payload.
+    body.taxEnabled = taxEnabled;
+    if (taxEnabled) {
+      body.taxRateBps = percentInputToBps(taxRatePercent) ?? 0;
+      if (taxLabel.trim()) body.taxLabel = taxLabel.trim();
+    }
+    body.surchargeEnabled = surchargeEnabled;
+    if (surchargeEnabled) {
+      body.surchargeType = surchargeType;
+      if (surchargeType === 'PERCENT') {
+        body.surchargeValueBps = percentInputToBps(surchargePercent) ?? 0;
+        body.surchargeAmountCents = 0;
+      } else {
+        body.surchargeAmountCents = dollarsInputToCents(surchargeFlatDollars) ?? 0;
+        body.surchargeValueBps = 0;
+      }
+      body.surchargeLabel = surchargeLabel.trim() || null;
+    }
+    return body;
+  }
+
+  // Bulk mode — create one engagement per selected client, sequentially so
+  // per-client failures are isolated and reported. Each POST reuses the full
+  // single-create server path (template name resolution, partner defaulting,
+  // hour bank, assignments, audit, thread provisioning).
+  async function submitBulk(): Promise<void> {
+    if (clientIds.length === 0) {
+      setError('Pick at least one client.');
+      return;
+    }
+    if (!name.trim() && !pickedTpl?.namePattern) {
+      setError('Name is required (or pick a template with a name pattern).');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setBulkDone(false);
+    const results: BulkResult[] = [];
+    setBulkResults(results);
+    for (const cid of clientIds) {
+      const clientName = clients.find((c) => c.id === cid)?.name ?? cid;
+      try {
+        const r = await api<{ id: string }>('/api/staff/engagements', {
+          method: 'POST',
+          body: JSON.stringify(buildCreateBody(cid)),
+        });
+        let recurrenceError: string | null = null;
+        if (makeRecurring && pickedTemplateId) {
+          try {
+            await api('/api/staff/engagement-recurrences', {
+              method: 'POST',
+              body: JSON.stringify({
+                clientId: cid,
+                templateId: pickedTemplateId,
+                lastEngagementId: r.id,
+                ...recurrenceDraftToPayload(recurrenceDraft),
+              }),
+            });
+          } catch (e) {
+            recurrenceError = e instanceof Error ? e.message : 'recurrence_failed';
+          }
+        }
+        results.push({
+          clientId: cid,
+          clientName,
+          ok: true,
+          engagementId: r.id,
+          ...(recurrenceError
+            ? { error: `created, but recurrence failed: ${recurrenceError}` }
+            : {}),
+        });
+      } catch (e) {
+        results.push({
+          clientId: cid,
+          clientName,
+          ok: false,
+          error: e instanceof Error ? e.message : 'create_failed',
+        });
+      }
+      setBulkResults([...results]);
+    }
+    setBulkDone(true);
+    setBusy(false);
+  }
+
   async function submit(): Promise<void> {
     if (!clientId) {
       setError('Client is required.');
@@ -388,50 +535,7 @@ export function EngagementCreatePage(): JSX.Element {
     setBusy(true);
     setError(null);
     try {
-      const body: Record<string, unknown> = {
-        clientId,
-        feeStructure,
-        mixedModeEnabled,
-        feePassthroughEnabled,
-      };
-      if (name.trim()) body.name = name.trim();
-      if (status) body.status = status;
-      if (pickedTemplateId) body.templateId = pickedTemplateId;
-      if (periodPreview.year != null || periodPreview.month != null || periodPreview.label) {
-        body.period = periodPreview;
-      }
-      const feeCents = dollarsInputToCents(feeAmountDollars);
-      if (feeCents != null) body.feeAmountCents = feeCents;
-      if (budgetHours.trim()) body.budgetHours = Number(budgetHours);
-      const nteCents = dollarsInputToCents(nteCapDollars);
-      if (nteCents != null) body.nteCapCents = nteCents;
-      if (startDate) body.startDate = startDate;
-      if (endDate) body.endDate = endDate;
-      if (dueDate) body.dueDate = dueDate;
-      if (inScopeIds.length > 0) body.inScopeWorkCodeIds = inScopeIds;
-      if (defaultRateCodeId) body.defaultRateCodeId = defaultRateCodeId;
-      if (engagementTypeId) body.engagementTypeId = engagementTypeId;
-      if (partnerId) body.partnerId = partnerId;
-      if (managerId) body.managerId = managerId;
-      if (assignments.length > 0) body.assignments = assignments;
-      // v2 — tax + surcharge payload.
-      body.taxEnabled = taxEnabled;
-      if (taxEnabled) {
-        body.taxRateBps = percentInputToBps(taxRatePercent) ?? 0;
-        if (taxLabel.trim()) body.taxLabel = taxLabel.trim();
-      }
-      body.surchargeEnabled = surchargeEnabled;
-      if (surchargeEnabled) {
-        body.surchargeType = surchargeType;
-        if (surchargeType === 'PERCENT') {
-          body.surchargeValueBps = percentInputToBps(surchargePercent) ?? 0;
-          body.surchargeAmountCents = 0;
-        } else {
-          body.surchargeAmountCents = dollarsInputToCents(surchargeFlatDollars) ?? 0;
-          body.surchargeValueBps = 0;
-        }
-        body.surchargeLabel = surchargeLabel.trim() || null;
-      }
+      const body = buildCreateBody(clientId);
       const r = await api<{ id: string }>('/api/staff/engagements', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -477,7 +581,7 @@ export function EngagementCreatePage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
-      <Card title="New engagement">
+      <Card title={bulk ? 'Bulk engagements — one per selected client' : 'New engagement'}>
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
             {error}
@@ -494,16 +598,44 @@ export function EngagementCreatePage(): JSX.Element {
                 marginBottom: 4,
               }}
             >
-              Client *
+              {bulk ? `Clients * (${clientIds.length} selected)` : 'Client *'}
             </div>
-            <Combobox
-              ariaLabel="Client"
-              required
-              value={clientId}
-              onChange={setClientId}
-              options={activeClients.map<ComboboxOption>((c) => ({ value: c.id, label: c.name }))}
-              placeholder="— select —"
-            />
+            {bulk ? (
+              <div style={{ display: 'grid', gap: 6 }}>
+                <MultiCombobox
+                  ariaLabel="Clients"
+                  selected={clientIds}
+                  onChange={setClientIds}
+                  options={activeClients.map<ComboboxOption>((c) => ({
+                    value: c.id,
+                    label: c.name,
+                  }))}
+                  placeholder="— select clients —"
+                  chipLimit={8}
+                />
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setClientIds(activeClients.map((c) => c.id))}
+                  >
+                    Select all ({activeClients.length})
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setClientIds([])}>
+                    Clear
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Combobox
+                ariaLabel="Client"
+                required
+                value={clientId}
+                onChange={setClientId}
+                options={activeClients.map<ComboboxOption>((c) => ({ value: c.id, label: c.name }))}
+                placeholder="— select —"
+              />
+            )}
           </div>
           <div>
             <div
@@ -1231,9 +1363,22 @@ export function EngagementCreatePage(): JSX.Element {
           </fieldset>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <Button onClick={() => void submit()} disabled={busy || !clientId || !name.trim()}>
-              {busy ? 'Creating…' : 'Create engagement'}
-            </Button>
+            {bulk ? (
+              <Button
+                onClick={() => void submitBulk()}
+                disabled={
+                  busy || clientIds.length === 0 || (!name.trim() && !pickedTpl?.namePattern)
+                }
+              >
+                {busy
+                  ? `Creating ${bulkResults.length + 1} of ${clientIds.length}…`
+                  : `Create ${clientIds.length || ''} engagement${clientIds.length === 1 ? '' : 's'}`}
+              </Button>
+            ) : (
+              <Button onClick={() => void submit()} disabled={busy || !clientId || !name.trim()}>
+                {busy ? 'Creating…' : 'Create engagement'}
+              </Button>
+            )}
             <Button variant="ghost" onClick={() => navigate(-1)} disabled={busy}>
               Cancel
             </Button>
@@ -1241,6 +1386,37 @@ export function EngagementCreatePage(): JSX.Element {
           </div>
         </div>
       </Card>
+
+      {bulk && bulkResults.length > 0 && (
+        <Card title={bulkDone ? 'Results' : 'Creating…'}>
+          {bulkDone && (
+            <p style={{ fontSize: 13, marginTop: 0 }}>
+              {bulkResults.filter((r) => r.ok).length} of {bulkResults.length} engagement
+              {bulkResults.length === 1 ? '' : 's'} created
+              {bulkResults.some((r) => !r.ok) ? ' — failures listed below.' : '.'}
+            </p>
+          )}
+          <div style={{ display: 'grid', gap: 4 }}>
+            {bulkResults.map((r) => (
+              <div
+                key={r.clientId}
+                style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 13 }}
+              >
+                <Pill tone={r.ok ? 'success' : 'danger'}>{r.ok ? 'created' : 'failed'}</Pill>
+                <span>{r.clientName}</span>
+                {r.engagementId && (
+                  <a href={`/engagements/${r.engagementId}`} style={{ fontSize: 12 }}>
+                    open
+                  </a>
+                )}
+                {r.error && (
+                  <span style={{ color: tokens.color.danger, fontSize: 12 }}>{r.error}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
