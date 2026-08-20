@@ -189,6 +189,11 @@ export function buildFolderTree(keys: string[], countOf: (key: string) => number
   return roots;
 }
 
+/** True when the drag payload contains OS files (vs text/element drags). */
+function dragHasFiles(e: DragEvent<HTMLElement>): boolean {
+  return Array.from(e.dataTransfer.types).includes('Files');
+}
+
 /** One selectable row in the folder panel (also used for "All" + root). */
 function FolderRow({
   label,
@@ -198,6 +203,8 @@ function FolderRow({
   onSelect,
   mono,
   chevron,
+  onDropFiles,
+  onDragHover,
 }: {
   label: string;
   count: number;
@@ -206,9 +213,45 @@ function FolderRow({
   onSelect: () => void;
   mono?: boolean;
   chevron?: React.ReactNode;
+  /** When set, the row accepts file drops (drag-and-drop upload). */
+  onDropFiles?: (files: File[]) => void;
+  /** Reports drag-hover so the parent can label the active drop target. */
+  onDragHover?: (over: boolean) => void;
 }): JSX.Element {
+  const [dragOver, setDragOver] = useState(false);
+  const setOver = (over: boolean): void => {
+    setDragOver(over);
+    onDragHover?.(over);
+  };
   return (
-    <div style={{ display: 'flex', alignItems: 'center' }}>
+    <div
+      style={{ display: 'flex', alignItems: 'center' }}
+      onDragEnter={(e) => {
+        if (!onDropFiles || !dragHasFiles(e)) return;
+        e.preventDefault();
+        setOver(true);
+      }}
+      onDragOver={(e) => {
+        if (!onDropFiles || !dragHasFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={(e) => {
+        if (!onDropFiles || !dragHasFiles(e)) return;
+        // Transitions between the row's own children fire enter/leave
+        // pairs — only clear when the pointer actually left the row.
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setOver(false);
+      }}
+      onDrop={(e) => {
+        if (!onDropFiles || !dragHasFiles(e)) return;
+        e.preventDefault();
+        // Don't let the tab-wide drop handler also file these.
+        e.stopPropagation();
+        setOver(false);
+        onDropFiles(Array.from(e.dataTransfer.files));
+      }}
+    >
       <div style={{ width: depth * 14, flexShrink: 0 }} />
       {chevron ?? (depth > 0 ? <span style={{ width: 18, flexShrink: 0 }} /> : null)}
       <button
@@ -219,9 +262,15 @@ function FolderRow({
           textAlign: 'left',
           padding: '6px 10px',
           borderRadius: tokens.radius.sm,
-          background: selected ? tokens.color.accentMuted : 'transparent',
-          color: selected ? tokens.color.accent : tokens.color.text,
+          background: dragOver
+            ? tokens.color.accentMuted
+            : selected
+              ? tokens.color.accentMuted
+              : 'transparent',
+          color: selected || dragOver ? tokens.color.accent : tokens.color.text,
           border: 'none',
+          outline: dragOver ? `2px dashed ${tokens.color.accent}` : undefined,
+          outlineOffset: -2,
           cursor: 'pointer',
           fontSize: 13,
           fontFamily: mono ? tokens.font.mono : tokens.font.body,
@@ -338,6 +387,8 @@ function FolderTreeNode({
   expanded,
   onSelect,
   onToggle,
+  onDropFiles,
+  onDragHover,
 }: {
   node: FolderNode;
   depth: number;
@@ -345,6 +396,9 @@ function FolderTreeNode({
   expanded: Set<string>;
   onSelect: (path: string) => void;
   onToggle: (path: string) => void;
+  /** When set, every row in the subtree accepts file drops into its path. */
+  onDropFiles?: (path: string, files: File[]) => void;
+  onDragHover?: (path: string, over: boolean) => void;
 }): JSX.Element {
   const hasChildren = node.children.length > 0;
   const isOpen = expanded.has(node.path);
@@ -381,6 +435,8 @@ function FolderTreeNode({
         selected={selectedPath === node.path}
         onSelect={() => onSelect(node.path)}
         chevron={chevron}
+        onDropFiles={onDropFiles ? (files) => onDropFiles(node.path, files) : undefined}
+        onDragHover={onDragHover ? (over) => onDragHover(node.path, over) : undefined}
       />
       {isOpen &&
         node.children.map((child) => (
@@ -392,6 +448,8 @@ function FolderTreeNode({
             expanded={expanded}
             onSelect={onSelect}
             onToggle={onToggle}
+            onDropFiles={onDropFiles}
+            onDragHover={onDragHover}
           />
         ))}
     </>
@@ -470,6 +528,9 @@ export function ClientFilesTab({
   // pairs (children fire their own) — the overlay shows while > 0.
   const [dragDepth, setDragDepth] = useState(0);
   const [dropStatus, setDropStatus] = useState<{ done: number; total: number } | null>(null);
+  // Folder row currently hovered as a drop target (null path = "All",
+  // '' = folder root); null when no specific row is hovered.
+  const [dropHover, setDropHover] = useState<{ path: string | null } | null>(null);
 
   // FMv2 Phase C — post-link indexing transition. justLinkedPath is
   // the storage_path returned from /folder/link or /folder/create;
@@ -716,20 +777,15 @@ export function ClientFilesTab({
 
   const canDropUpload = canEdit && data?.status === 'active' && !dropStatus;
 
-  function dragHasFiles(e: DragEvent<HTMLDivElement>): boolean {
-    return Array.from(e.dataTransfer.types).includes('Files');
-  }
-
-  async function handleDroppedFiles(dropped: File[]): Promise<void> {
+  async function handleDroppedFiles(dropped: File[], target: string | null): Promise<void> {
     if (dropped.length === 0) return;
     setError(null);
     setDropStatus({ done: 0, total: dropped.length });
     const failures: string[] = [];
     for (const file of dropped) {
       try {
-        // Dropped files land in the currently selected subfolder;
-        // with "All" selected, the server routes by category default.
-        await uploadOneClientFile(clientId, file, 'other', selectedSubfolder ?? undefined);
+        // null target → the server routes by category default.
+        await uploadOneClientFile(clientId, file, 'other', target ?? undefined);
       } catch {
         failures.push(file.name);
       }
@@ -740,6 +796,23 @@ export function ClientFilesTab({
       setError(`Upload failed for: ${failures.join(', ')}`);
     }
     await load();
+  }
+
+  // Drop landed on a specific folder row (bypasses the tab-wide handler).
+  function dropIntoFolder(path: string | null, files: File[]): void {
+    setDragDepth(0);
+    setDropHover(null);
+    void handleDroppedFiles(files, path);
+  }
+
+  // Row hover reporting. Enter on the next row fires BEFORE leave on the
+  // previous one, so only clear when the leaving row is still the active
+  // target — otherwise the fresh value would be wiped.
+  function setFolderHover(path: string | null, over: boolean): void {
+    setDropHover((prev) => {
+      if (over) return { path };
+      return prev && prev.path === path ? null : prev;
+    });
   }
 
   if (!canView) {
@@ -804,7 +877,8 @@ export function ClientFilesTab({
         if (!canDropUpload || !dragHasFiles(e)) return;
         e.preventDefault();
         setDragDepth(0);
-        void handleDroppedFiles(Array.from(e.dataTransfer.files));
+        setDropHover(null);
+        void handleDroppedFiles(Array.from(e.dataTransfer.files), selectedSubfolder);
       }}
     >
       {dragDepth > 0 && (
@@ -818,7 +892,8 @@ export function ClientFilesTab({
             justifyContent: 'center',
             borderRadius: 8,
             border: `2px dashed ${tokens.color.accent}`,
-            background: 'rgba(0, 0, 0, 0.35)',
+            // Light dim so folder rows stay readable as drop targets.
+            background: 'rgba(0, 0, 0, 0.12)',
             pointerEvents: 'none',
           }}
         >
@@ -830,10 +905,21 @@ export function ClientFilesTab({
               padding: '12px 20px',
               fontSize: 14,
               fontWeight: 600,
+              textAlign: 'center',
             }}
           >
-            Drop to upload
-            {selectedSubfolder ? ` into ${selectedSubfolder.replace(/\/+$/, '')}` : ''}
+            {dropHover
+              ? dropHover.path === null
+                ? 'Drop to file by category'
+                : dropHover.path === ''
+                  ? 'Drop to upload into the folder root'
+                  : `Drop to upload into ${dropHover.path.replace(/\/+$/, '')}`
+              : `Drop to upload${
+                  selectedSubfolder ? ` into ${selectedSubfolder.replace(/\/+$/, '')}` : ''
+                }`}
+            <div style={{ fontSize: 12, fontWeight: 400, color: tokens.color.textMuted }}>
+              …or drop onto a folder in the tree to file it there
+            </div>
           </div>
         </div>
       )}
@@ -957,6 +1043,8 @@ export function ClientFilesTab({
               depth={0}
               selected={selectedSubfolder === null}
               onSelect={() => selectFolder(null)}
+              onDropFiles={canDropUpload ? (files) => dropIntoFolder(null, files) : undefined}
+              onDragHover={canDropUpload ? (over) => setFolderHover(null, over) : undefined}
             />
             {rootFileCount > 0 && (
               <FolderRow
@@ -966,6 +1054,8 @@ export function ClientFilesTab({
                 mono
                 selected={selectedSubfolder === ''}
                 onSelect={() => selectFolder('')}
+                onDropFiles={canDropUpload ? (files) => dropIntoFolder('', files) : undefined}
+                onDragHover={canDropUpload ? (over) => setFolderHover('', over) : undefined}
               />
             )}
             {folderTree.map((node) => (
@@ -977,6 +1067,8 @@ export function ClientFilesTab({
                 expanded={expandedFolders}
                 onSelect={selectFolder}
                 onToggle={toggleFolderExpand}
+                onDropFiles={canDropUpload ? dropIntoFolder : undefined}
+                onDragHover={canDropUpload ? setFolderHover : undefined}
               />
             ))}
           </div>
