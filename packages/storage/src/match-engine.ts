@@ -14,6 +14,7 @@
 
 import { jaroWinkler } from './jaro-winkler';
 import { LOW_SIGNAL_TOKENS, extractTaxId, normalizeName, significantTokens } from './normalize';
+import { folderBasename } from './paths';
 
 export type MatchReasonCode =
   | 'tax_id_in_folder_name'
@@ -138,7 +139,11 @@ export function scoreFolder(
   folder: FolderCandidate,
   client: ClientForMatch,
 ): { code: MatchReasonCode; confidence: number; text: string } | null {
-  const folderTaxId = extractTaxId(folder.storage_path);
+  // Match on the folder's own name — under STORAGE_TOP_PREFIX the
+  // storage_path carries leading segments ("Client Files/Smith/") that
+  // would poison tax-id extraction and name tokenization.
+  const folderName = folderBasename(folder.storage_path);
+  const folderTaxId = extractTaxId(folderName);
   // Highest signal: tax-software-ID match.
   if (folderTaxId && client.tax_software_id && folderTaxId === client.tax_software_id) {
     return {
@@ -148,7 +153,7 @@ export function scoreFolder(
     };
   }
 
-  const folderTokens = normalizeName(folder.storage_path);
+  const folderTokens = normalizeName(folderName);
   if (folderTokens.length === 0) return null;
   const folderString = folderTokens.join(' ');
 

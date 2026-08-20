@@ -22,6 +22,7 @@ import { clientFolders, clients, folderSyncEvents } from '@vibe/db/schema';
 import { storage as coreStorage } from '@vibe/core';
 import {
   buildStorageClient,
+  folderBasename,
   readSentinel,
   sentinelKey,
   writeSentinel,
@@ -202,10 +203,12 @@ export function createStorageOnboardingRouter(deps: StorageOnboardingDeps): Rout
             continue;
           }
           // Unbound + no sentinel → candidates by folder name only.
-          const candidates = coreStorage.scoreFolderMatches(path, activeClients);
+          // Match on the basename — under STORAGE_TOP_PREFIX the full
+          // path carries leading segments that aren't part of the name.
+          const candidates = coreStorage.scoreFolderMatches(folderBasename(path), activeClients);
           unmatchedFolders.push({
             path,
-            taxSoftwareIdParsed: coreStorage.parseTaxSoftwareId(path),
+            taxSoftwareIdParsed: coreStorage.parseTaxSoftwareId(folderBasename(path)),
             candidates,
           });
           continue;
@@ -247,7 +250,7 @@ export function createStorageOnboardingRouter(deps: StorageOnboardingDeps): Rout
         // unmatched so admin can confirm a sync-worker discovery.
         unmatchedFolders.push({
           path,
-          taxSoftwareIdParsed: coreStorage.parseTaxSoftwareId(path),
+          taxSoftwareIdParsed: coreStorage.parseTaxSoftwareId(folderBasename(path)),
           candidates: [
             {
               clientId: client.id,

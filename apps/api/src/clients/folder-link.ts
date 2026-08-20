@@ -23,6 +23,7 @@ import { clientFolders, clients, folderLinkAttempts, folderSyncEvents } from '@v
 import {
   buildStorageClient,
   match,
+  normalizeTopPrefix,
   readSentinel,
   sentinelKey,
   writeSentinel,
@@ -121,12 +122,14 @@ export async function ensureClientFolderBound(
   if (!client) return { ok: false, code: 'client_not_found' };
 
   const base = sanitizeFolderName(client.name) || `Client ${client.id.slice(0, 8)}`;
+  // New client folders live under STORAGE_TOP_PREFIX (e.g. `Client Files/`).
+  const topPrefix = normalizeTopPrefix(process.env['STORAGE_TOP_PREFIX']);
   // Find a free path: "Name/", then "Name (2)/" … — a sentinel belonging to
   // another client means the name is taken. A sentinel already stamped with
   // THIS client id (e.g. a prior half-finished link) is adopted as-is.
   let storagePath: string | null = null;
   for (let i = 1; i <= 9 && !storagePath; i++) {
-    const candidate = i === 1 ? `${base}/` : `${base} (${i})/`;
+    const candidate = i === 1 ? `${topPrefix}${base}/` : `${topPrefix}${base} (${i})/`;
     const sentinel = await tryReadSentinel(storage, candidate);
     if (!sentinel) {
       try {
@@ -567,7 +570,7 @@ export function mountFolderLinkRoutes(router: Router, deps: FolderLinkDeps): voi
         res.status(400).json({ error: 'invalid_folder_name' });
         return;
       }
-      const storagePath = `${sanitized}/`;
+      const storagePath = `${normalizeTopPrefix(process.env['STORAGE_TOP_PREFIX'])}${sanitized}/`;
       const [client] = await deps.db
         .select({ id: clients.id, name: clients.name })
         .from(clients)

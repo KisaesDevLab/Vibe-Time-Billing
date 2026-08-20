@@ -4,10 +4,12 @@ import { describe, it, expect } from 'vitest';
 
 import {
   enforceKeyByteCap,
+  folderBasename,
   isSentinelPath,
   joinPath,
   MAX_BASENAME_BYTES,
   MAX_KEY_BYTES,
+  normalizeTopPrefix,
   resolveCollision,
   sanitizeForWindows,
   splitClientFolder,
@@ -57,6 +59,32 @@ describe('splitClientFolder', () => {
     const out = splitClientFolder('/Smith/foo.pdf');
     expect(out.clientFolderPath).toBe('Smith/');
     expect(out.subPath).toBe('foo.pdf');
+  });
+});
+
+describe('folderBasename', () => {
+  it('returns the last segment of a folder path', () => {
+    expect(folderBasename('Smith, John/')).toBe('Smith, John');
+    expect(folderBasename('Client Files/Smith, John/')).toBe('Smith, John');
+    expect(folderBasename('a/b/0042 - Smith/')).toBe('0042 - Smith');
+  });
+  it('handles keys without trailing slash and empty input', () => {
+    expect(folderBasename('Client Files/Smith')).toBe('Smith');
+    expect(folderBasename('')).toBe('');
+    expect(folderBasename('/')).toBe('');
+  });
+});
+
+describe('normalizeTopPrefix', () => {
+  it('returns empty for unset/blank', () => {
+    expect(normalizeTopPrefix(undefined)).toBe('');
+    expect(normalizeTopPrefix('')).toBe('');
+    expect(normalizeTopPrefix('/')).toBe('');
+  });
+  it('ensures exactly one trailing slash and no leading slash', () => {
+    expect(normalizeTopPrefix('Client Files')).toBe('Client Files/');
+    expect(normalizeTopPrefix('Client Files/')).toBe('Client Files/');
+    expect(normalizeTopPrefix('/Client Files//')).toBe('Client Files/');
   });
 });
 

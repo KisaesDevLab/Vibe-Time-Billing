@@ -69,6 +69,8 @@ services:
       MAIL_PROVIDER: postmark
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
       FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
+      # Client folders live under this bucket prefix (FMv2 layout).
+      STORAGE_TOP_PREFIX: ${STORAGE_TOP_PREFIX:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # MIG-8/A1 — Vibe AI Router dual-mode (router requires URL + token).
       VIBE_AI_MODE: ${VIBE_AI_MODE:-direct}
@@ -144,6 +146,8 @@ services:
       SMS_PROVIDER: ${SMS_PROVIDER:-textlink}
       KMS_KEY: ${KMS_KEY:?KMS_KEY required}
       FIRM_KEY_SEAL_PATH: /data/firm-key/.firm-key.seal
+      # Client folders live under this bucket prefix (FMv2 layout).
+      STORAGE_TOP_PREFIX: ${STORAGE_TOP_PREFIX:-}
       SMS_TWILIO_ACCOUNT_SID: ${SMS_TWILIO_ACCOUNT_SID:-}
       SMS_TWILIO_AUTH_TOKEN: ${SMS_TWILIO_AUTH_TOKEN:-}
       SMS_TWILIO_FROM: ${SMS_TWILIO_FROM:-}

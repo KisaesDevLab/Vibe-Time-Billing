@@ -77,6 +77,33 @@ export function joinPath(...segments: string[]): string {
 }
 
 /**
+ * Last non-empty segment of a folder path or key — the folder's own
+ * name, independent of where it lives in the bucket. With
+ * STORAGE_TOP_PREFIX set (e.g. `Client Files/`), stored paths look
+ * like `Client Files/Smith, John/`; matching and display must use
+ * `Smith, John`, never the full path.
+ */
+export function folderBasename(path: string): string {
+  const segments = path
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter((s) => s.length > 0);
+  return segments[segments.length - 1] ?? '';
+}
+
+/**
+ * Normalizes STORAGE_TOP_PREFIX for key composition: '' stays '',
+ * anything else gets slashes trimmed and exactly one trailing '/'.
+ */
+export function normalizeTopPrefix(prefix: string | undefined): string {
+  const trimmed = (prefix ?? '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '')
+    .trim();
+  return trimmed.length > 0 ? `${trimmed}/` : '';
+}
+
+/**
  * Splits a key like `Smith, John & Mary/Invoices/2024 inv.pdf` into
  * the top-level client-folder path (with trailing slash) and the
  * remaining sub-path. Used by the sync worker to attribute newly
