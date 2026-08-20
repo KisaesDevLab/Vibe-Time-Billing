@@ -19,7 +19,7 @@
 // Permission gates rely on usePermission(); buttons are disabled with
 // a tooltip when missing rather than hidden.
 
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
 
 import {
   Button,
@@ -466,6 +466,11 @@ export function ClientFilesTab({
   const [uploadOpen, setUploadOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
 
+  // Drag-and-drop upload. dragDepth counts nested dragenter/dragleave
+  // pairs (children fire their own) — the overlay shows while > 0.
+  const [dragDepth, setDragDepth] = useState(0);
+  const [dropStatus, setDropStatus] = useState<{ done: number; total: number } | null>(null);
+
   // FMv2 Phase C — post-link indexing transition. justLinkedPath is
   // the storage_path returned from /folder/link or /folder/create;
   // when set, we render the IndexingToast + IndexingProgressBar in
@@ -709,6 +714,34 @@ export function ClientFilesTab({
     });
   }
 
+  const canDropUpload = canEdit && data?.status === 'active' && !dropStatus;
+
+  function dragHasFiles(e: DragEvent<HTMLDivElement>): boolean {
+    return Array.from(e.dataTransfer.types).includes('Files');
+  }
+
+  async function handleDroppedFiles(dropped: File[]): Promise<void> {
+    if (dropped.length === 0) return;
+    setError(null);
+    setDropStatus({ done: 0, total: dropped.length });
+    const failures: string[] = [];
+    for (const file of dropped) {
+      try {
+        // Dropped files land in the currently selected subfolder;
+        // with "All" selected, the server routes by category default.
+        await uploadOneClientFile(clientId, file, 'other', selectedSubfolder ?? undefined);
+      } catch {
+        failures.push(file.name);
+      }
+      setDropStatus((prev) => (prev ? { ...prev, done: prev.done + 1 } : prev));
+    }
+    setDropStatus(null);
+    if (failures.length > 0) {
+      setError(`Upload failed for: ${failures.join(', ')}`);
+    }
+    await load();
+  }
+
   if (!canView) {
     return (
       <Card title="Files">
@@ -750,7 +783,67 @@ export function ClientFilesTab({
     data.status === 'active' ? 'success' : data.status === 'renaming' ? 'warning' : 'danger';
 
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg }}>
+    <div
+      style={{ display: 'grid', gap: tokens.space.lg, position: 'relative' }}
+      onDragEnter={(e) => {
+        if (!canDropUpload || !dragHasFiles(e)) return;
+        e.preventDefault();
+        setDragDepth((d) => d + 1);
+      }}
+      onDragOver={(e) => {
+        if (!canDropUpload || !dragHasFiles(e)) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      }}
+      onDragLeave={(e) => {
+        if (!canDropUpload || !dragHasFiles(e)) return;
+        e.preventDefault();
+        setDragDepth((d) => Math.max(0, d - 1));
+      }}
+      onDrop={(e) => {
+        if (!canDropUpload || !dragHasFiles(e)) return;
+        e.preventDefault();
+        setDragDepth(0);
+        void handleDroppedFiles(Array.from(e.dataTransfer.files));
+      }}
+    >
+      {dragDepth > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            zIndex: 20,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            borderRadius: 8,
+            border: `2px dashed ${tokens.color.accent}`,
+            background: 'rgba(0, 0, 0, 0.35)',
+            pointerEvents: 'none',
+          }}
+        >
+          <div
+            style={{
+              background: tokens.color.surface,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: 8,
+              padding: '12px 20px',
+              fontSize: 14,
+              fontWeight: 600,
+            }}
+          >
+            Drop to upload
+            {selectedSubfolder ? ` into ${selectedSubfolder.replace(/\/+$/, '')}` : ''}
+          </div>
+        </div>
+      )}
+      {dropStatus && (
+        <Card>
+          <p style={{ fontSize: 13, margin: 0 }}>
+            Uploading {Math.min(dropStatus.done + 1, dropStatus.total)} of {dropStatus.total}…
+          </p>
+        </Card>
+      )}
       {error && (
         <Card>
           <p style={{ color: tokens.color.danger, fontSize: 13, margin: 0 }}>{error}</p>
@@ -1234,6 +1327,63 @@ function PreviewDialog({ filename, url, onClose, onDownload }: PreviewDialogProp
 }
 
 // ---------------------------------------------------------------------------
+// Upload plumbing — reserve → PUT body → complete. Shared by the upload
+// dialog and the drag-and-drop path.
+// ---------------------------------------------------------------------------
+
+async function uploadOneClientFile(
+  clientId: string,
+  file: File,
+  category: string,
+  subfolderPath?: string,
+): Promise<void> {
+  // 1) Reserve a slot — server picks subfolder by category if we don't supply one.
+  const reserve = await api<{
+    fileId: string;
+    storageKey: string;
+    uploadUrl: string;
+    visibility: 'private' | 'client_visible';
+  }>(`/api/staff/clients/${clientId}/files`, {
+    method: 'POST',
+    body: JSON.stringify({
+      category,
+      subfolderPath: subfolderPath || undefined,
+      originalFilename: file.name,
+      sizeBytes: file.size,
+      mimeType: file.type || undefined,
+    }),
+  });
+
+  // 2) Upload the body. mock-presign:// URLs route through the dev-only
+  //    translator so the browser doesn't try to fetch an unsupported scheme.
+  if (reserve.uploadUrl.startsWith('mock-presign://')) {
+    const buf = await file.arrayBuffer();
+    const b64 = bufferToBase64(buf);
+    await api('/api/staff/admin/storage/upload-mock', {
+      method: 'POST',
+      body: JSON.stringify({
+        url: reserve.uploadUrl,
+        contentBase64: b64,
+        contentType: file.type || 'application/octet-stream',
+      }),
+    });
+  } else {
+    const r = await fetch(reserve.uploadUrl, {
+      method: 'PUT',
+      headers: file.type ? { 'Content-Type': file.type } : undefined,
+      body: file,
+    });
+    if (!r.ok) throw new Error(`upload_failed_${r.status}`);
+  }
+
+  // 3) Confirm.
+  await api(`/api/staff/files/${reserve.fileId}/complete`, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Upload dialog
 // ---------------------------------------------------------------------------
 
@@ -1254,7 +1404,7 @@ function UploadDialog({
   const [category, setCategory] = useState<string>('other');
   const [subfolderOverride, setSubfolderOverride] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
-  const [phase, setPhase] = useState<'idle' | 'reserving' | 'uploading' | 'completing'>('idle');
+  const [phase, setPhase] = useState<'idle' | 'uploading'>('idle');
 
   async function go(): Promise<void> {
     if (!file) {
@@ -1262,56 +1412,9 @@ function UploadDialog({
       return;
     }
     setError(null);
-    setPhase('reserving');
+    setPhase('uploading');
     try {
-      // 1) Reserve a slot — server picks subfolder by category if we don't supply one.
-      const reserve = await api<{
-        fileId: string;
-        storageKey: string;
-        uploadUrl: string;
-        visibility: 'private' | 'client_visible';
-      }>(`/api/staff/clients/${clientId}/files`, {
-        method: 'POST',
-        body: JSON.stringify({
-          category,
-          subfolderPath: subfolderOverride || undefined,
-          originalFilename: file.name,
-          sizeBytes: file.size,
-          mimeType: file.type || undefined,
-        }),
-      });
-
-      // 2) Upload the body. mock-presign:// URLs route through the
-      //    dev-only translator so the browser doesn't try to fetch
-      //    an unsupported scheme.
-      setPhase('uploading');
-      if (reserve.uploadUrl.startsWith('mock-presign://')) {
-        const buf = await file.arrayBuffer();
-        const b64 = bufferToBase64(buf);
-        await api('/api/staff/admin/storage/upload-mock', {
-          method: 'POST',
-          body: JSON.stringify({
-            url: reserve.uploadUrl,
-            contentBase64: b64,
-            contentType: file.type || 'application/octet-stream',
-          }),
-        });
-      } else {
-        const r = await fetch(reserve.uploadUrl, {
-          method: 'PUT',
-          headers: file.type ? { 'Content-Type': file.type } : undefined,
-          body: file,
-        });
-        if (!r.ok) throw new Error(`upload_failed_${r.status}`);
-      }
-
-      // 3) Confirm.
-      setPhase('completing');
-      await api(`/api/staff/files/${reserve.fileId}/complete`, {
-        method: 'POST',
-        body: '{}',
-      });
-
+      await uploadOneClientFile(clientId, file, category, subfolderOverride);
       onUploaded();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'upload_failed');
@@ -1370,11 +1473,7 @@ function UploadDialog({
         </div>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
         {phase !== 'idle' && (
-          <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
-            {phase === 'reserving' && 'Reserving slot…'}
-            {phase === 'uploading' && 'Uploading body…'}
-            {phase === 'completing' && 'Confirming…'}
-          </p>
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>Uploading…</p>
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={phase !== 'idle'}>
