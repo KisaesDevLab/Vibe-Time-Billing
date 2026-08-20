@@ -224,6 +224,23 @@ export function ServicesCatalogPage(): JSX.Element {
     });
   }
 
+  function closeEditor(): void {
+    setDraft(null);
+    setErr(null);
+  }
+
+  // The editor opens as a modal — Escape closes it (matches the backdrop
+  // click), discarding unsaved changes like Cancel does.
+  useEffect(() => {
+    if (!draft) return;
+    const handler = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') closeEditor();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft != null]);
+
   function toggleSelect(id: string): void {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -420,18 +437,56 @@ export function ServicesCatalogPage(): JSX.Element {
       </Card>
 
       {draft && (
-        <ServiceEditor
-          draft={draft}
-          tags={tags}
-          categories={categoryOptions}
-          allServices={services}
-          onChange={setDraft}
-          onSave={() => void saveDraft()}
-          onCancel={() => {
-            setDraft(null);
-            setErr(null);
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={draft.id ? 'Edit service' : 'New service'}
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.4)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 50,
+            padding: 24,
           }}
-        />
+        >
+          <button
+            type="button"
+            aria-label="Close"
+            onClick={closeEditor}
+            style={{
+              position: 'absolute',
+              inset: 0,
+              background: 'transparent',
+              border: 'none',
+              cursor: 'pointer',
+            }}
+          />
+          <div
+            style={{
+              position: 'relative',
+              zIndex: 1,
+              width: 'min(960px, 100%)',
+              maxHeight: '90vh',
+              overflowY: 'auto',
+              borderRadius: tokens.radius.md,
+              boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+            }}
+          >
+            <ServiceEditor
+              draft={draft}
+              tags={tags}
+              categories={categoryOptions}
+              allServices={services}
+              error={err}
+              onChange={setDraft}
+              onSave={() => void saveDraft()}
+              onCancel={closeEditor}
+            />
+          </div>
+        </div>
       )}
 
       {bulkOpen && (
@@ -611,6 +666,7 @@ function ServiceEditor({
   tags,
   categories,
   allServices,
+  error,
   onChange,
   onSave,
   onCancel,
@@ -619,6 +675,7 @@ function ServiceEditor({
   tags: TagRow[];
   categories: string[];
   allServices: ServiceRow[];
+  error: string | null;
   onChange: (d: DraftService) => void;
   onSave: () => void;
   onCancel: () => void;
@@ -798,6 +855,11 @@ function ServiceEditor({
         </div>
       )}
 
+      {error && (
+        <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 12, marginBottom: 0 }}>
+          {error}
+        </p>
+      )}
       <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
         <Button variant="ghost" onClick={onCancel}>
           Cancel
