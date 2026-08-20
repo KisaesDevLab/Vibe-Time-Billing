@@ -2094,10 +2094,22 @@ export const engagements = pgTable(
     periodMonth: smallint('period_month'),
     periodLabel: text('period_label'),
 
+    // 0217 — provenance: the template this engagement was created from
+    // (drives the bulk-create duplicate skip). NULL for hand-built rows
+    // and rows created before the column existed.
+    createdFromTemplateId: uuid('created_from_template_id').references(
+      () => engagementTemplates.id,
+      { onDelete: 'set null' },
+    ),
+
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
+    createdFromTemplateIdx: index('engagement_created_from_template_idx').on(
+      t.clientId,
+      t.createdFromTemplateId,
+    ),
     clientIdx: index('engagement_client_idx').on(t.clientId),
     statusIdx: index('engagement_status_idx').on(t.status),
     partnerIdx: index('engagement_partner_idx').on(t.partnerId),

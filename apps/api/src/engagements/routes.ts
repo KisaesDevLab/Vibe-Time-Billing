@@ -5,7 +5,7 @@
 import express, { type Request, type Response, type Router } from 'express';
 import { csvField } from '../lib/csv';
 import { z } from 'zod';
-import { and, eq, inArray, notInArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, notInArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -532,8 +532,9 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
       const resolvedStatus = bodyStatus ?? templateDefaultStatus ?? undefined;
       // templateId + period are stripped from engagementFields here so
       // they don't bleed into the engagements insert; period is mapped
-      // to the explicit period_year/month/label columns below.
-      void templateId;
+      // to the explicit period_year/month/label columns below, and
+      // templateId to created_from_template_id (0217 — provenance for
+      // the bulk-create duplicate skip).
       // Default the engagement's partner to the client's owner (partner-in-
       // charge) when the request didn't specify one — streamlines creation.
       let partnerId = engagementFields.partnerId ?? null;
@@ -553,6 +554,7 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         periodYear: period?.year ?? null,
         periodMonth: period?.month ?? null,
         periodLabel: period?.label ?? null,
+        createdFromTemplateId: templateId ?? null,
         ...(resolvedStatus ? { status: resolvedStatus } : {}),
       };
       const { engagementId, hourBankId } = await deps.db.transaction(async (tx) => {
@@ -635,6 +637,64 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         }
       }
       res.status(201).json({ id: engagementId, hourBankId });
+    },
+  );
+
+  // 0217 — bulk-create duplicate skip. Which of the firm's clients already
+  // have a non-archived engagement created from this template — or, for
+  // rows predating the provenance column, one carrying the template's
+  // engagement type — for the given period (each period field filters only
+  // when provided). Registered before '/:id' so the segment isn't read as
+  // an engagement id.
+  router.get(
+    '/bulk-existing',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      if (!deps.db) {
+        res.json({ clientIds: [] });
+        return;
+      }
+      const templateId = typeof req.query['templateId'] === 'string' ? req.query['templateId'] : '';
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(templateId)) {
+        res.status(400).json({ error: 'invalid_template' });
+        return;
+      }
+      const [tpl] = await deps.db
+        .select({
+          id: engagementTemplates.id,
+          engagementTypeId: engagementTemplates.engagementTypeId,
+        })
+        .from(engagementTemplates)
+        .where(and(eq(engagementTemplates.id, templateId), eq(engagementTemplates.firmId, firmId)))
+        .limit(1);
+      if (!tpl) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+      const yearRaw =
+        typeof req.query['periodYear'] === 'string' ? Number(req.query['periodYear']) : null;
+      const monthRaw =
+        typeof req.query['periodMonth'] === 'string' ? Number(req.query['periodMonth']) : null;
+      const provenance = tpl.engagementTypeId
+        ? or(
+            eq(engagements.createdFromTemplateId, tpl.id),
+            eq(engagements.engagementTypeId, tpl.engagementTypeId),
+          )
+        : eq(engagements.createdFromTemplateId, tpl.id);
+      const conds = [eq(clients.firmId, firmId), ne(engagements.status, 'ARCHIVED'), provenance];
+      if (yearRaw != null && Number.isFinite(yearRaw)) {
+        conds.push(eq(engagements.periodYear, yearRaw));
+      }
+      if (monthRaw != null && Number.isFinite(monthRaw)) {
+        conds.push(eq(engagements.periodMonth, monthRaw));
+      }
+      const rows = await deps.db
+        .selectDistinct({ clientId: engagements.clientId })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(...conds));
+      res.json({ clientIds: rows.map((r) => r.clientId) });
     },
   );
 

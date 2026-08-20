@@ -56,7 +56,7 @@ function makeRes(): FakeRes {
 }
 async function invoke(
   router: express.Router,
-  method: 'post',
+  method: 'post' | 'get',
   path: string,
   req: FakeReq,
 ): Promise<FakeRes> {
@@ -132,6 +132,47 @@ describe('POST /api/staff/engagements with templateId + period', () => {
     expect(row!.name).toBe('Bookkeeping 4/2026 · Test Client Co');
     expect(row!.periodYear).toBe(2026);
     expect(row!.periodMonth).toBe(4);
+  });
+
+  it('stamps created_from_template_id; /bulk-existing reports the client for that period', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const tplId = await seedTemplate(seed.firmId, {});
+    const router = createEngagementRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const r = await invoke(router, 'post', '/', {
+      ...req({
+        firmId: seed.firmId,
+        appUserId: seed.appUserId,
+        body: {
+          clientId: seed.clientId,
+          templateId: tplId,
+          feeStructure: 'FIXED_FEE',
+          period: { year: 2026 },
+        },
+      }),
+    });
+    expect(r.statusCode).toBe(201);
+    const body = r.jsonBody as { id: string };
+    const [row] = await harness.db.select().from(engagements).where(eq(engagements.id, body.id));
+    expect(row!.createdFromTemplateId).toBe(tplId);
+
+    // Same template + same period → the client is reported as existing.
+    const hit = await invoke(router, 'get', '/bulk-existing', {
+      ...req({ firmId: seed.firmId, appUserId: seed.appUserId, body: {} }),
+      query: { templateId: tplId, periodYear: '2026' },
+    });
+    expect(hit.statusCode).toBe(200);
+    expect((hit.jsonBody as { clientIds: string[] }).clientIds).toContain(seed.clientId);
+
+    // Different period year → not reported.
+    const miss = await invoke(router, 'get', '/bulk-existing', {
+      ...req({ firmId: seed.firmId, appUserId: seed.appUserId, body: {} }),
+      query: { templateId: tplId, periodYear: '2027' },
+    });
+    expect(miss.statusCode).toBe(200);
+    expect((miss.jsonBody as { clientIds: string[] }).clientIds).toHaveLength(0);
   });
 
   it('explicit name overrides template.name_pattern', async () => {

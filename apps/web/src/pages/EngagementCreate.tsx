@@ -143,6 +143,7 @@ interface BulkResult {
   clientId: string;
   clientName: string;
   ok: boolean;
+  skipped?: boolean;
   engagementId?: string;
   error?: string;
 }
@@ -179,6 +180,7 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
   const [clientIds, setClientIds] = useState<string[]>([]);
   const [bulkResults, setBulkResults] = useState<BulkResult[]>([]);
   const [bulkDone, setBulkDone] = useState(false);
+  const [skipExisting, setSkipExisting] = useState(true);
   const [name, setName] = useState('');
   // While true, the Name field mirrors the template's rendered name pattern
   // (and re-renders as the client/period changes). Set false once the user
@@ -475,10 +477,38 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
     setBusy(true);
     setError(null);
     setBulkDone(false);
+    // Duplicate guard — ask the server which selected clients already have
+    // an engagement from this template for this period, and skip them. If
+    // the check itself fails, stop rather than risk creating duplicates.
+    let alreadyHave = new Set<string>();
+    if (skipExisting && pickedTemplateId) {
+      try {
+        const qs = new URLSearchParams({ templateId: pickedTemplateId });
+        if (periodPreview.year != null) qs.set('periodYear', String(periodPreview.year));
+        if (periodPreview.month != null) qs.set('periodMonth', String(periodPreview.month));
+        const r = await api<{ clientIds: string[] }>(
+          `/api/staff/engagements/bulk-existing?${qs.toString()}`,
+        );
+        alreadyHave = new Set(r.clientIds);
+      } catch (e) {
+        setBusy(false);
+        setError(
+          `Could not check for existing engagements — nothing was created. (${
+            e instanceof Error ? e.message : 'check_failed'
+          })`,
+        );
+        return;
+      }
+    }
     const results: BulkResult[] = [];
     setBulkResults(results);
     for (const cid of clientIds) {
       const clientName = clients.find((c) => c.id === cid)?.name ?? cid;
+      if (alreadyHave.has(cid)) {
+        results.push({ clientId: cid, clientName, ok: true, skipped: true });
+        setBulkResults([...results]);
+        continue;
+      }
       try {
         const r = await api<{ id: string }>('/api/staff/engagements', {
           method: 'POST',
@@ -625,6 +655,28 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
                     Clear
                   </Button>
                 </div>
+                <label
+                  style={{
+                    fontSize: 12,
+                    color: pickedTemplateId ? tokens.color.text : tokens.color.textMuted,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 6,
+                  }}
+                  title={
+                    pickedTemplateId
+                      ? 'Skips clients with a non-archived engagement created from this template (or carrying its engagement type) matching the period entered below.'
+                      : 'Pick a template to enable the duplicate check.'
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={skipExisting}
+                    onChange={(e) => setSkipExisting(e.target.checked)}
+                    disabled={!pickedTemplateId}
+                  />
+                  Skip clients who already have an engagement from this template for this period
+                </label>
               </div>
             ) : (
               <Combobox
@@ -1391,9 +1443,13 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
         <Card title={bulkDone ? 'Results' : 'Creating…'}>
           {bulkDone && (
             <p style={{ fontSize: 13, marginTop: 0 }}>
-              {bulkResults.filter((r) => r.ok).length} of {bulkResults.length} engagement
-              {bulkResults.length === 1 ? '' : 's'} created
-              {bulkResults.some((r) => !r.ok) ? ' — failures listed below.' : '.'}
+              {bulkResults.filter((r) => r.ok && !r.skipped).length} created
+              {bulkResults.some((r) => r.skipped)
+                ? `, ${bulkResults.filter((r) => r.skipped).length} skipped (already had one)`
+                : ''}
+              {bulkResults.some((r) => !r.ok)
+                ? `, ${bulkResults.filter((r) => !r.ok).length} failed — see below.`
+                : '.'}
             </p>
           )}
           <div style={{ display: 'grid', gap: 4 }}>
@@ -1402,7 +1458,9 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
                 key={r.clientId}
                 style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: 13 }}
               >
-                <Pill tone={r.ok ? 'success' : 'danger'}>{r.ok ? 'created' : 'failed'}</Pill>
+                <Pill tone={r.skipped ? 'neutral' : r.ok ? 'success' : 'danger'}>
+                  {r.skipped ? 'skipped' : r.ok ? 'created' : 'failed'}
+                </Pill>
                 <span>{r.clientName}</span>
                 {r.engagementId && (
                   <a href={`/engagements/${r.engagementId}`} style={{ fontSize: 12 }}>
