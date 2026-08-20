@@ -125,6 +125,7 @@ export const PERMISSION_KEYS = [
   'storage:folder:reconcile',
   'storage:file:publish',
   'storage:file:unpublish',
+  'storage:file:delete',
 
   // Stage 1B — envelope encryption lifecycle. Unlock = enter the
   // admin passphrase at boot. Rotate = generate a new MFK and re-wrap
@@ -248,6 +249,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:folder:reconcile',
     'storage:file:publish',
     'storage:file:unpublish',
+    'storage:file:delete',
     'crypto:unlock',
     'crypto:rotate',
     'messaging:read',
@@ -308,6 +310,7 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:folder:bind',
     'storage:file:publish',
     'storage:file:unpublish',
+    'storage:file:delete',
     'messaging:read',
     'messaging:write',
     'requests:read',

@@ -2,9 +2,10 @@
 //
 // File visibility + completion endpoints.
 //
-//   PATCH /:id/visibility           — Phase 6, single-file flip
-//   POST  /bulk-visibility          — Phase 6, multi-file flip
-//   POST  /:id/complete             — Phase 8, confirm a presigned upload
+//   PATCH  /:id/visibility          — Phase 6, single-file flip
+//   POST   /bulk-visibility         — Phase 6, multi-file flip
+//   POST   /:id/complete            — Phase 8, confirm a presigned upload
+//   DELETE /:id                     — remove the storage object + soft-delete the row
 //
 // Visibility writes append a row to file_visibility_events so the
 // portal "First viewed" audit and compliance exports can reconstruct
@@ -429,6 +430,76 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
         },
       }).catch(() => undefined);
       res.json({ ok: true, etag: meta.etag, sizeBytes: meta.sizeBytes });
+    },
+  );
+
+  // ----- Delete — remove the storage object + soft-delete the row -----
+  // The bucket object is gone for real (that's what "delete" means for
+  // a file); the `files` row is soft-deleted so the audit trail and any
+  // referencing ids survive. Idempotent: deleting an already-deleted
+  // file returns ok.
+  router.delete(
+    '/:id',
+    requirePermission(deps, 'storage:file:delete'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const storage = getStorage(deps);
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const [row] = await deps.db
+        .select({
+          id: files.id,
+          storageKey: files.storageKey,
+          originalFilename: files.originalFilename,
+          visibility: files.visibility,
+          deletedAt: files.deletedAt,
+        })
+        .from(files)
+        .where(and(eq(files.id, req.params['id']!), eq(files.firmId, session.firmId)))
+        .limit(1);
+      if (!row) {
+        res.status(404).json({ error: 'file_not_found' });
+        return;
+      }
+      if (row.deletedAt) {
+        res.json({ ok: true, alreadyDeleted: true });
+        return;
+      }
+      // Storage first: if the object can't be removed, don't hide the
+      // row — the admin would think it's gone while it still exists.
+      try {
+        await storage.delete(row.storageKey);
+      } catch (err) {
+        res.status(502).json({
+          error: 'storage_delete_failed',
+          detail: err instanceof Error ? err.message : String(err),
+        });
+        return;
+      }
+      await deps.db
+        .update(files)
+        .set({ deletedAt: new Date(), modifiedAt: new Date() })
+        .where(eq(files.id, row.id));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'file',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        before: {
+          storageKey: row.storageKey,
+          originalFilename: row.originalFilename,
+          visibility: row.visibility,
+        },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
     },
   );
 

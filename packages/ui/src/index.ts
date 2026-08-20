@@ -25,6 +25,7 @@ export {
   ChevronDown,
   Folder,
   Printer,
+  Trash,
   type IconProps,
 } from './icons';
 export { ErrorBoundary } from './ErrorBoundary';

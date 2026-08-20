@@ -38,6 +38,7 @@ import {
   ShareIcon,
   Table,
   tokens,
+  Trash,
 } from '@vibe/ui';
 
 import { api } from '../../api-client';
@@ -503,6 +504,7 @@ export function ClientFilesTab({
   const canRename = usePermission('storage:folder:rename');
   const canPublish = usePermission('storage:file:publish');
   const canUnpublish = usePermission('storage:file:unpublish');
+  const canDelete = usePermission('storage:file:delete');
 
   const [data, setData] = useState<ListResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -704,6 +706,25 @@ export function ClientFilesTab({
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'bulk_visibility_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteFile(file: FileRow): Promise<void> {
+    if (
+      !window.confirm(
+        `Delete "${file.originalFilename}"? The file is removed from storage permanently.`,
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    try {
+      await api(`/api/staff/files/${file.id}`, { method: 'DELETE' });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'delete_failed');
     } finally {
       setBusy(false);
     }
@@ -1255,6 +1276,16 @@ export function ClientFilesTab({
                     >
                       <Download size={16} />
                     </IconButton>
+                    {canDelete && (
+                      <IconButton
+                        label="Delete this file (removed from storage permanently)"
+                        tone="danger"
+                        onClick={() => void deleteFile(r)}
+                        disabled={busy}
+                      >
+                        <Trash size={16} />
+                      </IconButton>
+                    )}
                   </div>
                 ),
               },
