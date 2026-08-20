@@ -12,19 +12,11 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import {
-  Button,
-  Card,
-  Combobox,
-  Input,
-  MultiCombobox,
-  Pill,
-  tokens,
-  type ComboboxOption,
-} from '@vibe/ui';
+import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 import { advancePeriod, resolveEngagementName } from '@vibe/core/engagements';
 
 import { api } from '../api-client';
+import { BulkClientPicker, type SelectedClient } from './engagements/BulkClientPicker';
 import { centsToDollarsInput, dollarsInputToCents, percentInputToBps } from '../lib/money';
 import {
   RecurrenceComposer,
@@ -129,6 +121,27 @@ interface AssignmentDraft {
   role: AssignmentRole;
 }
 
+// The legacy (un-paginated) /api/staff/clients response caps at 500 rows;
+// page through the paginated shape so firms with thousands of clients get
+// the full list in the single-client picker. Excludes ARCHIVED
+// (soft-deleted) clients.
+async function fetchAllClients(): Promise<Client[]> {
+  const base = '/api/staff/clients?status=ACTIVE,PROSPECT,INACTIVE&sort=name&dir=asc&pageSize=500';
+  const first = await api<{ rows: Client[]; total: number }>(`${base}&page=1`);
+  const all = [...(first.rows ?? [])];
+  const total = Number(first.total ?? all.length);
+  const pages = Math.min(Math.ceil(total / 500), 40);
+  if (pages > 1) {
+    const rest = await Promise.all(
+      Array.from({ length: pages - 1 }, (_, i) =>
+        api<{ rows: Client[] }>(`${base}&page=${i + 2}`).then((r) => r.rows ?? []),
+      ),
+    );
+    for (const rows of rest) all.push(...rows);
+  }
+  return all;
+}
+
 const FEE_STRUCTURES = [
   'HOURLY',
   'HOURLY_NTE',
@@ -176,8 +189,11 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
   const [pickedRole, setPickedRole] = useState<AssignmentRole>('STAFF');
 
   const [clientId, setClientId] = useState(initialClientId);
-  // Bulk mode — selected clients + per-client create results.
-  const [clientIds, setClientIds] = useState<string[]>([]);
+  // Bulk mode — selected clients ({id, name}, from the picker panel) + per-
+  // client create results. `clientIds` is the derived id list the create
+  // loop and button labels consume.
+  const [bulkSelected, setBulkSelected] = useState<SelectedClient[]>([]);
+  const clientIds = bulkSelected.map((s) => s.id);
   const [bulkResults, setBulkResults] = useState<BulkResult[]>([]);
   const [bulkDone, setBulkDone] = useState(false);
   const [skipExisting, setSkipExisting] = useState(true);
@@ -294,7 +310,9 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
     void (async () => {
       try {
         const [c, t, w, u, rc, et, sl] = await Promise.all([
-          api<{ items: Client[] }>('/api/staff/clients').catch(() => ({ items: [] })),
+          fetchAllClients()
+            .then((items) => ({ items }))
+            .catch(() => ({ items: [] as Client[] })),
           api<{ items: EngagementTpl[] }>('/api/staff/admin/templates/engagement').catch(() => ({
             items: [],
           })),
@@ -394,8 +412,9 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
   // the name field blank → preview what the server will resolve. Used
   // in the UI hint below the name input.
   const pickedTpl = templates.find((t) => t.id === pickedTemplateId) ?? null;
-  const previewClientId = bulk ? (clientIds[0] ?? '') : clientId;
-  const pickedClientName = clients.find((c) => c.id === previewClientId)?.name ?? null;
+  const pickedClientName = bulk
+    ? (bulkSelected[0]?.name ?? null)
+    : (clients.find((c) => c.id === clientId)?.name ?? null);
   const periodPreview = {
     year: periodYear.trim() ? Number(periodYear) : null,
     month: periodMonth.trim() ? Number(periodMonth) : null,
@@ -503,7 +522,10 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
     const results: BulkResult[] = [];
     setBulkResults(results);
     for (const cid of clientIds) {
-      const clientName = clients.find((c) => c.id === cid)?.name ?? cid;
+      const clientName =
+        bulkSelected.find((s) => s.id === cid)?.name ??
+        clients.find((c) => c.id === cid)?.name ??
+        cid;
       if (alreadyHave.has(cid)) {
         results.push({ clientId: cid, clientName, ok: true, skipped: true });
         setBulkResults([...results]);
@@ -610,7 +632,12 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
   const activeClients = clients.filter((c) => c.id);
 
   return (
-    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
+    <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: bulk ? 1100 : 900 }}>
+      {bulk && (
+        <Card title="Select clients">
+          <BulkClientPicker selected={bulkSelected} onChange={setBulkSelected} />
+        </Card>
+      )}
       <Card title={bulk ? 'Bulk engagements — one per selected client' : 'New engagement'}>
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
@@ -632,29 +659,11 @@ export function EngagementCreatePage({ bulk = false }: { bulk?: boolean }): JSX.
             </div>
             {bulk ? (
               <div style={{ display: 'grid', gap: 6 }}>
-                <MultiCombobox
-                  ariaLabel="Clients"
-                  selected={clientIds}
-                  onChange={setClientIds}
-                  options={activeClients.map<ComboboxOption>((c) => ({
-                    value: c.id,
-                    label: c.name,
-                  }))}
-                  placeholder="— select clients —"
-                  chipLimit={8}
-                />
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => setClientIds(activeClients.map((c) => c.id))}
-                  >
-                    Select all ({activeClients.length})
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setClientIds([])}>
-                    Clear
-                  </Button>
-                </div>
+                <p style={{ fontSize: 13, margin: 0 }}>
+                  {clientIds.length > 0
+                    ? `${clientIds.length} client${clientIds.length === 1 ? '' : 's'} selected in the panel above.`
+                    : 'Pick clients in the "Select clients" panel above.'}
+                </p>
                 <label
                   style={{
                     fontSize: 12,

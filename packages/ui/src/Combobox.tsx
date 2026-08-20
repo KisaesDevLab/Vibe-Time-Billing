@@ -31,6 +31,9 @@ import { tokens } from './tokens';
 import { usePopoverPosition } from './usePopoverPosition';
 
 const POPOVER_MAX_HEIGHT = 320;
+// Render at most this many option rows at once — huge lists (thousands of
+// clients) stall the popover; a hint row invites narrowing by typing.
+const MAX_RENDERED = 200;
 
 export interface ComboboxOption {
   value: string;
@@ -103,15 +106,23 @@ export function Combobox({
     () => options.filter((o) => filterFn(o, query)),
     [options, query, filterFn],
   );
+  // Cap the rendered rows — thousands of options would flood the DOM and
+  // stall the popover; the hint row below the list tells the user to keep
+  // typing. Filtering still runs over the full option set.
+  const visible = useMemo(
+    () => (filtered.length > MAX_RENDERED ? filtered.slice(0, MAX_RENDERED) : filtered),
+    [filtered],
+  );
+  const hiddenCount = filtered.length - visible.length;
 
   const selectedOption = options.find((o) => o.value === value);
 
   // Reset highlight to selected option (or 0) when filter set changes.
   useEffect(() => {
     if (!open) return;
-    const i = filtered.findIndex((o) => o.value === value);
+    const i = visible.findIndex((o) => o.value === value);
     setHighlightIndex(i >= 0 ? i : 0);
-  }, [open, filtered, value]);
+  }, [open, visible, value]);
 
   // Focus the search input on open.
   useEffect(() => {
@@ -148,13 +159,13 @@ export function Combobox({
     if (!open) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setHighlightIndex((i) => Math.min(i + 1, filtered.length - 1));
+      setHighlightIndex((i) => Math.min(i + 1, visible.length - 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
       setHighlightIndex((i) => Math.max(i - 1, 0));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      const opt = filtered[highlightIndex];
+      const opt = visible[highlightIndex];
       if (opt) commit(opt);
     } else if (e.key === 'Escape') {
       e.preventDefault();
@@ -262,7 +273,7 @@ export function Combobox({
             id={listboxId}
             tabIndex={-1}
             aria-activedescendant={
-              filtered[highlightIndex] ? `${listboxId}-opt-${highlightIndex}` : undefined
+              visible[highlightIndex] ? `${listboxId}-opt-${highlightIndex}` : undefined
             }
             onKeyDown={onKey}
             style={{
@@ -316,7 +327,7 @@ export function Combobox({
                   {emptyLabel}
                 </p>
               ) : (
-                filtered.map((opt, i) => {
+                visible.map((opt, i) => {
                   const highlighted = i === highlightIndex;
                   const isSelected = opt.value === value;
                   return (
@@ -378,6 +389,18 @@ export function Combobox({
                     </div>
                   );
                 })
+              )}
+              {hiddenCount > 0 && (
+                <p
+                  style={{
+                    margin: 0,
+                    padding: '6px 10px',
+                    fontSize: 11,
+                    color: tokens.color.textMuted,
+                  }}
+                >
+                  …{hiddenCount} more — keep typing to narrow
+                </p>
               )}
             </div>
           </div>,
