@@ -522,6 +522,43 @@ async function dispatch(deps: StripeWebhookDeps, event: StripeEvent): Promise<vo
       }
       return;
     }
+    case 'payment_intent.canceled': {
+      // An intent canceled outside /terminal/cancel (Stripe dashboard, a
+      // reader timeout) emits no success/failure event — void any PENDING
+      // receipt and fail any PENDING payment so the rows can't linger.
+      const [pendingReceipt] = await deps.db
+        .select({ id: paymentReceipts.id })
+        .from(paymentReceipts)
+        .where(
+          and(
+            eq(paymentReceipts.providerChargeId, intentId),
+            eq(paymentReceipts.status, 'PENDING'),
+          ),
+        )
+        .limit(1);
+      if (pendingReceipt) {
+        await deps.db
+          .update(paymentReceipts)
+          .set({ status: 'VOIDED', updatedAt: new Date() })
+          .where(eq(paymentReceipts.id, pendingReceipt.id));
+        await emitAudit(deps.db, {
+          action: 'PAYMENT',
+          entityType: 'payment_receipt',
+          entityId: pendingReceipt.id,
+          after: { providerChargeId: intentId, status: 'VOIDED' },
+        }).catch((err: unknown) =>
+          logger.error(
+            { err, receiptId: pendingReceipt.id },
+            'audit emit failed (payment_receipt VOIDED)',
+          ),
+        );
+      }
+      await deps.db
+        .update(payments)
+        .set({ status: 'FAILED' })
+        .where(and(eq(payments.providerChargeId, intentId), eq(payments.status, 'PENDING')));
+      return;
+    }
     case 'charge.refunded':
     case 'charge.dispute.created':
     case 'charge.dispute.closed': {

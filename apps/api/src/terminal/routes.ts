@@ -12,7 +12,6 @@ import { z } from 'zod';
 import type { Database } from '@vibe/db';
 import {
   clients,
-  firmSettingsProposals,
   invoices,
   paymentReceipts,
   payments,
@@ -24,6 +23,7 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { resolveFirmStripe } from '../payments/firm-stripe';
 import {
   cancelPaymentIntent,
   cancelReaderAction,
@@ -86,17 +86,20 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
 
+  // Q7 — the firm's Stripe account may be linked either way: Connect OAuth
+  // (platform key + Stripe-Account header) or direct pasted keys (the
+  // primary mode; empty account id → stripePostForm omits the header).
+  // resolveFirmStripe applies the same priority as every other charge path.
   async function conn(
     firmId: string,
   ): Promise<{ secretKey: string; stripeAccountId: string } | null> {
-    if (!deps.db || !deps.secretKey) return null;
-    const [row] = await deps.db
-      .select({ acct: firmSettingsProposals.stripeAccountId })
-      .from(firmSettingsProposals)
-      .where(eq(firmSettingsProposals.firmId, firmId))
-      .limit(1);
-    if (!row?.acct) return null;
-    return { secretKey: deps.secretKey, stripeAccountId: row.acct };
+    if (!deps.db) return null;
+    const creds = await resolveFirmStripe(deps.db, firmId, process.env);
+    if (creds) return { secretKey: creds.secretKey, stripeAccountId: creds.stripeAccountId };
+    // Injected boot key with no DB-resolvable credentials (tests, bespoke
+    // deployments) — treat it as a direct account key.
+    if (deps.secretKey) return { secretKey: deps.secretKey, stripeAccountId: '' };
+    return null;
   }
 
   // ----- provisioning -------------------------------------------------
@@ -234,25 +237,46 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
       .limit(1);
     if (!inv) return void res.status(404).json({ error: 'invoice_not_found' });
 
-    const pi = await createCardPresentIntent(c, {
-      amountCents: parsed.data.amountCents,
-      customerId: parsed.data.customerId,
-      saveForFutureUse: parsed.data.saveCard,
-      metadata: { invoice_id: parsed.data.invoiceId, firm_id: session.firmId },
-      idempotencyKey: `cp-${parsed.data.invoiceId}-${parsed.data.amountCents}`,
-    });
     // Track as a PENDING payment; the webhook (payment_intent.succeeded after
-    // capture) marks it succeeded + advances the invoice.
-    await deps.db!.insert(payments).values({
-      invoiceId: parsed.data.invoiceId,
-      amountCents: parsed.data.amountCents,
-      feeCents: 0,
-      provider: 'STRIPE',
-      channel: 'TERMINAL',
-      providerChargeId: pi.id,
-      status: 'PENDING',
-      receivedAt: new Date(),
-    });
+    // capture) marks it succeeded + advances the invoice. Inserted FIRST so
+    // the Stripe idempotency key can anchor to this attempt's row — a fixed
+    // invoice+amount key would replay a canceled PI on retry (and collide two
+    // legitimate equal-amount charges) within Stripe's 24h idempotency window.
+    const [payRow] = await deps
+      .db!.insert(payments)
+      .values({
+        invoiceId: parsed.data.invoiceId,
+        amountCents: parsed.data.amountCents,
+        feeCents: 0,
+        provider: 'STRIPE',
+        channel: 'TERMINAL',
+        status: 'PENDING',
+        receivedAt: new Date(),
+      })
+      .returning({ id: payments.id });
+    if (!payRow) return void res.status(500).json({ error: 'payment_insert_failed' });
+    let pi: { id: string };
+    try {
+      pi = await createCardPresentIntent(c, {
+        amountCents: parsed.data.amountCents,
+        customerId: parsed.data.customerId,
+        saveForFutureUse: parsed.data.saveCard,
+        metadata: { invoice_id: parsed.data.invoiceId, firm_id: session.firmId },
+        idempotencyKey: `cp-${payRow.id}`,
+      });
+    } catch (err) {
+      logger.error({ err, paymentId: payRow.id }, 'terminal create intent failed');
+      await deps
+        .db!.update(payments)
+        .set({ status: 'FAILED' })
+        .where(eq(payments.id, payRow.id))
+        .catch(() => undefined);
+      return void res.status(502).json({ error: 'stripe_intent_failed' });
+    }
+    await deps
+      .db!.update(payments)
+      .set({ providerChargeId: pi.id })
+      .where(eq(payments.id, payRow.id));
     let actionStatus = 'in_progress';
     try {
       const r = await processPaymentIntent(c, {
@@ -262,6 +286,13 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
       actionStatus = r.actionStatus;
     } catch (err) {
       logger.error({ err, pi: pi.id }, 'terminal process_payment_intent failed');
+      // The reader never saw the intent — fail the attempt so the row can't
+      // linger PENDING (the webhook still recovers it if a tap somehow lands).
+      await deps
+        .db!.update(payments)
+        .set({ status: 'FAILED' })
+        .where(eq(payments.id, payRow.id))
+        .catch(() => undefined);
       return void res.status(502).json({ error: 'reader_process_failed', paymentIntentId: pi.id });
     }
     await emitAudit(deps.db!, {
@@ -397,6 +428,29 @@ export function createTerminalRouter(deps: TerminalRoutesDeps): Router {
     const c = await conn(session.firmId);
     if (!c) return void res.status(409).json({ error: 'stripe_not_connected' });
     const r = await cancelPaymentIntent(c, { paymentIntentId: parsed.data.paymentIntentId });
+    // Don't leave this attempt's ledger rows dangling PENDING — Stripe never
+    // emits a success/failure for a canceled intent, so nothing else would
+    // ever flip them. (Only reached when the Stripe cancel succeeded, so a
+    // captured payment can never be voided here.)
+    await deps
+      .db!.update(payments)
+      .set({ status: 'FAILED' })
+      .where(
+        and(
+          eq(payments.providerChargeId, parsed.data.paymentIntentId),
+          eq(payments.status, 'PENDING'),
+        ),
+      );
+    await deps
+      .db!.update(paymentReceipts)
+      .set({ status: 'VOIDED', updatedAt: new Date() })
+      .where(
+        and(
+          eq(paymentReceipts.providerChargeId, parsed.data.paymentIntentId),
+          eq(paymentReceipts.firmId, session.firmId),
+          eq(paymentReceipts.status, 'PENDING'),
+        ),
+      );
     res.json(r);
   });
 

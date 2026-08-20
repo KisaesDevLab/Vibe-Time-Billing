@@ -34,7 +34,7 @@ const { createTerminalRouter } = await import('../terminal/routes');
 let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
 
-function app(): express.Express {
+function app(secretKey: string | null = 'sk_test_dummy'): express.Express {
   const a = express();
   a.use(express.json());
   a.use((req, _res, next) => {
@@ -49,19 +49,32 @@ function app(): express.Express {
     createTerminalRouter({
       db: harness.db,
       fakeUserRoles: new Map<string, RoleSlug[]>([[seed.appUserId, ['admin']]]),
-      secretKey: 'sk_test_dummy',
+      secretKey,
     }),
   );
   return a;
 }
 
-async function setup(): Promise<{ readerId: string; invoiceId: string }> {
+async function setup(
+  stripeMode: 'oauth' | 'direct' | 'none' = 'oauth',
+): Promise<{ readerId: string; invoiceId: string }> {
   const { firmId, clientId, engagementId } = seed;
-  // Stripe connected account (conn() requires it).
-  await harness.db.execute(
-    sql`INSERT INTO firm_settings_proposals (firm_id, stripe_account_id, stripe_account_capabilities)
-        VALUES (${firmId}, 'acct_test', '{}'::jsonb)`,
-  );
+  if (stripeMode === 'oauth') {
+    // Stripe Connect OAuth — connected account id + platform key.
+    await harness.db.execute(
+      sql`INSERT INTO firm_settings_proposals (firm_id, stripe_account_id, stripe_account_capabilities)
+          VALUES (${firmId}, 'acct_test', '{}'::jsonb)`,
+    );
+  } else if (stripeMode === 'direct') {
+    // Direct pasted firm keys (the primary Q7 mode) — encrypted at rest,
+    // resolved per request via resolveFirmStripe. No connected account row.
+    process.env['KMS_KEY'] = Buffer.alloc(32, 7).toString('base64');
+    const { encryptStripeConfig } = await import('../payments/stripe-resolver');
+    const enc = encryptStripeConfig({ secretKey: 'sk_test_direct' });
+    await harness.db.execute(
+      sql`INSERT INTO firm_settings (firm_id, stripe_config_encrypted) VALUES (${firmId}, ${enc})`,
+    );
+  }
   const loc = await harness.db.execute(
     sql`INSERT INTO terminal_locations (firm_id, stripe_location_id, display_name)
         VALUES (${firmId}, 'tml_1', 'Front desk') RETURNING id`,
@@ -88,6 +101,7 @@ beforeEach(async () => {
   processSpy.mockClear();
 });
 afterEach(async () => {
+  delete process.env['KMS_KEY'];
   await harness.close();
 });
 
@@ -115,6 +129,37 @@ describe('terminal collect-receipt', () => {
     expect(receipt!.providerChargeId).toBe('pi_test_123');
     expect(receipt!.paymentMethod).toBe('CARD_PRESENT');
     expect(receipt!.allocationsPending).toEqual([{ invoiceId, amountCents: 60000 }]);
+  });
+
+  it('works with direct (pasted) firm keys — no Connect OAuth account', async () => {
+    const { readerId, invoiceId } = await setup('direct');
+    // secretKey null: nothing injected at boot, so conn() must resolve the
+    // pasted key from the DB (the production configuration).
+    const res = await request(app(null))
+      .post('/api/staff/terminal/collect-receipt')
+      .send({
+        readerId,
+        payerClientId: seed.clientId,
+        paymentDate: '2026-06-10',
+        allocations: [{ invoiceId, amountCents: 25000 }],
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.paymentIntentId).toBe('pi_test_123');
+    expect(processSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('409s when no Stripe credentials exist in any mode', async () => {
+    const { readerId, invoiceId } = await setup('none');
+    const res = await request(app(null))
+      .post('/api/staff/terminal/collect-receipt')
+      .send({
+        readerId,
+        payerClientId: seed.clientId,
+        paymentDate: '2026-06-10',
+        allocations: [{ invoiceId, amountCents: 25000 }],
+      });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('stripe_not_connected');
   });
 
   it('404s for an invoice that is not in the firm', async () => {
