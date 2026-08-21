@@ -16,6 +16,7 @@ import { ReceiptActions } from '../components/ReceiptActions';
 import { useColumnView, viewToPagedQuery } from '../lib/column-view';
 import { AchReturnsPage } from './admin/AchReturns';
 import { PaymentImportTab } from './payments/PaymentImportTab';
+import { PendingAchTab } from './payments/PendingAchTab';
 
 // deriveChannel() outputs — used as the Channel column filter options
 // (bounded set, independent of the loaded page).
@@ -93,12 +94,25 @@ const STATUS_TONE: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> 
 
 export function PaymentsPage(): JSX.Element {
   const navigate = useNavigate();
-  const [tab, setTab] = useState<'payments' | 'ach' | 'import'>(() => {
+  const [tab, setTab] = useState<'payments' | 'ach' | 'pending-ach' | 'import'>(() => {
     const h = window.location.hash.replace('#', '');
-    return h === 'ach-returns' ? 'ach' : h === 'import' ? 'import' : 'payments';
+    return h === 'ach-returns'
+      ? 'ach'
+      : h === 'pending-ach'
+        ? 'pending-ach'
+        : h === 'import'
+          ? 'import'
+          : 'payments';
   });
   useEffect(() => {
-    const want = tab === 'ach' ? '#ach-returns' : tab === 'import' ? '#import' : '';
+    const want =
+      tab === 'ach'
+        ? '#ach-returns'
+        : tab === 'pending-ach'
+          ? '#pending-ach'
+          : tab === 'import'
+            ? '#import'
+            : '';
     if (want && window.location.hash !== want) {
       window.history.replaceState(null, '', want);
     } else if (!want && window.location.hash) {
@@ -386,6 +400,7 @@ export function PaymentsPage(): JSX.Element {
           [
             ['payments', 'Payments'],
             ['ach', 'ACH returns'],
+            ['pending-ach', 'Pending ACH'],
             ['import', 'Import'],
           ] as const
         ).map(([key, label]) => (
@@ -411,6 +426,8 @@ export function PaymentsPage(): JSX.Element {
 
       {tab === 'ach' ? (
         <AchReturnsPage />
+      ) : tab === 'pending-ach' ? (
+        <PendingAchTab />
       ) : tab === 'import' ? (
         <PaymentImportTab />
       ) : (

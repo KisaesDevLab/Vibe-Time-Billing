@@ -630,6 +630,45 @@ export const paymentMethod = pgTable(
 );
 
 // =====================================================================
+// TABLE: ach_verify_link (0218)
+//
+// Public micro-deposit verification links (no portal login). Mirrors
+// invoice_pay_link: the opaque ~128-bit token is the credential; only
+// its sha256 is stored. Each link targets ONE pending manual-ACH
+// payment method; multiple ACTIVE links may coexist (each reminder
+// mints its own — the plaintext is unrecoverable once stored).
+// =====================================================================
+
+export const achVerifyLinks = pgTable(
+  'ach_verify_link',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    paymentMethodId: uuid('payment_method_id')
+      .notNull()
+      .references(() => paymentMethod.id, { onDelete: 'cascade' }),
+    // sha256(token) hex — the plaintext token is never stored or logged.
+    tokenHash: text('token_hash').notNull().unique(),
+    // ACTIVE | VERIFIED | VOIDED | EXPIRED.
+    status: text('status').notNull().default('ACTIVE'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    createdByAppUserId: uuid('created_by_app_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
+    accessCount: integer('access_count').notNull().default(0),
+    lastAccessedAt: timestamp('last_accessed_at', { withTimezone: true }),
+    verifiedAt: timestamp('verified_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    methodIdx: index('ach_verify_link_method_idx').on(t.paymentMethodId),
+    firmStatusIdx: index('ach_verify_link_firm_status_idx').on(t.firmId, t.status),
+  }),
+);
+
+// =====================================================================
 // TABLE: portal_step_up_challenge (0064)
 //
 // Portal-side step-up verification. Different from the staff

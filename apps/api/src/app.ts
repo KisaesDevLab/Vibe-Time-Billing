@@ -51,6 +51,7 @@ import { createProcessProjectRouter } from './process-project/routes';
 import { createStaffFileShareRouter } from './files/share-routes';
 import { createFileRecipientRouter } from './share-public/file-recipient';
 import { createInvoicePayPublicRouter } from './pay-public/invoice-pay';
+import { createAchVerifyPublicRouter } from './pay-public/ach-verify';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { createTimerRouter } from './time-entries/timers';
@@ -1226,6 +1227,15 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/pay', invoicePayPublicRouter);
 
+  // 0218 — public ACH micro-deposit verification (no portal auth). The link
+  // token is the credential; verifying only makes the client's own bank
+  // chargeable by this firm — no money moves on this surface.
+  const achVerifyPublicRouter = createAchVerifyPublicRouter({
+    db: deps.db,
+    redis: deps.redis,
+  });
+  app.use('/api/ach-verify', achVerifyPublicRouter);
+
   // TR-7 — tax-return recipient API (3rd-party token surface). Mounted
   // under /api so Caddy proxies it; the recipient *page* is the portal
   // SPA route /shared/tax/:token (served by the SPA fallback). Distinct
@@ -1987,6 +1997,8 @@ export function createApp(deps: AppDeps): Express {
   const savedMethodsRouter = createSavedMethodsRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    sendStaffMail: deps.sendStaffMail,
+    portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/payment-methods', auth.requireAuth, auth.requireCsrf, savedMethodsRouter);
 

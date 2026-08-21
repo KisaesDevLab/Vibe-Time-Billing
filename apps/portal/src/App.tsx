@@ -94,6 +94,7 @@ const SharedTaxReturnPage = lazyPage(
 );
 const SharedFilePage = lazyPage(() => import('./pages/SharedFile'), 'SharedFilePage');
 const PayPage = lazyPage(() => import('./pages/PayPage'), 'PayPage');
+const VerifyBankPage = lazyPage(() => import('./pages/VerifyBank'), 'VerifyBankPage');
 const InOfficeSignPage = lazyPage(() => import('./pages/InOfficeSign'), 'InOfficeSignPage');
 
 export function App(): JSX.Element {
@@ -150,6 +151,8 @@ function PortalRoutes(): JSX.Element {
         {/* 0181 — no-login pay-by-link landing + post-checkout return page. */}
         <Route path="/pay/:token" element={<PayPage />} />
         <Route path="/pay/:token/done" element={<PayPage />} />
+        {/* 0218 — no-login ACH micro-deposit verification landing. */}
+        <Route path="/verify-bank/:token" element={<VerifyBankPage />} />
         <Route
           path="*"
           element={

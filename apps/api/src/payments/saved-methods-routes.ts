@@ -6,11 +6,11 @@
 // server persists the method. Mounted at /api/staff/payment-methods.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { paymentMethod } from '@vibe/db/schema';
+import { achVerifyLinks, clients, firms, paymentMethod } from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBlockedClientIdsCached } from '../clients/access';
@@ -18,14 +18,25 @@ import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import {
+  clientBillingIdentity,
   confirmClientSetupIntent,
   createClientSetupIntent,
   listClientMethods,
 } from './saved-methods';
 import { createManualAchMethod, verifyMicrodeposits } from './manual-ach';
+import { createAchVerifyLink } from './ach-verify-link';
 
 export interface SavedMethodsDeps extends RbacDeps {
   db: Database | null;
+  /** Firm mailer — used by the micro-deposit verification reminder. */
+  sendStaffMail?: (args: {
+    to: string;
+    subject: string;
+    body: string;
+    html?: string;
+  }) => Promise<void>;
+  /** Portal origin — the public verify page lives on the portal host. */
+  portalBaseUrl?: string;
 }
 
 async function clientBlocked(
@@ -254,6 +265,161 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
         after: { clientId: parsed.data.clientId, kind: 'saved' },
       }).catch(() => undefined);
       res.status(201).json({ ok: true, paymentMethodId: out.paymentMethodId });
+    },
+  );
+
+  // 0218 — firm-wide list of manual-ACH banks still awaiting micro-deposit
+  // verification (the /payments "Pending ACH" tab).
+  router.get(
+    '/pending-verification',
+    requirePermission(deps, 'payment:read'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const s = req.staffSession!;
+      const rows = await deps.db
+        .select({
+          id: paymentMethod.id,
+          clientId: paymentMethod.clientId,
+          clientName: clients.name,
+          displayLabel: paymentMethod.displayLabel,
+          lastFour: paymentMethod.lastFour,
+          createdAt: paymentMethod.createdAt,
+        })
+        .from(paymentMethod)
+        .leftJoin(clients, eq(clients.id, paymentMethod.clientId))
+        .where(
+          and(
+            eq(paymentMethod.firmId, s.firmId),
+            eq(paymentMethod.status, 'ACTIVE'),
+            eq(paymentMethod.verificationStatus, 'PENDING_MICRODEPOSIT'),
+          ),
+        )
+        .orderBy(desc(paymentMethod.createdAt));
+
+      const blocked = await getBlockedClientIdsCached(deps, req, s.appUserId, s.firmId);
+      const visible = rows.filter((r) => !r.clientId || !blocked.includes(r.clientId));
+
+      // Latest reminder per method (appliance scale — one small query).
+      const links = await deps.db
+        .select({
+          paymentMethodId: achVerifyLinks.paymentMethodId,
+          createdAt: achVerifyLinks.createdAt,
+        })
+        .from(achVerifyLinks)
+        .where(eq(achVerifyLinks.firmId, s.firmId));
+      const lastReminder = new Map<string, Date>();
+      for (const l of links) {
+        const prev = lastReminder.get(l.paymentMethodId);
+        if (!prev || l.createdAt > prev) lastReminder.set(l.paymentMethodId, l.createdAt);
+      }
+
+      res.json({
+        items: visible.map((r) => ({
+          ...r,
+          lastReminderAt: lastReminder.get(r.id) ?? null,
+        })),
+      });
+    },
+  );
+
+  // 0218 — email the client a public (no-login) link to confirm the
+  // micro-deposit amounts. Each send mints its own token; older links keep
+  // working until they expire or the method verifies.
+  router.post(
+    '/:id/send-verification-reminder',
+    requirePermission(deps, 'payment:write'),
+    async (req: Request, res: Response) => {
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!deps.sendStaffMail || !deps.portalBaseUrl) {
+        res.status(503).json({ error: 'mail_not_configured' });
+        return;
+      }
+      const s = req.staffSession!;
+      const [pm] = await deps.db
+        .select({
+          id: paymentMethod.id,
+          clientId: paymentMethod.clientId,
+          displayLabel: paymentMethod.displayLabel,
+          verificationStatus: paymentMethod.verificationStatus,
+          status: paymentMethod.status,
+        })
+        .from(paymentMethod)
+        .where(and(eq(paymentMethod.id, req.params['id']!), eq(paymentMethod.firmId, s.firmId)))
+        .limit(1);
+      if (!pm || !pm.clientId) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (pm.status !== 'ACTIVE' || pm.verificationStatus !== 'PENDING_MICRODEPOSIT') {
+        res.status(409).json({ error: 'not_pending_verification' });
+        return;
+      }
+      if (await clientBlocked(deps, req, pm.clientId)) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const ident = await clientBillingIdentity(deps.db, s.firmId, pm.clientId);
+      if (!ident?.email) {
+        res.status(400).json({ error: 'no_billing_email' });
+        return;
+      }
+      const [firm] = await deps.db
+        .select({ name: firms.name })
+        .from(firms)
+        .where(eq(firms.id, s.firmId))
+        .limit(1);
+      const firmName = firm?.name ?? 'your accounting firm';
+
+      const link = await createAchVerifyLink(deps.db, {
+        firmId: s.firmId,
+        paymentMethodId: pm.id,
+        createdByAppUserId: s.appUserId,
+      });
+      const url = `${deps.portalBaseUrl.replace(/\/$/, '')}/verify-bank/${link.token}`;
+      const expires = link.expiresAt.toISOString().slice(0, 10);
+
+      try {
+        await deps.sendStaffMail({
+          to: ident.email,
+          subject: `Action needed — confirm your bank account with ${firmName}`,
+          body: [
+            `Hi ${ident.name},`,
+            '',
+            `${firmName} saved your bank account (${pm.displayLabel}) for ACH payments.`,
+            'To activate it, please confirm the small "micro-deposits" our payment',
+            'processor sent to that account. They appear on your bank statement within',
+            '1-2 business days as either two deposits under $1.00, or one deposit with',
+            'a 6-digit code starting with SM in its description.',
+            '',
+            'Confirm them here (no login needed):',
+            url,
+            '',
+            `This link expires on ${expires}. If the deposits haven't appeared yet,`,
+            'check again tomorrow.',
+            '',
+            `If you did not authorize this, please contact ${firmName}.`,
+          ].join('\n'),
+        });
+      } catch (err) {
+        logger.error({ err }, 'ach verification reminder send failed');
+        res.status(502).json({ error: 'mail_send_failed' });
+        return;
+      }
+
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'payment_method',
+        entityId: pm.id,
+        actorAppUserId: s.appUserId,
+        after: { kind: 'ach_verification_reminder_sent', linkId: link.id },
+      }).catch(() => undefined);
+      res.json({ ok: true, sentTo: ident.email, expiresAt: link.expiresAt });
     },
   );
 
