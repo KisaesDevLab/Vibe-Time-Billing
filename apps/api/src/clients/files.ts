@@ -27,7 +27,7 @@ import { z } from 'zod';
 import { and, asc, eq, isNull } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { clientFolders, clients, files } from '@vibe/db/schema';
+import { clientFolders, clients, clientSubfolders, files, taxReturns } from '@vibe/db/schema';
 import {
   buildStorageClient,
   enforceKeyByteCap,
@@ -231,13 +231,27 @@ export function mountFileRoutes(router: Router, deps: FileRoutesDeps): void {
         session.firmId,
         req.params['id']!,
       ).catch(() => []);
+      // 0219 — staff-created subfolders persist even when empty.
+      const adhoc = await deps.db
+        .select({ path: clientSubfolders.path })
+        .from(clientSubfolders)
+        .where(eq(clientSubfolders.clientFolderId, folder.clientFolderId));
+      // 0219 — files backing a tax return get a delete guard in the UI.
+      const flagged = rows.length
+        ? await deps.db
+            .select({ sourceFileId: taxReturns.sourceFileId })
+            .from(taxReturns)
+            .where(eq(taxReturns.clientId, folder.clientId))
+        : [];
+      const flaggedIds = new Set(flagged.map((f) => f.sourceFileId).filter(Boolean));
       res.json({
-        items: rows,
+        items: rows.map((r) => ({ ...r, flaggedTaxReturn: flaggedIds.has(r.id) })),
         clientFolderId: folder.clientFolderId,
         storagePath: folder.storagePath,
         status: folder.status,
         lastSyncedAt: folder.lastSyncedAt,
         templateFolders,
+        adhocFolders: adhoc.map((a) => a.path),
       });
     },
   );

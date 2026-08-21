@@ -44,6 +44,7 @@ import { mountCommunicationRoutes } from './communications';
 import { mountContactRoutes } from './contacts';
 import { mountPeopleRoutes } from './people';
 import { mountFileRoutes } from './files';
+import { mountFileManageRoutes } from './file-manage';
 import { mountClientImportRoutes } from './import';
 import { findOrCreatePerson } from './person-helpers';
 import { printClientMailing, type MailingKind } from './mailing-print';
@@ -1813,6 +1814,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // (Mock in dev, B2 in prod) so we don't depend on the legacy
   // storage adapter that backs v1 attachments.
   mountFileRoutes(router, { ...deps });
+  mountFileManageRoutes(router, { ...deps });
   // Phase 9 of FILE_MANAGER_ADDENDUM.md — folder-rename + SSE progress.
   // Skipped when redis is missing (tests with no real Redis); the
   // routes 503 if the queue can't be built lazily either way.

@@ -28,11 +28,14 @@ import {
   ChevronRight,
   Combobox,
   Download,
+  EmptyState,
   Eye,
   Flag,
   Folder,
   Input,
   Lock,
+  Menu,
+  Modal,
   Pill,
   Search,
   ShareIcon,
@@ -64,6 +67,8 @@ interface FileRow {
   uploadedAt: string;
   modifiedAt: string;
   pendingUpload: boolean;
+  /** 0219 — a tax return references this file as its source (delete guard). */
+  flaggedTaxReturn?: boolean;
 }
 
 interface TemplateFolder {
@@ -81,6 +86,8 @@ interface ListResponse {
   // Virtual folder skeleton resolved from the client's (or firm default)
   // folder template — shown in the Explorer even when empty.
   templateFolders?: TemplateFolder[];
+  // 0219 — staff-created subfolders that persist even when empty.
+  adhocFolders?: string[];
 }
 
 // File subfolderPath values carry a trailing slash (e.g. "Income Tax/");
@@ -155,6 +162,8 @@ export interface FolderNode {
   path: string;
   /** Files whose subfolderPath === this exact path. */
   count: number;
+  /** Files in this folder AND all descendants (tree badge). */
+  total: number;
   children: FolderNode[];
 }
 
@@ -168,7 +177,7 @@ export function buildFolderTree(keys: string[], countOf: (key: string) => number
     const trimmed = key.replace(/\/+$/, '');
     const slash = trimmed.lastIndexOf('/');
     const name = slash >= 0 ? trimmed.slice(slash + 1) : trimmed;
-    const node: FolderNode = { name, path: key, count: countOf(key), children: [] };
+    const node: FolderNode = { name, path: key, count: countOf(key), total: 0, children: [] };
     byPath.set(key, node);
     if (slash >= 0) {
       const parentKey = `${trimmed.slice(0, slash)}/`;
@@ -187,12 +196,28 @@ export function buildFolderTree(keys: string[], countOf: (key: string) => number
     for (const n of nodes) sortRec(n.children);
   };
   sortRec(roots);
+  // Subtree totals so a collapsed parent's badge reflects everything
+  // beneath it, not just its own exact-path files.
+  const totalRec = (node: FolderNode): number => {
+    node.total = node.count + node.children.reduce((acc, c) => acc + totalRec(c), 0);
+    return node.total;
+  };
+  for (const r of roots) totalRec(r);
   return roots;
 }
 
 /** True when the drag payload contains OS files (vs text/element drags). */
 function dragHasFiles(e: DragEvent<HTMLElement>): boolean {
   return Array.from(e.dataTransfer.types).includes('Files');
+}
+
+// 0219 — internal drag-to-move. File rows set this custom type carrying
+// the dragged file ids; folder rows accept it as a MOVE (vs the OS-file
+// COPY/upload path). The type string doubles as the payload key.
+const INTERNAL_DRAG_TYPE = 'application/x-vibe-file-ids';
+
+function dragHasInternalFiles(e: DragEvent<HTMLElement>): boolean {
+  return Array.from(e.dataTransfer.types).includes(INTERNAL_DRAG_TYPE);
 }
 
 /** One selectable row in the folder panel (also used for "All" + root). */
@@ -205,6 +230,7 @@ function FolderRow({
   mono,
   chevron,
   onDropFiles,
+  onDropFileIds,
   onDragHover,
 }: {
   label: string;
@@ -216,6 +242,8 @@ function FolderRow({
   chevron?: React.ReactNode;
   /** When set, the row accepts file drops (drag-and-drop upload). */
   onDropFiles?: (files: File[]) => void;
+  /** 0219 — when set, the row accepts INTERNAL drags (move files here). */
+  onDropFileIds?: (fileIds: string[]) => void;
   /** Reports drag-hover so the parent can label the active drop target. */
   onDragHover?: (over: boolean) => void;
 }): JSX.Element {
@@ -224,33 +252,50 @@ function FolderRow({
     setDragOver(over);
     onDragHover?.(over);
   };
+  // Which drag mode (if any) this row should react to for the event.
+  const dragMode = (e: DragEvent<HTMLElement>): 'upload' | 'move' | null => {
+    if (onDropFileIds && dragHasInternalFiles(e)) return 'move';
+    if (onDropFiles && dragHasFiles(e)) return 'upload';
+    return null;
+  };
   return (
     <div
       style={{ display: 'flex', alignItems: 'center' }}
       onDragEnter={(e) => {
-        if (!onDropFiles || !dragHasFiles(e)) return;
+        if (!dragMode(e)) return;
         e.preventDefault();
         setOver(true);
       }}
       onDragOver={(e) => {
-        if (!onDropFiles || !dragHasFiles(e)) return;
+        const mode = dragMode(e);
+        if (!mode) return;
         e.preventDefault();
-        e.dataTransfer.dropEffect = 'copy';
+        e.dataTransfer.dropEffect = mode === 'move' ? 'move' : 'copy';
       }}
       onDragLeave={(e) => {
-        if (!onDropFiles || !dragHasFiles(e)) return;
+        if (!dragMode(e)) return;
         // Transitions between the row's own children fire enter/leave
         // pairs — only clear when the pointer actually left the row.
         if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
         setOver(false);
       }}
       onDrop={(e) => {
-        if (!onDropFiles || !dragHasFiles(e)) return;
+        const mode = dragMode(e);
+        if (!mode) return;
         e.preventDefault();
         // Don't let the tab-wide drop handler also file these.
         e.stopPropagation();
         setOver(false);
-        onDropFiles(Array.from(e.dataTransfer.files));
+        if (mode === 'move') {
+          try {
+            const ids = JSON.parse(e.dataTransfer.getData(INTERNAL_DRAG_TYPE)) as string[];
+            if (Array.isArray(ids) && ids.length > 0) onDropFileIds!(ids);
+          } catch {
+            /* malformed payload — ignore */
+          }
+          return;
+        }
+        onDropFiles!(Array.from(e.dataTransfer.files));
       }}
     >
       <div style={{ width: depth * 14, flexShrink: 0 }} />
@@ -389,6 +434,7 @@ function FolderTreeNode({
   onSelect,
   onToggle,
   onDropFiles,
+  onDropFileIds,
   onDragHover,
 }: {
   node: FolderNode;
@@ -399,6 +445,8 @@ function FolderTreeNode({
   onToggle: (path: string) => void;
   /** When set, every row in the subtree accepts file drops into its path. */
   onDropFiles?: (path: string, files: File[]) => void;
+  /** 0219 — internal drag-to-move into this path. */
+  onDropFileIds?: (path: string, fileIds: string[]) => void;
   onDragHover?: (path: string, over: boolean) => void;
 }): JSX.Element {
   const hasChildren = node.children.length > 0;
@@ -430,13 +478,13 @@ function FolderTreeNode({
     <>
       <FolderRow
         label={node.name}
-        count={node.count}
+        count={node.total}
         depth={depth}
-        mono
         selected={selectedPath === node.path}
         onSelect={() => onSelect(node.path)}
         chevron={chevron}
         onDropFiles={onDropFiles ? (files) => onDropFiles(node.path, files) : undefined}
+        onDropFileIds={onDropFileIds ? (ids) => onDropFileIds(node.path, ids) : undefined}
         onDragHover={onDragHover ? (over) => onDragHover(node.path, over) : undefined}
       />
       {isOpen &&
@@ -450,6 +498,7 @@ function FolderTreeNode({
             onSelect={onSelect}
             onToggle={onToggle}
             onDropFiles={onDropFiles}
+            onDropFileIds={onDropFileIds}
             onDragHover={onDragHover}
           />
         ))}
@@ -549,6 +598,14 @@ export function ClientFilesTab({
   // In-app PDF preview. Holds the file + a short-lived inline presigned
   // URL the modal renders in an <iframe> (no download).
   const [previewFor, setPreviewFor] = useState<{ file: FileRow; url: string } | null>(null);
+  // 0219 — move / rename / new-folder / activity dialogs.
+  const [moveIds, setMoveIds] = useState<string[] | null>(null);
+  const [renameFor, setRenameFor] = useState<FileRow | null>(null);
+  const [newFolderOpen, setNewFolderOpen] = useState(false);
+  const [activityFor, setActivityFor] = useState<FileRow | null>(null);
+  // 0219 — sortable file table.
+  const [sortCol, setSortCol] = useState<'name' | 'size' | 'modified'>('name');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
   async function load(): Promise<void> {
     setError(null);
@@ -599,13 +656,15 @@ export function ClientFilesTab({
 
   const subfolders = useMemo(() => {
     if (!data?.items) return [] as string[];
-    // Union file-derived subfolders with the template skeleton so empty
-    // template folders still appear. Template names are normalized to the
-    // same trailing-slash key format as file subfolderPaths before de-duping.
+    // Union file-derived subfolders with the template skeleton AND the
+    // 0219 registry of staff-created folders, so empty folders appear and
+    // survive their last file moving out. Template names are normalized to
+    // the same trailing-slash key format as file subfolderPaths.
     const keys = new Set(data.items.map((f) => f.subfolderPath));
     for (const tf of data.templateFolders ?? []) {
       keys.add(templateFolderKey(tf.name));
     }
+    for (const path of data.adhocFolders ?? []) keys.add(path);
     return Array.from(keys).sort();
   }, [data]);
 
@@ -657,13 +716,79 @@ export function ClientFilesTab({
   const filtered = useMemo(() => {
     if (!data?.items) return [] as FileRow[];
     const needle = search.trim().toLowerCase();
-    return data.items.filter((f) => {
+    const rows = data.items.filter((f) => {
       if (selectedSubfolder !== null && f.subfolderPath !== selectedSubfolder) return false;
       if (visibilityFilter !== 'all' && f.visibility !== visibilityFilter) return false;
-      if (needle && !f.originalFilename.toLowerCase().includes(needle)) return false;
+      // 0219 — search matches the folder path too, not just the filename.
+      if (
+        needle &&
+        !f.originalFilename.toLowerCase().includes(needle) &&
+        !f.subfolderPath.toLowerCase().includes(needle)
+      ) {
+        return false;
+      }
       return true;
     });
-  }, [data, search, selectedSubfolder, visibilityFilter]);
+    const dir = sortDir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      if (sortCol === 'size') return (a.sizeBytes - b.sizeBytes) * dir;
+      if (sortCol === 'modified') return a.modifiedAt.localeCompare(b.modifiedAt) * dir;
+      return a.originalFilename.localeCompare(b.originalFilename) * dir;
+    });
+    return rows;
+  }, [data, search, selectedSubfolder, visibilityFilter, sortCol, sortDir]);
+
+  function toggleSort(col: 'name' | 'size' | 'modified'): void {
+    if (sortCol === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else {
+      setSortCol(col);
+      setSortDir('asc');
+    }
+  }
+
+  // 0219 — a move/rename can invalidate the selected folder path (it no
+  // longer exists in the derived tree). Fall back to "All" instead of
+  // showing a silently empty table.
+  useEffect(() => {
+    if (selectedSubfolder === null || selectedSubfolder === '') return;
+    if (!subfolders.includes(selectedSubfolder)) setSelectedSubfolder(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subfolders]);
+
+  // 0219 — move files to another subfolder ('' = folder root). Server
+  // copies the B2 objects, deletes the originals, updates the rows, and
+  // auto-suffixes name collisions.
+  async function moveFiles(fileIds: string[], toSubfolderPath: string): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api<{ moved: number; skipped: { fileId: string; reason: string }[] }>(
+        `/api/staff/clients/${clientId}/files/move`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ fileIds, toSubfolderPath }),
+        },
+      );
+      if (r.skipped.some((s) => s.reason === 'storage_error')) {
+        setError('Some files could not be moved (storage error) — check and retry.');
+      }
+      setMoveIds(null);
+      setSelectedIds(new Set());
+      await load();
+      // Land the user in the destination so the result is visible.
+      selectFolder(toSubfolderPath === '' ? '' : toSubfolderPath);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'move_failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Internal drag payload: dragging a selected row moves the whole
+  // selection; dragging an unselected row moves just that file.
+  function dragIdsFor(row: FileRow): string[] {
+    return selectedIds.has(row.id) ? Array.from(selectedIds) : [row.id];
+  }
 
   async function toggleVisibility(file: FileRow): Promise<void> {
     const target = file.visibility === 'private' ? 'client_visible' : 'private';
@@ -825,6 +950,13 @@ export function ClientFilesTab({
     setDropHover(null);
     void handleDroppedFiles(files, path);
   }
+
+  // 0219 — internal drag dropped on a folder row → move those files.
+  function dropMoveIntoFolder(path: string, ids: string[]): void {
+    setDropHover(null);
+    void moveFiles(ids, path);
+  }
+  const canMove = canEdit && data?.status === 'active' && !busy;
 
   // Row hover reporting. Enter on the next row fires BEFORE leave on the
   // previous one, so only clear when the leaving row is still the active
@@ -1055,7 +1187,13 @@ export function ClientFilesTab({
         </div>
       </Card>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: tokens.space.lg }}>
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'minmax(220px, 280px) 1fr',
+          gap: tokens.space.lg,
+        }}
+      >
         <Card title="Folders">
           <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
             <FolderRow
@@ -1072,10 +1210,10 @@ export function ClientFilesTab({
                 label="(folder root)"
                 count={rootFileCount}
                 depth={0}
-                mono
                 selected={selectedSubfolder === ''}
                 onSelect={() => selectFolder('')}
                 onDropFiles={canDropUpload ? (files) => dropIntoFolder('', files) : undefined}
+                onDropFileIds={canMove ? (ids) => dropMoveIntoFolder('', ids) : undefined}
                 onDragHover={canDropUpload ? (over) => setFolderHover('', over) : undefined}
               />
             )}
@@ -1089,9 +1227,21 @@ export function ClientFilesTab({
                 onSelect={selectFolder}
                 onToggle={toggleFolderExpand}
                 onDropFiles={canDropUpload ? dropIntoFolder : undefined}
+                onDropFileIds={canMove ? dropMoveIntoFolder : undefined}
                 onDragHover={canDropUpload ? setFolderHover : undefined}
               />
             ))}
+            <div style={{ marginTop: 8 }}>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={!canEdit || data.status !== 'active'}
+                title={!canEdit ? 'Needs storage:folder:edit' : undefined}
+                onClick={() => setNewFolderOpen(true)}
+              >
+                + New folder
+              </Button>
+            </div>
           </div>
         </Card>
 
@@ -1112,7 +1262,7 @@ export function ClientFilesTab({
             }}
           >
             <Input
-              placeholder="Search filename…"
+              placeholder="Search files and folders…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               style={{ flex: 1, minWidth: 200 }}
@@ -1126,42 +1276,101 @@ export function ClientFilesTab({
                 { value: 'client_visible', label: 'Client visible only' },
               ]}
             />
-            {selectedIds.size > 0 && (
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                  {selectedIds.size} selected
-                </span>
-                <IconButton
-                  label="Make client-visible (publish)"
-                  tone="success"
-                  disabled={busy || !canPublish}
-                  onClick={() => void bulkSetVisibility('client_visible')}
-                >
-                  <Eye size={16} />
-                </IconButton>
-                <IconButton
-                  label="Make private"
-                  disabled={busy || !canUnpublish}
-                  onClick={() => void bulkSetVisibility('private')}
-                >
-                  <Lock size={16} />
-                </IconButton>
-                <IconButton
-                  label="Share selected files"
-                  tone="accent"
-                  disabled={busy || !canPublish || selectedShareableIds.length === 0}
-                  onClick={() => setBulkShareOpen(true)}
-                >
-                  <ShareIcon size={16} />
-                </IconButton>
-              </div>
-            )}
+            <IconButton
+              label={
+                selectedSubfolder
+                  ? `Download ${selectedSubfolder.replace(/\/+$/, '')} as .zip`
+                  : 'Download all files as .zip'
+              }
+              disabled={filtered.length === 0 && selectedSubfolder !== null}
+              onClick={() =>
+                window.open(
+                  `/api/staff/clients/${clientId}/files/zip?path=${encodeURIComponent(
+                    selectedSubfolder ?? '',
+                  )}`,
+                  '_blank',
+                  'noopener',
+                )
+              }
+            >
+              <Download size={16} />
+            </IconButton>
           </div>
+          {selectedIds.size > 0 && (
+            <div
+              style={{
+                display: 'flex',
+                gap: 8,
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                marginBottom: 8,
+                padding: '6px 10px',
+                borderRadius: tokens.radius.sm,
+                background: tokens.color.accentMuted,
+              }}
+            >
+              <span style={{ fontSize: 12, fontWeight: 600 }}>{selectedIds.size} selected</span>
+              <Button
+                size="sm"
+                disabled={busy || !canMove}
+                title={!canEdit ? 'Needs storage:folder:edit' : undefined}
+                onClick={() => setMoveIds(Array.from(selectedIds))}
+              >
+                Move to…
+              </Button>
+              <IconButton
+                label="Make client-visible (publish)"
+                tone="success"
+                disabled={busy || !canPublish}
+                onClick={() => void bulkSetVisibility('client_visible')}
+              >
+                <Eye size={16} />
+              </IconButton>
+              <IconButton
+                label="Make private"
+                disabled={busy || !canUnpublish}
+                onClick={() => void bulkSetVisibility('private')}
+              >
+                <Lock size={16} />
+              </IconButton>
+              <IconButton
+                label="Share selected files"
+                tone="accent"
+                disabled={busy || !canPublish || selectedShareableIds.length === 0}
+                onClick={() => setBulkShareOpen(true)}
+              >
+                <ShareIcon size={16} />
+              </IconButton>
+              <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+                Clear
+              </Button>
+            </div>
+          )}
 
           <Table<FileRow>
             rows={filtered}
             rowKey={(r) => r.id}
-            empty="No files match the current filter."
+            empty={
+              search || visibilityFilter !== 'all' ? (
+                'No files match the current filter.'
+              ) : (
+                <EmptyState
+                  title={
+                    selectedSubfolder
+                      ? `No files in ${selectedSubfolder.replace(/\/+$/, '')}`
+                      : 'No files yet'
+                  }
+                  body="Upload files or drag them onto a folder in the tree."
+                  cta={
+                    canEdit && data.status === 'active' ? (
+                      <Button size="sm" onClick={() => setUploadOpen(true)}>
+                        Upload
+                      </Button>
+                    ) : undefined
+                  }
+                />
+              )
+            }
             columns={[
               {
                 key: 'select',
@@ -1188,33 +1397,77 @@ export function ClientFilesTab({
               },
               {
                 key: 'name',
-                header: 'Name',
-                render: (r) => (
-                  <span style={{ fontFamily: tokens.font.mono, fontSize: 12 }}>
-                    {r.originalFilename}
-                    {r.pendingUpload && <Pill tone="warning">pending</Pill>}
-                  </span>
+                header: (
+                  <SortHeader
+                    label="Name"
+                    active={sortCol === 'name'}
+                    dir={sortDir}
+                    onClick={() => toggleSort('name')}
+                  />
                 ),
-              },
-              {
-                key: 'subfolder',
-                header: 'Subfolder',
                 render: (r) => (
                   <span
+                    draggable={canMove && !r.pendingUpload}
+                    onDragStart={(e) => {
+                      e.dataTransfer.setData(INTERNAL_DRAG_TYPE, JSON.stringify(dragIdsFor(r)));
+                      e.dataTransfer.effectAllowed = 'move';
+                    }}
+                    title={canMove ? 'Drag onto a folder to move' : undefined}
                     style={{
                       fontFamily: tokens.font.mono,
-                      fontSize: 11,
-                      color: tokens.color.textMuted,
+                      fontSize: 12,
+                      cursor: canMove && !r.pendingUpload ? 'grab' : undefined,
                     }}
                   >
-                    {r.subfolderPath || '(root)'}
+                    {r.originalFilename}
+                    {r.pendingUpload && <Pill tone="warning">pending</Pill>}
+                    {r.flaggedTaxReturn && <Pill tone="accent">tax return</Pill>}
                   </span>
                 ),
               },
-              { key: 'size', header: 'Size', render: (r) => formatBytes(r.sizeBytes) },
+              // The Subfolder column only earns its width in the "All"
+              // view — inside a folder every row shows the same value.
+              ...(selectedSubfolder === null
+                ? [
+                    {
+                      key: 'subfolder',
+                      header: 'Subfolder',
+                      render: (r: FileRow) => (
+                        <span
+                          style={{
+                            fontFamily: tokens.font.mono,
+                            fontSize: 11,
+                            color: tokens.color.textMuted,
+                          }}
+                        >
+                          {r.subfolderPath || '(root)'}
+                        </span>
+                      ),
+                    },
+                  ]
+                : []),
+              {
+                key: 'size',
+                header: (
+                  <SortHeader
+                    label="Size"
+                    active={sortCol === 'size'}
+                    dir={sortDir}
+                    onClick={() => toggleSort('size')}
+                  />
+                ),
+                render: (r) => formatBytes(r.sizeBytes),
+              },
               {
                 key: 'modified',
-                header: 'Modified',
+                header: (
+                  <SortHeader
+                    label="Modified"
+                    active={sortCol === 'modified'}
+                    dir={sortDir}
+                    onClick={() => toggleSort('modified')}
+                  />
+                ),
                 render: (r) => formatTimestamp(r.modifiedAt),
               },
               {
@@ -1222,43 +1475,36 @@ export function ClientFilesTab({
                 header: 'Visibility',
                 render: (r) => {
                   const visible = r.visibility === 'client_visible';
+                  const escrow = r.visibility !== 'private' && !visible;
                   return (
-                    <IconButton
-                      label={
+                    <button
+                      type="button"
+                      onClick={() => void toggleVisibility(r)}
+                      title={
                         visible
                           ? 'Client-visible — click to make private'
                           : 'Private — click to make client-visible'
                       }
-                      tone={visible ? 'success' : 'default'}
-                      onClick={() => void toggleVisibility(r)}
+                      style={{
+                        background: 'transparent',
+                        border: 'none',
+                        padding: 0,
+                        cursor: 'pointer',
+                      }}
                     >
-                      {visible ? <Eye size={16} /> : <Lock size={16} />}
-                    </IconButton>
+                      <Pill tone={visible ? 'success' : escrow ? 'warning' : 'neutral'}>
+                        {visible ? 'Client' : escrow ? 'Escrow' : 'Private'}
+                      </Pill>
+                    </button>
                   );
                 },
               },
               {
                 key: 'actions',
                 header: '',
+                align: 'right',
                 render: (r) => (
                   <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
-                    {canPublish && (
-                      <IconButton
-                        label="Share securely with an outside recipient (expiring link)"
-                        tone="accent"
-                        onClick={() => setShareFor(r)}
-                        disabled={r.pendingUpload}
-                      >
-                        <ShareIcon size={16} />
-                      </IconButton>
-                    )}
-                    <IconButton
-                      label="Flag as tax return — creates a draft return that can be released"
-                      onClick={() => setFlagFor(r)}
-                      disabled={r.pendingUpload}
-                    >
-                      <Flag size={16} />
-                    </IconButton>
                     {isPdfFile(r) && (
                       <IconButton
                         label="Preview this PDF in the browser"
@@ -1276,16 +1522,60 @@ export function ClientFilesTab({
                     >
                       <Download size={16} />
                     </IconButton>
-                    {canDelete && (
-                      <IconButton
-                        label="Delete this file (removed from storage permanently)"
-                        tone="danger"
-                        onClick={() => void deleteFile(r)}
-                        disabled={busy}
-                      >
-                        <Trash size={16} />
-                      </IconButton>
-                    )}
+                    <Menu
+                      ariaLabel={`Actions for ${r.originalFilename}`}
+                      items={[
+                        {
+                          key: 'share',
+                          label: 'Share…',
+                          icon: <ShareIcon size={14} />,
+                          onSelect: () => setShareFor(r),
+                          disabled: r.pendingUpload || !canPublish,
+                          disabledReason: !canPublish ? 'Needs storage:file:publish' : undefined,
+                        },
+                        {
+                          key: 'flag',
+                          label: 'Flag as tax return…',
+                          icon: <Flag size={14} />,
+                          onSelect: () => setFlagFor(r),
+                          disabled: r.pendingUpload,
+                        },
+                        {
+                          key: 'activity',
+                          label: 'Activity',
+                          icon: <Eye size={14} />,
+                          onSelect: () => setActivityFor(r),
+                        },
+                        {
+                          key: 'rename',
+                          label: 'Rename…',
+                          onSelect: () => setRenameFor(r),
+                          disabled: r.pendingUpload || !canMove,
+                          disabledReason: !canEdit ? 'Needs storage:folder:edit' : undefined,
+                        },
+                        {
+                          key: 'move',
+                          label: 'Move to…',
+                          icon: <Folder size={14} />,
+                          onSelect: () => setMoveIds([r.id]),
+                          disabled: r.pendingUpload || !canMove,
+                          disabledReason: !canEdit ? 'Needs storage:folder:edit' : undefined,
+                        },
+                        {
+                          key: 'delete',
+                          label: 'Delete…',
+                          icon: <Trash size={14} />,
+                          onSelect: () => void deleteFile(r),
+                          danger: true,
+                          disabled: busy || !canDelete || Boolean(r.flaggedTaxReturn),
+                          disabledReason: r.flaggedTaxReturn
+                            ? 'This file backs a tax return — unlink the return first.'
+                            : !canDelete
+                              ? 'Needs storage:file:delete'
+                              : undefined,
+                        },
+                      ]}
+                    />
                   </div>
                 ),
               },
@@ -1293,6 +1583,45 @@ export function ClientFilesTab({
           />
         </Card>
       </div>
+
+      <DocumentRequestsCard clientId={clientId} subfolders={subfolders} canEdit={canEdit} />
+
+      {moveIds && (
+        <MoveDialog
+          count={moveIds.length}
+          subfolders={subfolders}
+          busy={busy}
+          onClose={() => setMoveIds(null)}
+          onMove={(dest) => void moveFiles(moveIds, dest)}
+        />
+      )}
+
+      {newFolderOpen && (
+        <NewFolderDialog
+          clientId={clientId}
+          subfolders={subfolders}
+          parentDefault={selectedSubfolder && selectedSubfolder !== '' ? selectedSubfolder : ''}
+          onClose={() => setNewFolderOpen(false)}
+          onCreated={(path) => {
+            setNewFolderOpen(false);
+            void load().then(() => selectFolder(path));
+          }}
+        />
+      )}
+
+      {renameFor && (
+        <RenameFileDialog
+          clientId={clientId}
+          file={renameFor}
+          onClose={() => setRenameFor(null)}
+          onDone={() => {
+            setRenameFor(null);
+            void load();
+          }}
+        />
+      )}
+
+      {activityFor && <ActivityDialog file={activityFor} onClose={() => setActivityFor(null)} />}
 
       {flagFor && (
         <FlagAsTaxReturnDialog
@@ -1546,7 +1875,7 @@ function UploadDialog({
   }
 
   return (
-    <ModalShell title="Upload file" onClose={onClose}>
+    <Modal title="Upload file" onClose={onClose}>
       <div style={{ display: 'grid', gap: 12 }}>
         <label style={{ fontSize: 12, color: tokens.color.textMuted, display: 'block' }}>
           File
@@ -1607,7 +1936,7 @@ function UploadDialog({
           </Button>
         </div>
       </div>
-    </ModalShell>
+    </Modal>
   );
 }
 
@@ -1689,7 +2018,7 @@ function RenameDialog({ clientId, currentPath, onClose, onDone }: RenameDialogPr
   }
 
   return (
-    <ModalShell title="Rename storage folder" onClose={running ? undefined : onClose}>
+    <Modal title="Rename storage folder" onClose={running ? undefined : onClose}>
       <div style={{ display: 'grid', gap: 12 }}>
         <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
           Current path: <code>{currentPath}</code>
@@ -1721,76 +2050,7 @@ function RenameDialog({ clientId, currentPath, onClose, onDone }: RenameDialogPr
           </Button>
         </div>
       </div>
-    </ModalShell>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Lightweight modal shell — the existing UI kit doesn't ship one yet.
-// ---------------------------------------------------------------------------
-
-interface ModalShellProps {
-  title: string;
-  onClose?: () => void;
-  children: React.ReactNode;
-}
-
-function ModalShell({ title, onClose, children }: ModalShellProps): JSX.Element {
-  // Escape closes when allowed (matches the X button behaviour).
-  useEffect(() => {
-    if (!onClose) return;
-    const handler = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
-  }, [onClose]);
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.4)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 50,
-      }}
-    >
-      {onClose && (
-        <button
-          type="button"
-          aria-label="Close"
-          onClick={onClose}
-          style={{
-            position: 'absolute',
-            inset: 0,
-            background: 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-          }}
-        />
-      )}
-      <div
-        style={{
-          background: tokens.color.surface,
-          borderRadius: tokens.radius.md,
-          padding: 20,
-          minWidth: 420,
-          maxWidth: 640,
-          boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
-          position: 'relative',
-          zIndex: 1,
-        }}
-      >
-        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>{title}</h3>
-        {children}
-      </div>
-    </div>
+    </Modal>
   );
 }
 
@@ -2036,4 +2296,638 @@ function dlgInput(): React.CSSProperties {
     background: tokens.color.surface,
     color: tokens.color.text,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 0219 — sortable column header button.
+// ---------------------------------------------------------------------------
+
+function SortHeader({
+  label,
+  active,
+  dir,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  dir: 'asc' | 'desc';
+  onClick: () => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={`Sort by ${label.toLowerCase()}`}
+      style={{
+        background: 'transparent',
+        border: 'none',
+        padding: 0,
+        font: 'inherit',
+        fontWeight: 'inherit',
+        color: 'inherit',
+        cursor: 'pointer',
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 3,
+      }}
+    >
+      {label}
+      {active && <span style={{ fontSize: 10 }}>{dir === 'asc' ? '▲' : '▼'}</span>}
+    </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0219 — move dialog. Destination picker fed by the same subfolder list
+// the upload dialog uses; name collisions are auto-suffixed server-side.
+// ---------------------------------------------------------------------------
+
+function MoveDialog({
+  count,
+  subfolders,
+  busy,
+  onClose,
+  onMove,
+}: {
+  count: number;
+  subfolders: string[];
+  busy: boolean;
+  onClose: () => void;
+  onMove: (dest: string) => void;
+}): JSX.Element {
+  const [dest, setDest] = useState<string>('');
+  return (
+    <Modal
+      title={`Move ${count} file${count === 1 ? '' : 's'}`}
+      onClose={busy ? undefined : onClose}
+    >
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div>
+          <span
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Destination folder
+          </span>
+          <Combobox
+            ariaLabel="Destination folder"
+            value={dest}
+            onChange={setDest}
+            options={[
+              { value: '', label: '(folder root)' },
+              ...subfolders
+                .filter((s) => s !== '')
+                .map((s) => ({ value: s, label: s.replace(/\/+$/, '') })),
+            ]}
+          />
+        </div>
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+          Files keep their names; a name already taken in the destination gets a numeric suffix.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => onMove(dest)} disabled={busy}>
+            {busy ? 'Moving…' : 'Move'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0219 — new-subfolder dialog. Registers the path server-side so the
+// folder exists (and persists) even while empty.
+// ---------------------------------------------------------------------------
+
+function NewFolderDialog({
+  clientId,
+  subfolders,
+  parentDefault,
+  onClose,
+  onCreated,
+}: {
+  clientId: string;
+  subfolders: string[];
+  parentDefault: string;
+  onClose: () => void;
+  onCreated: (path: string) => void;
+}): JSX.Element {
+  const [parent, setParent] = useState<string>(parentDefault);
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function go(): Promise<void> {
+    const trimmed = name.trim().replace(/^\/+|\/+$/g, '');
+    if (!trimmed) {
+      setError('Enter a folder name.');
+      return;
+    }
+    if (trimmed.includes('/')) {
+      setError('Folder names cannot contain "/" — create one level at a time.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const path = `${parent}${trimmed}/`;
+    try {
+      await api(`/api/staff/clients/${clientId}/subfolders`, {
+        method: 'POST',
+        body: JSON.stringify({ path }),
+      });
+      onCreated(path);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'create_failed');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="New folder" onClose={busy ? undefined : onClose}>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <div>
+          <span
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Inside
+          </span>
+          <Combobox
+            ariaLabel="Parent folder"
+            value={parent}
+            onChange={setParent}
+            options={[
+              { value: '', label: '(folder root)' },
+              ...subfolders
+                .filter((s) => s !== '')
+                .map((s) => ({ value: s, label: s.replace(/\/+$/, '') })),
+            ]}
+          />
+        </div>
+        <Input
+          label="Folder name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={busy}
+          placeholder="e.g. 2026"
+        />
+        {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void go()} disabled={busy || !name.trim()}>
+            {busy ? 'Creating…' : 'Create folder'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0219 — single-file rename (server does a storage copy+delete so the
+// B2 key keeps mirroring the name).
+// ---------------------------------------------------------------------------
+
+function RenameFileDialog({
+  clientId,
+  file,
+  onClose,
+  onDone,
+}: {
+  clientId: string;
+  file: FileRow;
+  onClose: () => void;
+  onDone: () => void;
+}): JSX.Element {
+  const [name, setName] = useState(file.originalFilename);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function go(): Promise<void> {
+    if (!name.trim() || name.trim() === file.originalFilename) {
+      setError('Pick a different name.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/staff/clients/${clientId}/files/${file.id}/rename`, {
+        method: 'POST',
+        body: JSON.stringify({ newFilename: name.trim() }),
+      });
+      onDone();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'rename_failed');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Rename file" onClose={busy ? undefined : onClose}>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <Input
+          label="Filename"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          disabled={busy}
+        />
+        {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void go()} disabled={busy}>
+            {busy ? 'Renaming…' : 'Rename'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0219 — per-file activity trail (upload, visibility flips, portal
+// downloads). Data from GET /api/staff/files/:id/activity.
+// ---------------------------------------------------------------------------
+
+function ActivityDialog({ file, onClose }: { file: FileRow; onClose: () => void }): JSX.Element {
+  const [events, setEvents] = useState<
+    { at: string; kind: string; detail: string; actor: string | null }[] | null
+  >(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api<{ events: { at: string; kind: string; detail: string; actor: string | null }[] }>(
+      `/api/staff/files/${file.id}/activity`,
+    )
+      .then((r) => setEvents(r.events ?? []))
+      .catch((e) => setError(e instanceof Error ? e.message : 'load_failed'));
+  }, [file.id]);
+
+  return (
+    <Modal title={`Activity — ${file.originalFilename}`} onClose={onClose} maxWidth={720}>
+      {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+      {!events && !error && <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Loading…</p>}
+      {events && events.length === 0 && (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No recorded activity.</p>
+      )}
+      {events && events.length > 0 && (
+        <div style={{ display: 'grid', gap: 6, maxHeight: 420, overflowY: 'auto' }}>
+          {events.map((ev, i) => (
+            <div
+              key={`${ev.at}-${i}`}
+              style={{
+                display: 'flex',
+                gap: 10,
+                alignItems: 'baseline',
+                fontSize: 13,
+                padding: '4px 0',
+                borderBottom: `1px solid ${tokens.color.border}`,
+              }}
+            >
+              <span style={{ color: tokens.color.textMuted, fontSize: 12, minWidth: 150 }}>
+                {formatTimestamp(ev.at)}
+              </span>
+              <span style={{ flex: 1 }}>{ev.detail}</span>
+              {ev.actor && (
+                <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>{ev.actor}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0219 — document requests card. Ask the client for a list of documents;
+// portal uploads land in the chosen subfolder and tick items off here.
+// ---------------------------------------------------------------------------
+
+interface DocumentRequestItemRow {
+  id: string;
+  label: string;
+  status: 'PENDING' | 'UPLOADED';
+  uploadedAt: string | null;
+}
+
+interface DocumentRequestRow {
+  id: string;
+  title: string;
+  note: string | null;
+  targetSubfolderPath: string;
+  status: 'OPEN' | 'COMPLETED' | 'CANCELLED';
+  createdAt: string;
+  items: DocumentRequestItemRow[];
+}
+
+function DocumentRequestsCard({
+  clientId,
+  subfolders,
+  canEdit,
+}: {
+  clientId: string;
+  subfolders: string[];
+  canEdit: boolean;
+}): JSX.Element {
+  const [requests, setRequests] = useState<DocumentRequestRow[]>([]);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showClosed, setShowClosed] = useState(false);
+
+  const load = async (): Promise<void> => {
+    try {
+      const r = await api<{ items: DocumentRequestRow[] }>(
+        `/api/staff/document-requests?clientId=${encodeURIComponent(clientId)}`,
+      );
+      setRequests(r.items ?? []);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'load_failed');
+    }
+  };
+  useEffect(() => {
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [clientId]);
+
+  async function setStatus(id: string, status: DocumentRequestRow['status']): Promise<void> {
+    try {
+      await api(`/api/staff/document-requests/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ status }),
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'update_failed');
+    }
+  }
+
+  const visible = requests.filter((r) => showClosed || r.status === 'OPEN');
+
+  return (
+    <Card title="Document requests">
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0, flex: 1 }}>
+          Ask the client for documents — they upload from the portal, each item ticks off here, and
+          the files land in the folder you choose.
+        </p>
+        {requests.some((r) => r.status !== 'OPEN') && (
+          <Button size="sm" variant="ghost" onClick={() => setShowClosed((v) => !v)}>
+            {showClosed ? 'Hide closed' : 'Show closed'}
+          </Button>
+        )}
+        <Button size="sm" disabled={!canEdit} onClick={() => setCreateOpen(true)}>
+          + Request documents
+        </Button>
+      </div>
+      {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
+      {visible.length === 0 && (
+        <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+          No open document requests.
+        </p>
+      )}
+      <div style={{ display: 'grid', gap: 10 }}>
+        {visible.map((r) => {
+          const done = r.items.filter((i) => i.status === 'UPLOADED').length;
+          return (
+            <div
+              key={r.id}
+              style={{
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                padding: '10px 12px',
+              }}
+            >
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
+                <strong style={{ fontSize: 13, flex: 1 }}>{r.title}</strong>
+                <Pill
+                  tone={
+                    r.status === 'OPEN'
+                      ? done === r.items.length && r.items.length > 0
+                        ? 'success'
+                        : 'warning'
+                      : r.status === 'COMPLETED'
+                        ? 'success'
+                        : 'neutral'
+                  }
+                >
+                  {r.status === 'OPEN' ? `${done}/${r.items.length} received` : r.status}
+                </Pill>
+                {r.status === 'OPEN' && canEdit && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void setStatus(r.id, 'COMPLETED')}
+                    >
+                      Complete
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => void setStatus(r.id, 'CANCELLED')}
+                    >
+                      Cancel
+                    </Button>
+                  </>
+                )}
+              </div>
+              {r.note && (
+                <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '0 0 6px' }}>
+                  {r.note}
+                </p>
+              )}
+              <div style={{ display: 'grid', gap: 3 }}>
+                {r.items.map((i) => (
+                  <div key={i.id} style={{ display: 'flex', gap: 8, fontSize: 12 }}>
+                    <span style={{ width: 14 }}>{i.status === 'UPLOADED' ? '✓' : '○'}</span>
+                    <span style={{ flex: 1 }}>{i.label}</span>
+                    {i.uploadedAt && (
+                      <span style={{ color: tokens.color.textMuted }}>
+                        {formatTimestamp(i.uploadedAt)}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '6px 0 0' }}>
+                Uploads land in{' '}
+                <span style={{ fontFamily: tokens.font.mono }}>
+                  {r.targetSubfolderPath
+                    ? r.targetSubfolderPath.replace(/\/+$/, '')
+                    : '(folder root)'}
+                </span>
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      {createOpen && (
+        <CreateDocumentRequestDialog
+          clientId={clientId}
+          subfolders={subfolders}
+          onClose={() => setCreateOpen(false)}
+          onCreated={() => {
+            setCreateOpen(false);
+            void load();
+          }}
+        />
+      )}
+    </Card>
+  );
+}
+
+function CreateDocumentRequestDialog({
+  clientId,
+  subfolders,
+  onClose,
+  onCreated,
+}: {
+  clientId: string;
+  subfolders: string[];
+  onClose: () => void;
+  onCreated: () => void;
+}): JSX.Element {
+  const [title, setTitle] = useState('');
+  const [note, setNote] = useState('');
+  const [itemsText, setItemsText] = useState('');
+  const [target, setTarget] = useState('');
+  const [notify, setNotify] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function go(): Promise<void> {
+    const items = itemsText
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    if (!title.trim() || items.length === 0) {
+      setError('Enter a title and at least one document (one per line).');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/api/staff/document-requests', {
+        method: 'POST',
+        body: JSON.stringify({
+          clientId,
+          title: title.trim(),
+          note: note.trim() || undefined,
+          targetSubfolderPath: target || undefined,
+          items,
+          notifyClient: notify,
+        }),
+      });
+      onCreated();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'create_failed');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Request documents" onClose={busy ? undefined : onClose} maxWidth={560}>
+      <div style={{ display: 'grid', gap: 12 }}>
+        <Input
+          label="Title"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="e.g. 2026 tax prep documents"
+          disabled={busy}
+        />
+        <div>
+          <span
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Documents — one per line
+          </span>
+          <textarea
+            value={itemsText}
+            onChange={(e) => setItemsText(e.target.value)}
+            disabled={busy}
+            rows={5}
+            placeholder={'W-2 (all employers)\n1099-INT / 1099-DIV\nMortgage interest statement'}
+            style={{
+              width: '100%',
+              padding: '8px 10px',
+              fontSize: 13,
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.sm,
+              background: tokens.color.surface,
+              color: tokens.color.text,
+              fontFamily: tokens.font.body,
+              resize: 'vertical',
+            }}
+          />
+        </div>
+        <Input
+          label="Note to the client (optional)"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          disabled={busy}
+        />
+        <div>
+          <span
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Uploads land in
+          </span>
+          <Combobox
+            ariaLabel="Destination folder for uploads"
+            value={target}
+            onChange={setTarget}
+            options={[
+              { value: '', label: '(folder root)' },
+              ...subfolders
+                .filter((s) => s !== '')
+                .map((s) => ({ value: s, label: s.replace(/\/+$/, '') })),
+            ]}
+          />
+        </div>
+        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+          <input
+            type="checkbox"
+            checked={notify}
+            onChange={(e) => setNotify(e.target.checked)}
+            disabled={busy}
+          />
+          Email the billing contact a heads-up with a portal link
+        </label>
+        {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void go()} disabled={busy}>
+            {busy ? 'Sending…' : 'Create request'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
 }

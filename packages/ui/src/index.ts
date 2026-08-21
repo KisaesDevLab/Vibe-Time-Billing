@@ -53,6 +53,8 @@ export { FontSizeControl, useFontScale, type FontSizeControlProps } from './Font
 export { Tabs, type TabsProps, type TabSpec } from './Tabs';
 export { Wizard, type WizardProps, type WizardStep } from './Wizard';
 export { Combobox, type ComboboxProps, type ComboboxOption } from './Combobox';
+export { Menu, type MenuProps, type MenuItem } from './Menu';
+export { Modal, type ModalProps } from './Modal';
 export { MultiCombobox, type MultiComboboxProps } from './MultiCombobox';
 export {
   ColumnFilter,

@@ -1463,6 +1463,82 @@ export const files = pgTable(
 );
 
 // =====================================================================
+// 0219 — client_subfolders. Registry of staff-created subfolders inside
+// a client's bound storage folder. Folders are otherwise derived from
+// the paths files occupy (plus the template skeleton), so this is what
+// lets an EMPTY folder exist and survive its last file moving out.
+// Paths use the same trailing-slash key format as files.subfolder_path.
+// =====================================================================
+
+export const clientSubfolders = pgTable(
+  'client_subfolders',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientFolderId: uuid('client_folder_id')
+      .notNull()
+      .references(() => clientFolders.id, { onDelete: 'cascade' }),
+    path: text('path').notNull(),
+    createdBy: uuid('created_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    folderPathUk: uniqueIndex('client_subfolders_folder_path_uk').on(t.clientFolderId, t.path),
+  }),
+);
+
+// =====================================================================
+// 0219 — document requests. Staff ask a client for a list of documents;
+// the client uploads against each item from the portal.
+// =====================================================================
+
+export const documentRequests = pgTable(
+  'document_requests',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    note: text('note'),
+    // Destination subfolder for uploads (trailing-slash key; '' = root).
+    targetSubfolderPath: text('target_subfolder_path').notNull().default(''),
+    // OPEN | COMPLETED | CANCELLED
+    status: text('status').notNull().default('OPEN'),
+    createdBy: uuid('created_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    clientIdx: index('document_requests_client_idx').on(t.clientId, t.status),
+  }),
+);
+
+export const documentRequestItems = pgTable(
+  'document_request_items',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    requestId: uuid('request_id')
+      .notNull()
+      .references(() => documentRequests.id, { onDelete: 'cascade' }),
+    label: text('label').notNull(),
+    // PENDING | UPLOADED
+    status: text('status').notNull().default('PENDING'),
+    fileId: uuid('file_id').references(() => files.id, { onDelete: 'set null' }),
+    uploadedAt: timestamp('uploaded_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    requestIdx: index('document_request_items_request_idx').on(t.requestId),
+  }),
+);
+
+// =====================================================================
 // v2 0027 — client_contact (one-to-many). Replaces the legacy single-
 // row billing_contact_* columns; each client has at least one row.
 // At most one isPrimary and at most one isBilling per client (partial
