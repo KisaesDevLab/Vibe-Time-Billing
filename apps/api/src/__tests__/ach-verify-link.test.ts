@@ -260,7 +260,7 @@ describe('0218 — staff pending-verification + reminder', () => {
     expect(items[0]!.lastReminderAt).toBeNull();
   });
 
-  it('send-verification-reminder mints a link and emails the billing contact', async () => {
+  it('send-verification-reminder defaults to emailing the billing contact', async () => {
     await seedContact(harness.db, {
       firmId: seed.firmId,
       clientId: seed.clientId,
@@ -285,7 +285,9 @@ describe('0218 — staff pending-verification + reminder', () => {
       staffReq({ params: { id: pmId } }),
     );
     expect(res.statusCode).toBe(200);
-    expect((res.body as { sentTo: string }).sentTo).toBe('bob@client.example');
+    const body = res.body as { sentToEmail: string; results: { email: string; sms: string } };
+    expect(body.sentToEmail).toBe('bob@client.example');
+    expect(body.results).toEqual({ email: 'sent', sms: 'skipped' });
     expect(sent).toHaveLength(1);
     const m = sent[0]!.body.match(/https:\/\/portal\.firm\.test\/verify-bank\/([A-Za-z0-9._-]+)/);
     expect(m).not.toBeNull();
@@ -296,7 +298,53 @@ describe('0218 — staff pending-verification + reminder', () => {
     expect(link!.status).toBe('ACTIVE');
   });
 
-  it('send-verification-reminder without a billing email → 400', async () => {
+  it('reminder to a chosen contact by SMS texts that contact', async () => {
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Billing Bob',
+      email: 'bob@client.example',
+      isBilling: true,
+    });
+    const other = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Mobile Mia',
+      mobile: '+15551234567',
+    });
+    const pmId = await makePendingMethod();
+    const emails: unknown[] = [];
+    const texts: { to: string; body: string }[] = [];
+    const router = createSavedMethodsRouter({
+      db: harness.db as Database,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+      sendStaffMail: async (a) => {
+        emails.push(a);
+      },
+      sendSms: async (a) => {
+        texts.push(a);
+      },
+      portalBaseUrl: 'https://portal.firm.test',
+    });
+    const res = await invokeRoute(
+      router,
+      'post',
+      '/:id/send-verification-reminder',
+      staffReq({
+        params: { id: pmId },
+        body: { contactId: other.contactId, channel: 'SMS' },
+      }),
+    );
+    expect(res.statusCode).toBe(200);
+    const body = res.body as { sentToPhone: string; results: { email: string; sms: string } };
+    expect(body.sentToPhone).toBe('+15551234567');
+    expect(body.results).toEqual({ email: 'skipped', sms: 'sent' });
+    expect(emails).toHaveLength(0);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.body).toContain('https://portal.firm.test/verify-bank/');
+  });
+
+  it('email-only reminder without a billing email → 400 no_email_destination', async () => {
     const pmId = await makePendingMethod();
     const router = createSavedMethodsRouter({
       db: harness.db as Database,
@@ -311,6 +359,6 @@ describe('0218 — staff pending-verification + reminder', () => {
       staffReq({ params: { id: pmId } }),
     );
     expect(res.statusCode).toBe(400);
-    expect((res.body as { error: string }).error).toBe('no_billing_email');
+    expect((res.body as { error: string }).error).toBe('no_email_destination');
   });
 });

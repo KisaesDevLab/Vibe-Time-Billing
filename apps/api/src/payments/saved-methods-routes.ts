@@ -10,15 +10,22 @@ import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
-import { achVerifyLinks, clients, firms, paymentMethod } from '@vibe/db/schema';
+import {
+  achVerifyLinks,
+  clientContacts,
+  clients,
+  firms,
+  paymentMethod,
+  persons,
+} from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBlockedClientIdsCached } from '../clients/access';
+import { getBillingContact } from '../clients/billing-contact';
 import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import {
-  clientBillingIdentity,
   confirmClientSetupIntent,
   createClientSetupIntent,
   listClientMethods,
@@ -35,6 +42,8 @@ export interface SavedMethodsDeps extends RbacDeps {
     body: string;
     html?: string;
   }) => Promise<void>;
+  /** Firm SMS sender — optional text-message delivery for the reminder. */
+  sendSms?: (args: { to: string; body: string }) => Promise<void>;
   /** Portal origin — the public verify page lives on the portal host. */
   portalBaseUrl?: string;
 }
@@ -325,9 +334,17 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
     },
   );
 
-  // 0218 — email the client a public (no-login) link to confirm the
-  // micro-deposit amounts. Each send mints its own token; older links keep
-  // working until they expire or the method verifies.
+  // 0218 — send the client a public (no-login) link to confirm the
+  // micro-deposit amounts, by email and/or SMS, to a chosen contact (or the
+  // billing/primary contact by default). One token is minted per send and
+  // delivered on every requested channel; older links keep working until
+  // they expire or the method verifies. Mirrors the invoice pay-link send:
+  // a missing destination is a per-channel "skip" unless that channel was
+  // the only one requested.
+  const ReminderSchema = z.object({
+    contactId: z.string().uuid().optional(),
+    channel: z.enum(['EMAIL', 'SMS', 'BOTH']).default('EMAIL'),
+  });
   router.post(
     '/:id/send-verification-reminder',
     requirePermission(deps, 'payment:write'),
@@ -336,10 +353,17 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
         res.status(503).json({ error: 'db_unavailable' });
         return;
       }
-      if (!deps.sendStaffMail || !deps.portalBaseUrl) {
+      if (!deps.portalBaseUrl) {
         res.status(503).json({ error: 'mail_not_configured' });
         return;
       }
+      const parsed = ReminderSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const wantEmail = parsed.data.channel === 'EMAIL' || parsed.data.channel === 'BOTH';
+      const wantSms = parsed.data.channel === 'SMS' || parsed.data.channel === 'BOTH';
       const s = req.staffSession!;
       const [pm] = await deps.db
         .select({
@@ -364,11 +388,54 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
         res.status(403).json({ error: 'forbidden' });
         return;
       }
-      const ident = await clientBillingIdentity(deps.db, s.firmId, pm.clientId);
-      if (!ident?.email) {
-        res.status(400).json({ error: 'no_billing_email' });
+
+      // Destination: an explicitly chosen contact (must belong to this
+      // client and be active), else the billing/primary contact.
+      let dest: { fullName: string; email: string | null; phone: string | null } | null = null;
+      if (parsed.data.contactId) {
+        const [c] = await deps.db
+          .select({
+            fullName: persons.fullName,
+            email: persons.email,
+            phone: persons.phone,
+            mobile: persons.mobile,
+            status: clientContacts.status,
+          })
+          .from(clientContacts)
+          .innerJoin(persons, eq(persons.id, clientContacts.personId))
+          .where(
+            and(
+              eq(clientContacts.id, parsed.data.contactId),
+              eq(clientContacts.clientId, pm.clientId),
+            ),
+          )
+          .limit(1);
+        if (!c || c.status !== 'ACTIVE') {
+          res.status(404).json({ error: 'contact_not_found' });
+          return;
+        }
+        // SMS prefers the mobile number when the person has both.
+        dest = { fullName: c.fullName, email: c.email, phone: c.mobile || c.phone };
+      } else {
+        dest = await getBillingContact(deps.db, pm.clientId);
+      }
+
+      // Hard error only when the SOLE requested channel is undeliverable.
+      if (parsed.data.channel === 'EMAIL' && (!deps.sendStaffMail || !dest?.email)) {
+        res.status(400).json({ error: 'no_email_destination' });
         return;
       }
+      if (parsed.data.channel === 'SMS' && (!deps.sendSms || !dest?.phone)) {
+        res.status(400).json({ error: 'no_sms_destination' });
+        return;
+      }
+      const emailDeliverable = wantEmail && !!deps.sendStaffMail && !!dest?.email;
+      const smsDeliverable = wantSms && !!deps.sendSms && !!dest?.phone;
+      if (!emailDeliverable && !smsDeliverable) {
+        res.status(400).json({ error: 'no_destination' });
+        return;
+      }
+
       const [firm] = await deps.db
         .select({ name: firms.name })
         .from(firms)
@@ -384,31 +451,59 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
       const url = `${deps.portalBaseUrl.replace(/\/$/, '')}/verify-bank/${link.token}`;
       const expires = link.expiresAt.toISOString().slice(0, 10);
 
-      try {
-        await deps.sendStaffMail({
-          to: ident.email,
-          subject: `Action needed — confirm your bank account with ${firmName}`,
-          body: [
-            `Hi ${ident.name},`,
-            '',
-            `${firmName} saved your bank account (${pm.displayLabel}) for ACH payments.`,
-            'To activate it, please confirm the small "micro-deposits" our payment',
-            'processor sent to that account. They appear on your bank statement within',
-            '1-2 business days as either two deposits under $1.00, or one deposit with',
-            'a 6-digit code starting with SM in its description.',
-            '',
-            'Confirm them here (no login needed):',
-            url,
-            '',
-            `This link expires on ${expires}. If the deposits haven't appeared yet,`,
-            'check again tomorrow.',
-            '',
-            `If you did not authorize this, please contact ${firmName}.`,
-          ].join('\n'),
-        });
-      } catch (err) {
-        logger.error({ err }, 'ach verification reminder send failed');
-        res.status(502).json({ error: 'mail_send_failed' });
+      const results: { email: string; sms: string } = { email: 'skipped', sms: 'skipped' };
+
+      if (emailDeliverable) {
+        try {
+          await deps.sendStaffMail!({
+            to: dest!.email!,
+            subject: `Action needed — confirm your bank account with ${firmName}`,
+            body: [
+              `Hi ${dest!.fullName},`,
+              '',
+              `${firmName} saved your bank account (${pm.displayLabel}) for ACH payments.`,
+              'To activate it, please confirm the small "micro-deposits" our payment',
+              'processor sent to that account. They appear on your bank statement within',
+              '1-2 business days as either two deposits under $1.00, or one deposit with',
+              'a 6-digit code starting with SM in its description.',
+              '',
+              'Confirm them here (no login needed):',
+              url,
+              '',
+              `This link expires on ${expires}. If the deposits haven't appeared yet,`,
+              'check again tomorrow.',
+              '',
+              `If you did not authorize this, please contact ${firmName}.`,
+            ].join('\n'),
+          });
+          results.email = 'sent';
+        } catch (err) {
+          logger.error({ err }, 'ach verification reminder email failed');
+          results.email = 'failed';
+        }
+      } else if (wantEmail) {
+        results.email = 'no_destination';
+      }
+
+      if (smsDeliverable) {
+        try {
+          await deps.sendSms!({
+            to: dest!.phone!,
+            body:
+              `${firmName}: please confirm the small test deposit(s) sent to your bank ` +
+              `${pm.displayLabel} so we can process your ACH payment. No login needed: ${url}`,
+          });
+          results.sms = 'sent';
+        } catch (err) {
+          logger.error({ err }, 'ach verification reminder sms failed');
+          results.sms = 'failed';
+        }
+      } else if (wantSms) {
+        results.sms = 'no_destination';
+      }
+
+      if (results.email !== 'sent' && results.sms !== 'sent') {
+        res.status(502).json({ error: 'send_failed', results });
         return;
       }
 
@@ -417,9 +512,20 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
         entityType: 'payment_method',
         entityId: pm.id,
         actorAppUserId: s.appUserId,
-        after: { kind: 'ach_verification_reminder_sent', linkId: link.id },
+        after: {
+          kind: 'ach_verification_reminder_sent',
+          linkId: link.id,
+          channel: parsed.data.channel,
+          results,
+        },
       }).catch(() => undefined);
-      res.json({ ok: true, sentTo: ident.email, expiresAt: link.expiresAt });
+      res.json({
+        ok: true,
+        results,
+        sentToEmail: results.email === 'sent' ? dest!.email : null,
+        sentToPhone: results.sms === 'sent' ? dest!.phone : null,
+        expiresAt: link.expiresAt,
+      });
     },
   );
 

@@ -1998,6 +1998,7 @@ export function createApp(deps: AppDeps): Express {
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
     sendStaffMail: deps.sendStaffMail,
+    sendSms: deps.sendPortalSms,
     portalBaseUrl: config.PORTAL_BASE_URL,
   });
   app.use('/api/staff/payment-methods', auth.requireAuth, auth.requireCsrf, savedMethodsRouter);
