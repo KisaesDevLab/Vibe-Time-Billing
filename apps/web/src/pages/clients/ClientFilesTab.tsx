@@ -20,6 +20,7 @@
 // a tooltip when missing rather than hidden.
 
 import { useEffect, useMemo, useRef, useState, type DragEvent, type FormEvent } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import {
   Button,
@@ -2614,25 +2615,26 @@ function ActivityDialog({ file, onClose }: { file: FileRow; onClose: () => void 
 }
 
 // ---------------------------------------------------------------------------
-// 0219 — document requests card. Ask the client for a list of documents;
-// portal uploads land in the chosen subfolder and tick items off here.
+// 0220 — document requests card, backed by the 0084 client-request
+// system (one Requests framework for the whole app). Creating here makes
+// a normal engagement request whose items are all DOCUMENT-kind and whose
+// target_subfolder_path routes the client's direct portal uploads into
+// the chosen folder. Full request management lives on /requests/:id.
 // ---------------------------------------------------------------------------
 
-interface DocumentRequestItemRow {
-  id: string;
-  label: string;
-  status: 'PENDING' | 'UPLOADED';
-  uploadedAt: string | null;
-}
-
-interface DocumentRequestRow {
+interface ClientRequestLite {
   id: string;
   title: string;
-  note: string | null;
-  targetSubfolderPath: string;
-  status: 'OPEN' | 'COMPLETED' | 'CANCELLED';
+  status: string;
+  priority: string;
+  dueDate: string | null;
   createdAt: string;
-  items: DocumentRequestItemRow[];
+}
+
+interface EngagementLite {
+  id: string;
+  name: string;
+  clientId: string;
 }
 
 function DocumentRequestsCard({
@@ -2644,15 +2646,16 @@ function DocumentRequestsCard({
   subfolders: string[];
   canEdit: boolean;
 }): JSX.Element {
-  const [requests, setRequests] = useState<DocumentRequestRow[]>([]);
+  const navigate = useNavigate();
+  const [requests, setRequests] = useState<ClientRequestLite[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showClosed, setShowClosed] = useState(false);
 
   const load = async (): Promise<void> => {
     try {
-      const r = await api<{ items: DocumentRequestRow[] }>(
-        `/api/staff/document-requests?clientId=${encodeURIComponent(clientId)}`,
+      const r = await api<{ items: ClientRequestLite[]; total: number }>(
+        `/api/staff/requests?clientId=${encodeURIComponent(clientId)}&pageSize=50`,
       );
       setRequests(r.items ?? []);
     } catch (e) {
@@ -2664,30 +2667,28 @@ function DocumentRequestsCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [clientId]);
 
-  async function setStatus(id: string, status: DocumentRequestRow['status']): Promise<void> {
-    try {
-      await api(`/api/staff/document-requests/${id}`, {
-        method: 'PATCH',
-        body: JSON.stringify({ status }),
-      });
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'update_failed');
-    }
-  }
+  const open = requests.filter((r) => r.status === 'OPEN' || r.status === 'NEEDS_INFO');
+  const visible = showClosed ? requests : open;
 
-  const visible = requests.filter((r) => showClosed || r.status === 'OPEN');
+  const statusTone = (s: string): 'success' | 'warning' | 'danger' | 'neutral' =>
+    s === 'FULFILLED'
+      ? 'success'
+      : s === 'OPEN'
+        ? 'warning'
+        : s === 'NEEDS_INFO'
+          ? 'danger'
+          : 'neutral';
 
   return (
-    <Card title="Document requests">
+    <Card title="Client requests">
       <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10 }}>
         <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0, flex: 1 }}>
-          Ask the client for documents — they upload from the portal, each item ticks off here, and
-          the files land in the folder you choose.
+          Request documents from this client — they upload directly from the portal and the files
+          land in the folder you choose. Manage details, reminders, and items on the Requests page.
         </p>
-        {requests.some((r) => r.status !== 'OPEN') && (
+        {requests.length > open.length && (
           <Button size="sm" variant="ghost" onClick={() => setShowClosed((v) => !v)}>
-            {showClosed ? 'Hide closed' : 'Show closed'}
+            {showClosed ? 'Open only' : 'Show all'}
           </Button>
         )}
         <Button size="sm" disabled={!canEdit} onClick={() => setCreateOpen(true)}>
@@ -2697,93 +2698,49 @@ function DocumentRequestsCard({
       {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
       {visible.length === 0 && (
         <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-          No open document requests.
+          No open requests for this client.
         </p>
       )}
-      <div style={{ display: 'grid', gap: 10 }}>
-        {visible.map((r) => {
-          const done = r.items.filter((i) => i.status === 'UPLOADED').length;
-          return (
-            <div
-              key={r.id}
-              style={{
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.md,
-                padding: '10px 12px',
-              }}
-            >
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 6 }}>
-                <strong style={{ fontSize: 13, flex: 1 }}>{r.title}</strong>
-                <Pill
-                  tone={
-                    r.status === 'OPEN'
-                      ? done === r.items.length && r.items.length > 0
-                        ? 'success'
-                        : 'warning'
-                      : r.status === 'COMPLETED'
-                        ? 'success'
-                        : 'neutral'
-                  }
-                >
-                  {r.status === 'OPEN' ? `${done}/${r.items.length} received` : r.status}
-                </Pill>
-                {r.status === 'OPEN' && canEdit && (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void setStatus(r.id, 'COMPLETED')}
-                    >
-                      Complete
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => void setStatus(r.id, 'CANCELLED')}
-                    >
-                      Cancel
-                    </Button>
-                  </>
-                )}
-              </div>
-              {r.note && (
-                <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '0 0 6px' }}>
-                  {r.note}
-                </p>
-              )}
-              <div style={{ display: 'grid', gap: 3 }}>
-                {r.items.map((i) => (
-                  <div key={i.id} style={{ display: 'flex', gap: 8, fontSize: 12 }}>
-                    <span style={{ width: 14 }}>{i.status === 'UPLOADED' ? '✓' : '○'}</span>
-                    <span style={{ flex: 1 }}>{i.label}</span>
-                    {i.uploadedAt && (
-                      <span style={{ color: tokens.color.textMuted }}>
-                        {formatTimestamp(i.uploadedAt)}
-                      </span>
-                    )}
-                  </div>
-                ))}
-              </div>
-              <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '6px 0 0' }}>
-                Uploads land in{' '}
-                <span style={{ fontFamily: tokens.font.mono }}>
-                  {r.targetSubfolderPath
-                    ? r.targetSubfolderPath.replace(/\/+$/, '')
-                    : '(folder root)'}
-                </span>
-              </p>
-            </div>
-          );
-        })}
+      <div style={{ display: 'grid', gap: 6 }}>
+        {visible.map((r) => (
+          <button
+            key={r.id}
+            type="button"
+            onClick={() => navigate(`/requests/${r.id}`)}
+            title="Open in Requests"
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              textAlign: 'left',
+              padding: '8px 12px',
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              background: 'transparent',
+              color: tokens.color.text,
+              cursor: 'pointer',
+              fontSize: 13,
+            }}
+          >
+            <span style={{ flex: 1 }}>{r.title}</span>
+            {r.dueDate && (
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                due {new Date(r.dueDate).toLocaleDateString()}
+              </span>
+            )}
+            <Pill tone={statusTone(r.status)}>{r.status}</Pill>
+          </button>
+        ))}
       </div>
       {createOpen && (
         <CreateDocumentRequestDialog
           clientId={clientId}
           subfolders={subfolders}
           onClose={() => setCreateOpen(false)}
-          onCreated={() => {
+          onCreated={(id) => {
             setCreateOpen(false);
             void load();
+            navigate(`/requests/${id}`);
           }}
         />
       )}
@@ -2800,21 +2757,39 @@ function CreateDocumentRequestDialog({
   clientId: string;
   subfolders: string[];
   onClose: () => void;
-  onCreated: () => void;
+  onCreated: (requestId: string) => void;
 }): JSX.Element {
+  const [engagements, setEngagements] = useState<EngagementLite[]>([]);
+  const [engagementId, setEngagementId] = useState('');
   const [title, setTitle] = useState('');
   const [note, setNote] = useState('');
   const [itemsText, setItemsText] = useState('');
   const [target, setTarget] = useState('');
-  const [notify, setNotify] = useState(true);
+  const [dueDate, setDueDate] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api<{ items: EngagementLite[] }>('/api/staff/engagements?limit=500')
+      .then((r) => {
+        const mine = (r.items ?? []).filter((e) => e.clientId === clientId);
+        setEngagements(mine);
+        if (mine.length > 0) setEngagementId(mine[0]!.id);
+      })
+      .catch(() => setEngagements([]));
+  }, [clientId]);
 
   async function go(): Promise<void> {
     const items = itemsText
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean);
+    if (!engagementId) {
+      setError(
+        'This client has no engagement — create one first (requests are engagement-scoped).',
+      );
+      return;
+    }
     if (!title.trim() || items.length === 0) {
       setError('Enter a title and at least one document (one per line).');
       return;
@@ -2822,18 +2797,23 @@ function CreateDocumentRequestDialog({
     setBusy(true);
     setError(null);
     try {
-      await api('/api/staff/document-requests', {
+      const r = await api<{ id: string }>('/api/staff/requests', {
         method: 'POST',
         body: JSON.stringify({
-          clientId,
+          engagementId,
           title: title.trim(),
-          note: note.trim() || undefined,
+          body: note.trim(),
           targetSubfolderPath: target || undefined,
-          items,
-          notifyClient: notify,
+          dueDate: dueDate || null,
+          items: items.map((label, i) => ({
+            ordinal: i,
+            label,
+            itemKind: 'DOCUMENT',
+            required: true,
+          })),
         }),
       });
-      onCreated();
+      onCreated(r.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'create_failed');
       setBusy(false);
@@ -2843,6 +2823,25 @@ function CreateDocumentRequestDialog({
   return (
     <Modal title="Request documents" onClose={busy ? undefined : onClose} maxWidth={560}>
       <div style={{ display: 'grid', gap: 12 }}>
+        <div>
+          <span
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Engagement
+          </span>
+          <Combobox
+            ariaLabel="Engagement"
+            value={engagementId}
+            onChange={setEngagementId}
+            options={engagements.map((e) => ({ value: e.id, label: e.name }))}
+            placeholder={engagements.length === 0 ? 'No engagements for this client' : undefined}
+          />
+        </div>
         <Input
           label="Title"
           value={title}
@@ -2886,45 +2885,65 @@ function CreateDocumentRequestDialog({
           onChange={(e) => setNote(e.target.value)}
           disabled={busy}
         />
-        <div>
-          <span
-            style={{
-              fontSize: 12,
-              color: tokens.color.textMuted,
-              display: 'block',
-              marginBottom: 4,
-            }}
-          >
-            Uploads land in
-          </span>
-          <Combobox
-            ariaLabel="Destination folder for uploads"
-            value={target}
-            onChange={setTarget}
-            options={[
-              { value: '', label: '(folder root)' },
-              ...subfolders
-                .filter((s) => s !== '')
-                .map((s) => ({ value: s, label: s.replace(/\/+$/, '') })),
-            ]}
-          />
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div>
+            <span
+              style={{
+                fontSize: 12,
+                color: tokens.color.textMuted,
+                display: 'block',
+                marginBottom: 4,
+              }}
+            >
+              Uploads land in
+            </span>
+            <Combobox
+              ariaLabel="Destination folder for uploads"
+              value={target}
+              onChange={setTarget}
+              options={[
+                { value: '', label: '(folder root)' },
+                ...subfolders
+                  .filter((s) => s !== '')
+                  .map((s) => ({ value: s, label: s.replace(/\/+$/, '') })),
+              ]}
+            />
+          </div>
+          <div>
+            <span
+              style={{
+                fontSize: 12,
+                color: tokens.color.textMuted,
+                display: 'block',
+                marginBottom: 4,
+              }}
+            >
+              Due date (optional)
+            </span>
+            <input
+              type="date"
+              value={dueDate}
+              onChange={(e) => setDueDate(e.target.value)}
+              disabled={busy}
+              style={{
+                width: '100%',
+                padding: '7px 10px',
+                fontSize: 13,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+                background: tokens.color.surface,
+                color: tokens.color.text,
+              }}
+            />
+          </div>
         </div>
-        <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
-          <input
-            type="checkbox"
-            checked={notify}
-            onChange={(e) => setNotify(e.target.checked)}
-            disabled={busy}
-          />
-          Email the billing contact a heads-up with a portal link
-        </label>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={busy}>
             Cancel
           </Button>
           <Button variant="primary" onClick={() => void go()} disabled={busy}>
-            {busy ? 'Sending…' : 'Create request'}
+            {busy ? 'Creating…' : 'Create request'}
           </Button>
         </div>
       </div>

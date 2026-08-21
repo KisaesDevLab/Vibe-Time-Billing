@@ -16,8 +16,17 @@ import {
   files,
 } from '@vibe/db/schema';
 import { and, asc, ne, sql } from 'drizzle-orm';
+import {
+  buildStorageClient,
+  enforceKeyByteCap,
+  joinPath,
+  resolveCollision,
+  sanitizeForWindows,
+  type StorageClient,
+} from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
+import { loadClientFolder } from '../clients/files';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -44,6 +53,9 @@ const ItemFulfillSchema = z.object({
 export interface PortalRequestsDeps {
   db: Database | null;
   requireAuth: (req: Request, res: Response, next: NextFunction) => unknown;
+  /** 0220 — storage client for direct DOCUMENT-item uploads. When
+   *  omitted, the factory is invoked with process.env. */
+  storageClient?: StorageClient;
 }
 
 export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
@@ -280,6 +292,213 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       after: { fileId: parsed.data.fileId, itemId: parsed.data.clientRequestItemId ?? null },
     }).catch(() => undefined);
     res.status(201).json({ id: row?.id });
+  });
+
+  // 0220 — direct DOCUMENT-item upload from the portal. One call takes
+  // the file bytes (base64), stores them into the client's bound folder
+  // at the request's target subfolder, records the attachment, marks the
+  // item FULFILLED, and rolls up the parent — no separate Files-page
+  // upload + attach dance. Mounted under the 32mb body-limit override.
+  const UploadSchema = z.object({
+    originalFilename: z.string().min(1).max(255),
+    mimeType: z.string().max(200).optional(),
+    contentBase64: z.string().min(1),
+  });
+  const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+  router.post('/:id/items/:itemId/upload', async (req: Request, res: Response) => {
+    const session = req.portalSession;
+    if (!session || !deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    // TR-5 impersonation sessions are read-only.
+    if ((session as { impersonated?: boolean }).impersonated) {
+      res.status(403).json({ error: 'read_only_session' });
+      return;
+    }
+    const parsed = UploadSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const storage = ((): StorageClient | null => {
+      if (deps.storageClient) return deps.storageClient;
+      try {
+        return buildStorageClient(process.env);
+      } catch {
+        return null;
+      }
+    })();
+    if (!storage) {
+      res.status(503).json({ error: 'storage_unavailable' });
+      return;
+    }
+
+    const [scoped] = await deps.db
+      .select({
+        id: clientRequests.id,
+        status: clientRequests.status,
+        targetSubfolderPath: clientRequests.targetSubfolderPath,
+        firmId: clientRequests.firmId,
+      })
+      .from(clientRequests)
+      .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+      .where(
+        and(
+          eq(clientRequests.id, req.params['id']!),
+          eq(engagements.clientId, session.activeClientId),
+          eq(clientRequests.firmId, session.firmId),
+          ne(clientRequests.status, 'PENDING'),
+        ),
+      )
+      .limit(1);
+    if (!scoped) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    if (scoped.status === 'FULFILLED' || scoped.status === 'DISMISSED') {
+      res.status(409).json({ error: 'request_closed' });
+      return;
+    }
+    const [item] = await deps.db
+      .select({
+        id: clientRequestItems.id,
+        itemKind: clientRequestItems.itemKind,
+        status: clientRequestItems.status,
+      })
+      .from(clientRequestItems)
+      .where(
+        and(
+          eq(clientRequestItems.id, req.params['itemId']!),
+          eq(clientRequestItems.clientRequestId, scoped.id),
+        ),
+      )
+      .limit(1);
+    if (!item) {
+      res.status(404).json({ error: 'item_not_found' });
+      return;
+    }
+    if (item.itemKind !== 'DOCUMENT') {
+      res.status(409).json({ error: 'not_a_document_item' });
+      return;
+    }
+
+    let body: Buffer;
+    try {
+      body = Buffer.from(parsed.data.contentBase64, 'base64');
+    } catch {
+      res.status(400).json({ error: 'invalid_content_base64' });
+      return;
+    }
+    if (body.byteLength === 0 || body.byteLength > UPLOAD_MAX_BYTES) {
+      res.status(413).json({ error: 'file_too_large', max: UPLOAD_MAX_BYTES });
+      return;
+    }
+
+    const folder = await loadClientFolder(deps.db, session.firmId, session.activeClientId);
+    if (!folder) {
+      res.status(409).json({ error: 'client_folder_not_bound' });
+      return;
+    }
+
+    const subfolder = scoped.targetSubfolderPath;
+    const safeFilename = sanitizeForWindows(parsed.data.originalFilename);
+    const desired = enforceKeyByteCap(joinPath(folder.storagePath, subfolder, safeFilename));
+    let storageKey: string;
+    let etag: string;
+    try {
+      storageKey = await resolveCollision(desired, async (k) => (await storage.head(k)) !== null);
+      const put = await storage.put(storageKey, body, {
+        contentType: parsed.data.mimeType ?? 'application/octet-stream',
+      });
+      etag = put.etag;
+    } catch (err) {
+      logger.error({ err }, 'portal request-item upload failed');
+      res.status(502).json({ error: 'put_failed' });
+      return;
+    }
+
+    const now = new Date();
+    const fileId = await deps.db.transaction(async (tx) => {
+      const [fileRow] = await tx
+        .insert(files)
+        .values({
+          firmId: session.firmId,
+          clientId: session.activeClientId,
+          clientFolderId: folder.clientFolderId,
+          subfolderPath: subfolder,
+          originalFilename: safeFilename,
+          storageKey,
+          mimeType: parsed.data.mimeType ?? null,
+          sizeBytes: body.byteLength,
+          etag,
+          category: 'other',
+          source: 'app',
+          visibility: 'private',
+          pendingUpload: false,
+        })
+        .returning({ id: files.id });
+      const fid = fileRow!.id;
+      await tx.insert(clientRequestAttachments).values({
+        clientRequestId: scoped.id,
+        clientRequestItemId: item.id,
+        fileId: fid,
+        uploadedByPortalIdentityId: session.portalIdentityId,
+      });
+      await tx
+        .update(clientRequestItems)
+        .set({
+          status: 'FULFILLED',
+          fulfilledAt: now,
+          fulfilledByPortalIdentityId: session.portalIdentityId,
+          fulfilledByFileId: fid,
+          updatedAt: now,
+        })
+        .where(eq(clientRequestItems.id, item.id));
+      // Roll-up to parent when every required item is done.
+      const [remaining] = await tx
+        .select({ id: clientRequestItems.id })
+        .from(clientRequestItems)
+        .where(
+          and(
+            eq(clientRequestItems.clientRequestId, scoped.id),
+            eq(clientRequestItems.required, true),
+            sql`${clientRequestItems.status} != 'FULFILLED'`,
+          ),
+        )
+        .limit(1);
+      if (!remaining) {
+        await tx
+          .update(clientRequests)
+          .set({
+            status: 'FULFILLED',
+            fulfilledAt: now,
+            fulfilledByPortalIdentityId: session.portalIdentityId,
+            updatedAt: now,
+          })
+          .where(eq(clientRequests.id, scoped.id));
+      }
+      return fid;
+    });
+
+    await emitAudit(deps.db, {
+      action: 'CREATE',
+      entityType: 'file',
+      entityId: fileId,
+      actorPortalIdentityId: session.portalIdentityId,
+      after: {
+        clientId: session.activeClientId,
+        storageKey,
+        source: 'portal_request_upload',
+        clientRequestId: scoped.id,
+        clientRequestItemId: item.id,
+        sizeBytes: body.byteLength,
+      },
+      ip: req.ip ?? null,
+      userAgent: req.get('user-agent') ?? null,
+    }).catch(() => undefined);
+
+    res.status(201).json({ ok: true, fileId, itemId: item.id });
   });
 
   // 0084 — per-item fulfill from the portal. Marks the item FULFILLED

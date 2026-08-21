@@ -115,10 +115,6 @@ import { createStorageMockUploadRouter } from './admin/storage-mock-upload';
 import { createStorageSettingsRouter } from './admin/storage-settings/routes';
 import { createVisibilityRulesRouter } from './admin/visibility-rules';
 import { createFileVisibilityRouter } from './files/visibility';
-import {
-  createDocumentRequestPortalRouter,
-  createDocumentRequestStaffRouter,
-} from './files/document-requests';
 import { createConnectRouter } from './connect/routes';
 import { createStatsRouter } from './stats/routes';
 import { createEngagementLetterRouter } from './engagement-letters/routes';
@@ -373,9 +369,9 @@ export function createApp(deps: AppDeps): Express {
   app.use('/api/staff/admin/branding', express.json({ limit: '8mb' }));
   // Client import carries a whole CSV or base64 .xlsx workbook in the body.
   app.use('/api/staff/clients/import', express.json({ limit: '8mb' }));
-  // 0219 — portal document-request uploads carry the file as base64
+  // 0220 — portal request DOCUMENT-item uploads carry the file as base64
   // (20MB decoded cap enforced in the route; base64 expands ~4/3).
-  app.use('/api/portal/document-requests', express.json({ limit: '32mb' }));
+  app.use('/api/portal/requests', express.json({ limit: '32mb' }));
   app.use(express.json({ limit: '1mb' }));
 
   // Liveness — used by Docker HEALTHCHECK. Cheap, no I/O.
@@ -1367,15 +1363,6 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/portal/files', portalFileRouter);
 
-  // 0219 — document requests: portal side (list open requests + upload
-  // against an item). The upload carries base64 bytes in the JSON body,
-  // hence the per-path body-limit override (global parser is 1mb).
-  const documentRequestPortalRouter = createDocumentRequestPortalRouter({
-    db: deps.db,
-    requireAuth: portal.requireAuth,
-  });
-  app.use('/api/portal/document-requests', documentRequestPortalRouter);
-
   // Stage 4 — portal-side messaging and requests.
   const portalMessagingRouter = createPortalMessagingRouter({
     db: deps.db,
@@ -1601,20 +1588,6 @@ export function createApp(deps: AppDeps): Express {
     sendSms: deps.sendPortalSms,
   });
   app.use('/api/staff/files', auth.requireAuth, auth.requireCsrf, staffFileShareRouter);
-
-  // 0219 — document requests: staff side (create / list / close).
-  const documentRequestStaffRouter = createDocumentRequestStaffRouter({
-    db: deps.db,
-    fakeUserRoles: deps.fakeUserRoles,
-    sendStaffMail: deps.sendStaffMail,
-    portalBaseUrl: config.PORTAL_BASE_URL,
-  });
-  app.use(
-    '/api/staff/document-requests',
-    auth.requireAuth,
-    auth.requireCsrf,
-    documentRequestStaffRouter,
-  );
 
   const connectRouter = createConnectRouter({
     db: deps.db,

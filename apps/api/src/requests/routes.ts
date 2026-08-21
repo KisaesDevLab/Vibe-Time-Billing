@@ -46,6 +46,7 @@ import { ReminderScheduleSchema } from '../appointments/reminders-validation';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
+import { normalizeSubfolder } from '../clients/files';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -87,6 +88,9 @@ const CreateSchema = z.object({
   // opens + submits it to the client on this date.
   activationDate: z.string().regex(DATE_RE).nullable().optional(),
   items: z.array(ItemInputSchema).max(100).optional(),
+  // 0220 — destination subfolder for portal DOCUMENT-item uploads
+  // ('' or absent = the client folder root).
+  targetSubfolderPath: z.string().max(512).optional(),
 });
 
 const REQUEST_STATUSES = [
@@ -719,6 +723,8 @@ export function createRequestRouter(deps: RequestRoutesDeps): Router {
             templateId: parsed.data.templateId ?? null,
             reminderDaysBefore: resolvedReminder,
             reminderSchedule: resolvedSchedule,
+            // 0220 — where portal DOCUMENT-item uploads land.
+            targetSubfolderPath: normalizeSubfolder(parsed.data.targetSubfolderPath, 'other'),
             // 0198 — an activation date makes the request start hidden (PENDING).
             ...(parsed.data.activationDate
               ? { status: 'PENDING' as const, activationDate: parsed.data.activationDate }

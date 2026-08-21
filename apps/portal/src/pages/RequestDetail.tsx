@@ -11,6 +11,17 @@ import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 
+// Browser-safe binary → base64 (chunked; atob/btoa choke on big buffers).
+function bufferToBase64(buf: ArrayBuffer): string {
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 0x2000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
 interface RequestRow {
   id: string;
   engagementId: string;
@@ -124,6 +135,38 @@ export function RequestDetailPage(): JSX.Element {
     }
   }
 
+  // 0220 — direct upload against a DOCUMENT item. One call stores the
+  // file with your firm (in the folder they chose) and ticks the item.
+  const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
+  async function uploadForItem(itemId: string, file: File): Promise<void> {
+    if (file.size > UPLOAD_MAX_BYTES) {
+      setError(`"${file.name}" is larger than the 20 MB upload limit.`);
+      return;
+    }
+    setBusy(itemId);
+    setError(null);
+    try {
+      const buf = await file.arrayBuffer();
+      await api(`/api/portal/requests/${id}/items/${itemId}/upload`, {
+        method: 'POST',
+        body: JSON.stringify({
+          originalFilename: file.name,
+          mimeType: file.type || undefined,
+          contentBase64: bufferToBase64(buf),
+        }),
+      });
+      await load();
+    } catch (err) {
+      setError(
+        err instanceof Error && err.message === 'file_too_large'
+          ? `"${file.name}" is larger than the 20 MB upload limit.`
+          : 'Upload failed — please try again or contact your firm.',
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function fulfillItem(itemId: string): Promise<void> {
     setBusy(itemId);
     try {
@@ -231,7 +274,37 @@ export function RequestDetailPage(): JSX.Element {
                     Your reply: {it.fulfilledText}
                   </p>
                 )}
-                {it.status !== 'FULFILLED' && (
+                {it.status !== 'FULFILLED' && it.itemKind === 'DOCUMENT' && (
+                  <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: tokens.color.accent,
+                        cursor: busy ? 'wait' : 'pointer',
+                      }}
+                    >
+                      {busy === it.id ? 'Uploading…' : '⬆ Upload document'}
+                      <input
+                        type="file"
+                        disabled={busy !== null || request.status === 'FULFILLED'}
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.target.value = '';
+                          if (f) void uploadForItem(it.id, f);
+                        }}
+                      />
+                    </label>
+                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                      lands directly with your firm — no separate attach step
+                    </span>
+                  </div>
+                )}
+                {it.status !== 'FULFILLED' && it.itemKind !== 'DOCUMENT' && (
                   <div style={{ display: 'flex', gap: 6 }}>
                     <input
                       type="text"
@@ -271,7 +344,7 @@ export function RequestDetailPage(): JSX.Element {
             ))}
           </ul>
           <p style={{ fontSize: 11, color: tokens.color.textMuted }}>
-            Upload files via the Files page; you can then attach them from your firm&apos;s portal.
+            Uploaded documents go straight to your firm — nothing else to do here.
           </p>
         </Card>
       )}

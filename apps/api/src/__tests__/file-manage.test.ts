@@ -13,21 +13,11 @@ import AdmZip from 'adm-zip';
 import { eq } from 'drizzle-orm';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import {
-  clientFolders,
-  clientSubfolders,
-  documentRequestItems,
-  documentRequests,
-  files,
-} from '@vibe/db/schema';
+import { clientFolders, clientSubfolders, files } from '@vibe/db/schema';
 import type { Database } from '@vibe/db';
 import { MockStorageClient } from '@vibe/storage';
 
 import { mountFileManageRoutes } from '../clients/file-manage';
-import {
-  createDocumentRequestPortalRouter,
-  createDocumentRequestStaffRouter,
-} from '../files/document-requests';
 import { createFileVisibilityRouter } from '../files/visibility';
 
 let harness: PgliteHarness;
@@ -331,99 +321,5 @@ describe('0219 — tax-return delete guard', () => {
     const res = await invokeRoute(router, 'delete', '/:id', staffReq({ params: { id: fileId } }));
     expect(res.statusCode).toBe(409);
     expect((res.body as { error: string }).error).toBe('file_backs_tax_return');
-  });
-});
-
-describe('0219 — document requests', () => {
-  it('staff create + list, portal list + upload flips the item', async () => {
-    const folderId = await bindFolder();
-    void folderId;
-    const staffRouter = createDocumentRequestStaffRouter({
-      db: harness.db as Database,
-      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-    });
-    const created = await invokeRoute(
-      staffRouter,
-      'post',
-      '/',
-      staffReq({
-        body: {
-          clientId: seed.clientId,
-          title: '2026 tax prep',
-          targetSubfolderPath: 'Income Tax/2026/',
-          items: ['W-2', '1099-INT'],
-        },
-      }),
-    );
-    expect(created.statusCode).toBe(201);
-    const requestId = (created.body as { requestId: string }).requestId;
-
-    const listed = await invokeRoute(
-      staffRouter,
-      'get',
-      '/',
-      staffReq({ query: { clientId: seed.clientId } }),
-    );
-    const reqRow = (listed.body as { items: { id: string; items: { id: string }[] }[] }).items[0]!;
-    expect(reqRow.id).toBe(requestId);
-    expect(reqRow.items).toHaveLength(2);
-    const itemId = reqRow.items[0]!.id;
-
-    // Portal upload against the first item.
-    const portalRouter = createDocumentRequestPortalRouter({
-      db: harness.db as Database,
-      requireAuth: (_req, _res, next) => next(),
-      storageClient: storage,
-    });
-    const portalReq = {
-      body: {
-        originalFilename: 'w2.pdf',
-        mimeType: 'application/pdf',
-        contentBase64: Buffer.from('W2DATA').toString('base64'),
-      },
-      params: { itemId },
-      query: {},
-      portalSession: {
-        firmId: seed.firmId,
-        activeClientId: seed.clientId,
-        portalIdentityId: '00000000-0000-4000-8000-000000000001',
-      },
-      ip: '127.0.0.1',
-      header: () => undefined,
-      get: () => undefined,
-    };
-    const uploaded = await invokeRoute(portalRouter, 'post', '/items/:itemId/upload', portalReq);
-    expect(uploaded.statusCode).toBe(201);
-    const fileId = (uploaded.body as { fileId: string }).fileId;
-
-    const [item] = await harness.db
-      .select()
-      .from(documentRequestItems)
-      .where(eq(documentRequestItems.id, itemId));
-    expect(item!.status).toBe('UPLOADED');
-    expect(item!.fileId).toBe(fileId);
-    const [fileRow] = await harness.db.select().from(files).where(eq(files.id, fileId));
-    expect(fileRow!.subfolderPath).toBe('Income Tax/2026/');
-    expect(fileRow!.visibility).toBe('private');
-    expect(await storage.head(fileRow!.storageKey)).not.toBeNull();
-
-    // Close the request; portal upload then refuses.
-    await invokeRoute(
-      staffRouter,
-      'patch',
-      '/:id',
-      staffReq({ params: { id: requestId }, body: { status: 'COMPLETED' } }),
-    );
-    const [reqAfter] = await harness.db
-      .select()
-      .from(documentRequests)
-      .where(eq(documentRequests.id, requestId));
-    expect(reqAfter!.status).toBe('COMPLETED');
-    const secondItemId = reqRow.items[1]!.id;
-    const refused = await invokeRoute(portalRouter, 'post', '/items/:itemId/upload', {
-      ...portalReq,
-      params: { itemId: secondItemId },
-    });
-    expect(refused.statusCode).toBe(409);
   });
 });

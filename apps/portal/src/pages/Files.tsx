@@ -286,163 +286,64 @@ export function FilesPage(): JSX.Element {
 }
 
 // ---------------------------------------------------------------------------
-// 0219 — document requests. The firm asks for a list of documents; each
-// item gets an upload control here. Files upload as base64 through
-// POST /api/portal/document-requests/items/:itemId/upload (20MB cap) and
-// land privately in the firm's folder for staff review.
+// 0220 — open-requests banner. Requests (including document checklists
+// with direct upload) live on /requests; this banner surfaces the open
+// ones so a client landing on Files doesn't miss them.
 // ---------------------------------------------------------------------------
 
-interface RequestItem {
-  id: string;
-  label: string;
-  status: 'PENDING' | 'UPLOADED';
-  uploadedAt: string | null;
-}
-
-interface DocumentRequest {
+interface OpenRequestLite {
   id: string;
   title: string;
-  note: string | null;
-  createdAt: string;
-  items: RequestItem[];
-}
-
-const UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
-
-function bufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  const chunk = 0x2000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+  status: string;
+  dueDate: string | null;
 }
 
 function DocumentRequestsSection(): JSX.Element | null {
-  const [requests, setRequests] = useState<DocumentRequest[] | null>(null);
-  const [busyItem, setBusyItem] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [requests, setRequests] = useState<OpenRequestLite[] | null>(null);
 
-  const load = async (): Promise<void> => {
-    try {
-      const r = await api<{ items: DocumentRequest[] }>('/api/portal/document-requests');
-      setRequests(r.items ?? []);
-    } catch {
-      // Requests are supplementary — a load failure must not break Files.
-      setRequests([]);
-    }
-  };
   useEffect(() => {
-    void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void api<{ items: OpenRequestLite[] }>('/api/portal/requests')
+      .then((r) =>
+        setRequests(
+          (r.items ?? []).filter((x) => x.status === 'OPEN' || x.status === 'NEEDS_INFO'),
+        ),
+      )
+      // The banner is supplementary — a load failure must not break Files.
+      .catch(() => setRequests([]));
   }, []);
-
-  async function uploadFor(item: RequestItem, file: File): Promise<void> {
-    if (file.size > UPLOAD_MAX_BYTES) {
-      setError(`"${file.name}" is larger than the 20 MB upload limit.`);
-      return;
-    }
-    setBusyItem(item.id);
-    setError(null);
-    try {
-      const buf = await file.arrayBuffer();
-      await api(`/api/portal/document-requests/items/${item.id}/upload`, {
-        method: 'POST',
-        body: JSON.stringify({
-          originalFilename: file.name,
-          mimeType: file.type || undefined,
-          contentBase64: bufferToBase64(buf),
-        }),
-      });
-      await load();
-    } catch (err) {
-      setError(
-        err instanceof Error && err.message === 'file_too_large'
-          ? `"${file.name}" is larger than the 20 MB upload limit.`
-          : 'Upload failed — please try again or contact us.',
-      );
-    } finally {
-      setBusyItem(null);
-    }
-  }
 
   if (!requests || requests.length === 0) return null;
 
   return (
-    <Card title="Documents we need from you">
-      {error && <p style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</p>}
-      <div style={{ display: 'grid', gap: 14 }}>
-        {requests.map((r) => {
-          const done = r.items.filter((i) => i.status === 'UPLOADED').length;
-          return (
-            <div key={r.id}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 4 }}>
-                <strong style={{ fontSize: 14, flex: 1 }}>{r.title}</strong>
-                <Pill tone={done === r.items.length ? 'success' : 'warning'}>
-                  {done}/{r.items.length} uploaded
-                </Pill>
-              </div>
-              {r.note && (
-                <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: '0 0 8px' }}>
-                  {r.note}
-                </p>
-              )}
-              <div style={{ display: 'grid', gap: 6 }}>
-                {r.items.map((item) => (
-                  <div
-                    key={item.id}
-                    style={{
-                      display: 'flex',
-                      gap: 10,
-                      alignItems: 'center',
-                      padding: '8px 10px',
-                      border: `1px solid ${tokens.color.border}`,
-                      borderRadius: tokens.radius.sm,
-                      flexWrap: 'wrap',
-                    }}
-                  >
-                    <span style={{ width: 16, fontSize: 14 }}>
-                      {item.status === 'UPLOADED' ? '✅' : '📄'}
-                    </span>
-                    <span style={{ flex: 1, fontSize: 13, minWidth: 160 }}>{item.label}</span>
-                    {item.status === 'UPLOADED' ? (
-                      <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                        Received{' '}
-                        {item.uploadedAt ? new Date(item.uploadedAt).toLocaleDateString() : ''}
-                      </span>
-                    ) : (
-                      <label
-                        style={{
-                          display: 'inline-flex',
-                          alignItems: 'center',
-                          gap: 6,
-                          fontSize: 13,
-                          cursor: busyItem ? 'wait' : 'pointer',
-                          color: tokens.color.accent,
-                          fontWeight: 600,
-                        }}
-                      >
-                        {busyItem === item.id ? 'Uploading…' : 'Upload'}
-                        <input
-                          type="file"
-                          disabled={busyItem !== null}
-                          style={{ display: 'none' }}
-                          onChange={(e) => {
-                            const f = e.target.files?.[0];
-                            e.target.value = '';
-                            if (f) void uploadFor(item, f);
-                          }}
-                        />
-                      </label>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })}
+    <Card title="Your firm has open requests">
+      <div style={{ display: 'grid', gap: 6 }}>
+        {requests.map((r) => (
+          <Link
+            key={r.id}
+            to={`/requests/${r.id}`}
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              padding: '8px 12px',
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+              textDecoration: 'none',
+              color: tokens.color.text,
+              fontSize: 13,
+            }}
+          >
+            <span style={{ flex: 1 }}>{r.title}</span>
+            {r.dueDate && (
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>due {r.dueDate}</span>
+            )}
+            <Pill tone="warning">{r.status === 'NEEDS_INFO' ? 'awaiting your firm' : 'open'}</Pill>
+          </Link>
+        ))}
       </div>
+      <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '8px 0 0' }}>
+        Open a request to answer questions or upload the documents your firm asked for.
+      </p>
     </Card>
   );
 }
