@@ -79,6 +79,13 @@ export function HomePage(): JSX.Element {
   const [taxReturns, setTaxReturns] = useState<ReleasedReturnSummary[]>([]);
   const [engagements, setEngagements] = useState<ActiveEngagementSummary[]>([]);
   const [appointments, setAppointments] = useState<AppointmentSummary[]>([]);
+  // 0222 — action items ("needs your attention").
+  const [attention, setAttention] = useState<{
+    unreadMessages: number;
+    openRequests: number;
+    lettersAwaiting: number;
+    newFiles: number;
+  } | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
@@ -86,18 +93,25 @@ export function HomePage(): JSX.Element {
       // allSettled, not all: each section loads independently so one
       // failing endpoint (e.g. a 500 from appointments) can't blank every
       // other card on the overview.
-      const [inv, tax, ret, eng, apt] = await Promise.allSettled([
+      const [inv, tax, ret, eng, apt, att] = await Promise.allSettled([
         api<{ open: InvoiceSummary[] }>('/api/portal/invoices'),
         api<{ items: PortalTaxPaymentSummary[] }>('/api/portal/tax-payments'),
         api<{ items: ReleasedReturnSummary[] }>('/api/portal/tax/returns'),
         api<{ items: ActiveEngagementSummary[] }>('/api/portal/engagements/active'),
         api<{ items: AppointmentSummary[] }>('/api/portal/appointments'),
+        api<{
+          unreadMessages: number;
+          openRequests: number;
+          lettersAwaiting: number;
+          newFiles: number;
+        }>('/api/portal/notifications/attention'),
       ]);
       if (inv.status === 'fulfilled') setOpenInvoices(inv.value.open ?? []);
       if (tax.status === 'fulfilled') setTaxPayments(tax.value.items ?? []);
       if (ret.status === 'fulfilled') setTaxReturns(ret.value.items ?? []);
       if (eng.status === 'fulfilled') setEngagements(eng.value.items ?? []);
       if (apt.status === 'fulfilled') setAppointments(apt.value.items ?? []);
+      if (att.status === 'fulfilled') setAttention(att.value);
       setLoaded(true);
     })();
   }, [me?.activeClientId]);
@@ -119,6 +133,55 @@ export function HomePage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900, margin: '0 auto' }}>
       <PayToUnlockBanner />
+
+      {attention &&
+        attention.unreadMessages +
+          attention.openRequests +
+          attention.lettersAwaiting +
+          attention.newFiles >
+          0 && (
+          <section>
+            <SectionHeading title="Needs your attention" />
+            <div style={{ display: 'grid', gap: 8 }}>
+              {attention.unreadMessages > 0 && (
+                <AttentionRow
+                  icon="💬"
+                  label={`${attention.unreadMessages} unread message${
+                    attention.unreadMessages === 1 ? '' : 's'
+                  } from your firm`}
+                  to="/messages"
+                />
+              )}
+              {attention.openRequests > 0 && (
+                <AttentionRow
+                  icon="📄"
+                  label={`${attention.openRequests} open request${
+                    attention.openRequests === 1 ? '' : 's'
+                  } — documents or answers your firm is waiting on`}
+                  to="/requests"
+                />
+              )}
+              {attention.lettersAwaiting > 0 && (
+                <AttentionRow
+                  icon="✍️"
+                  label={`${attention.lettersAwaiting} letter${
+                    attention.lettersAwaiting === 1 ? '' : 's'
+                  } awaiting your signature`}
+                  to="/letters"
+                />
+              )}
+              {attention.newFiles > 0 && (
+                <AttentionRow
+                  icon="🆕"
+                  label={`${attention.newFiles} file${
+                    attention.newFiles === 1 ? '' : 's'
+                  } shared with you in the last 14 days`}
+                  to="/files"
+                />
+              )}
+            </div>
+          </section>
+        )}
 
       <section>
         <SectionHeading
@@ -420,5 +483,41 @@ export function HomePage(): JSX.Element {
         </Card>
       </section>
     </div>
+  );
+}
+
+// 0222 — one tappable action-item row on the dashboard.
+function AttentionRow({
+  icon,
+  label,
+  to,
+}: {
+  icon: string;
+  label: string;
+  to: string;
+}): JSX.Element {
+  return (
+    <Link
+      to={to}
+      style={{
+        display: 'flex',
+        gap: 12,
+        alignItems: 'center',
+        padding: '12px 14px',
+        border: `1px solid ${tokens.color.accent}`,
+        background: tokens.color.accentMuted,
+        borderRadius: tokens.radius.md,
+        textDecoration: 'none',
+        color: tokens.color.text,
+        fontSize: 14,
+        fontWeight: 500,
+      }}
+    >
+      <span aria-hidden style={{ fontSize: 18 }}>
+        {icon}
+      </span>
+      <span style={{ flex: 1 }}>{label}</span>
+      <span style={{ color: tokens.color.accent }}>→</span>
+    </Link>
   );
 }

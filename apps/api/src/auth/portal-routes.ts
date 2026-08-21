@@ -10,7 +10,7 @@ import type { Redis } from 'ioredis';
 import { createHash } from 'node:crypto';
 
 import { z } from 'zod';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, or } from 'drizzle-orm';
 
 import {
   checkAndIncrement,
@@ -667,6 +667,80 @@ export function createPortalAuthRouter(deps: PortalRoutesDeps): Router {
         usedAt: now,
       })
       .where(eq(portalInvitation.id, inv.id));
+
+    // Step 3b (0222) — sibling-invite sweep. A person invited to several
+    // client entities gets one invitation per client; making them click
+    // every link is hostile. Accepting ONE invitation also accepts every
+    // other live invitation at this firm for the same email/phone: grant
+    // each client's access to this identity and mark those invites USED.
+    const contactConds = [];
+    if (inv.invitedEmail) contactConds.push(eq(portalInvitation.invitedEmail, inv.invitedEmail));
+    if (inv.invitedPhone) contactConds.push(eq(portalInvitation.invitedPhone, inv.invitedPhone));
+    if (contactConds.length > 0) {
+      const siblings = await deps.db
+        .select()
+        .from(portalInvitation)
+        .where(
+          and(
+            eq(portalInvitation.firmId, inv.firmId),
+            eq(portalInvitation.status, 'ACTIVE'),
+            or(...contactConds),
+          ),
+        );
+      for (const sib of siblings) {
+        if (sib.expiresAt.getTime() < Date.now()) continue;
+        const [sibAccess] = await deps.db
+          .select({ id: clientPortalAccess.id })
+          .from(clientPortalAccess)
+          .where(
+            and(
+              eq(clientPortalAccess.portalIdentityId, identityId),
+              eq(clientPortalAccess.clientId, sib.clientId),
+            ),
+          )
+          .limit(1);
+        if (sibAccess) {
+          await deps.db
+            .update(clientPortalAccess)
+            .set({
+              status: 'ACTIVE',
+              role: sib.proposedRole,
+              acceptedAt: now,
+              revokedAt: null,
+              revokedBy: null,
+            })
+            .where(eq(clientPortalAccess.id, sibAccess.id));
+        } else {
+          await deps.db.insert(clientPortalAccess).values({
+            portalIdentityId: identityId,
+            clientId: sib.clientId,
+            role: sib.proposedRole,
+            status: 'ACTIVE',
+            invitedBy: sib.invitedBy,
+            invitedAt: sib.invitedAt,
+            acceptedAt: now,
+          });
+        }
+        await deps.db
+          .update(portalInvitation)
+          .set({ status: 'USED', portalIdentityId: identityId, usedAt: now })
+          .where(eq(portalInvitation.id, sib.id));
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: 'client_portal_access',
+          entityId: identityId,
+          actorPortalIdentityId: identityId,
+          activeClientId: sib.clientId,
+          after: {
+            acceptedFromInvitationId: sib.id,
+            clientId: sib.clientId,
+            viaSiblingSweep: true,
+          },
+          ip: clientIp(req),
+          userAgent: req.header('user-agent') ?? null,
+        }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));
+      }
+    }
 
     await emitAudit(deps.db, {
       action: 'CREATE',

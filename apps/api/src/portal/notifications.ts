@@ -15,7 +15,17 @@ import express, { type Request, type Response, type Router } from 'express';
 import { and, desc, eq, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { portalNotifications } from '@vibe/db/schema';
+import {
+  clientRequests,
+  engagementLetters,
+  engagementThreadLinks,
+  engagements,
+  files,
+  messages,
+  portalNotifications,
+  threadMembers,
+  threads,
+} from '@vibe/db/schema';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
 
@@ -58,6 +68,108 @@ export function createPortalNotificationRouter(deps: PortalNotificationDeps): Ro
       .orderBy(desc(portalNotifications.createdAt))
       .limit(100);
     res.json({ items });
+  });
+
+  // 0222 — dashboard "needs your attention" counts, one round trip:
+  // unread staff messages, open requests, letters awaiting signature,
+  // and client-visible files shared in the last 14 days. Each count is
+  // best-effort inside its own try so one bad join can't blank the card.
+  router.get('/attention', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ unreadMessages: 0, openRequests: 0, lettersAwaiting: 0, newFiles: 0 });
+      return;
+    }
+    const db = deps.db;
+    let unreadMessages = 0;
+    let openRequests = 0;
+    let lettersAwaiting = 0;
+    let newFiles = 0;
+
+    try {
+      // Staff-authored messages in this identity's visible client threads
+      // with no read receipt from this identity.
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(messages)
+        .innerJoin(threads, eq(threads.id, messages.threadId))
+        .innerJoin(threadMembers, eq(threadMembers.threadId, threads.id))
+        .leftJoin(engagementThreadLinks, eq(engagementThreadLinks.threadId, threads.id))
+        .leftJoin(engagements, eq(engagements.id, engagementThreadLinks.engagementId))
+        .where(
+          and(
+            eq(threadMembers.portalIdentityId, session.portalIdentityId),
+            sql`${threadMembers.removedAt} IS NULL`,
+            eq(threads.kind, 'client'),
+            sql`(${threads.clientId} = ${session.activeClientId} OR ${engagements.clientId} = ${session.activeClientId})`,
+            sql`${messages.senderAppUserId} IS NOT NULL`,
+            sql`${messages.deletedAt} IS NULL`,
+            sql`NOT EXISTS (
+              SELECT 1 FROM message_read_receipt mrr
+              WHERE mrr.message_id = ${messages.id}
+                AND mrr.reader_portal_identity_id = ${session.portalIdentityId}
+            )`,
+          ),
+        );
+      unreadMessages = row?.count ?? 0;
+    } catch {
+      /* best-effort */
+    }
+
+    try {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(clientRequests)
+        .innerJoin(engagements, eq(engagements.id, clientRequests.engagementId))
+        .where(
+          and(
+            eq(engagements.clientId, session.activeClientId),
+            eq(clientRequests.firmId, session.firmId),
+            eq(clientRequests.status, 'OPEN'),
+          ),
+        );
+      openRequests = row?.count ?? 0;
+    } catch {
+      /* best-effort */
+    }
+
+    try {
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(engagementLetters)
+        .innerJoin(engagements, eq(engagements.id, engagementLetters.engagementId))
+        .where(
+          and(
+            eq(engagements.clientId, session.activeClientId),
+            eq(engagementLetters.status, 'SENT'),
+          ),
+        );
+      lettersAwaiting = row?.count ?? 0;
+    } catch {
+      /* best-effort */
+    }
+
+    try {
+      const cutoff = new Date(Date.now() - 14 * 24 * 3600 * 1000);
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(files)
+        .where(
+          and(
+            eq(files.firmId, session.firmId),
+            eq(files.clientId, session.activeClientId),
+            eq(files.visibility, 'client_visible'),
+            eq(files.pendingUpload, false),
+            sql`${files.deletedAt} IS NULL`,
+            sql`${files.modifiedAt} > ${cutoff.toISOString()}`,
+          ),
+        );
+      newFiles = row?.count ?? 0;
+    } catch {
+      /* best-effort */
+    }
+
+    res.json({ unreadMessages, openRequests, lettersAwaiting, newFiles });
   });
 
   router.get('/unread-count', deps.requireAuth, async (req: Request, res: Response) => {

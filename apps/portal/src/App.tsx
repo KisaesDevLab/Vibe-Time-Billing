@@ -239,6 +239,8 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
   // Polled every 60s; also refreshed on route change so reading items
   // updates the count without a full minute's lag.
   const [unreadUpdates, setUnreadUpdates] = useState(0);
+  // 0222 — unread staff-message count for the Messages nav badge.
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -246,6 +248,8 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       try {
         const r = await api<{ count: number }>('/api/portal/notifications/unread-count');
         if (!cancelled) setUnreadUpdates(r.count ?? 0);
+        const a = await api<{ unreadMessages: number }>('/api/portal/notifications/attention');
+        if (!cancelled) setUnreadMessages(a.unreadMessages ?? 0);
       } catch {
         // ignore; badge is best-effort
       }
@@ -300,7 +304,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           active: location.pathname === '/',
         },
         {
-          label: 'Messages',
+          label: unreadMessages > 0 ? `Messages (${unreadMessages})` : 'Messages',
           href: '/messages',
           icon: <MessageSquare size={16} />,
           active: location.pathname.startsWith('/messages'),

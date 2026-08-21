@@ -256,9 +256,9 @@ export function PeopleDirectoryPage(): JSX.Element {
             <Button size="sm" variant="secondary" onClick={() => setEmailOpen(true)}>
               Email {selected.size}…
             </Button>
-            {selectedPersonKeys.length >= 2 && (
+            {selected.size >= 2 && selectedPersonKeys.length >= 1 && (
               <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)}>
-                Merge {selectedPersonKeys.length}…
+                Merge {selected.size}…
               </Button>
             )}
             <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
@@ -453,7 +453,7 @@ export function PeopleDirectoryPage(): JSX.Element {
         )}
         {mergeOpen && (
           <MergePeopleDialog
-            people={list.rows.filter((r) => selectedPersonKeys.includes(r.key))}
+            people={list.rows.filter((r) => selected.has(r.key))}
             onClose={() => setMergeOpen(false)}
             onMerged={(msg) => {
               setMergeOpen(false);
@@ -596,7 +596,9 @@ function MergePeopleDialog({
   onClose: () => void;
   onMerged: (summary: string) => void;
 }): JSX.Element {
-  const [survivorKey, setSurvivorKey] = useState(people[0]?.key ?? '');
+  const personRows = people.filter((p) => p.kind === 'person');
+  const identityRows = people.filter((p) => p.kind === 'portal_identity');
+  const [survivorKey, setSurvivorKey] = useState(personRows[0]?.key ?? '');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -633,7 +635,7 @@ function MergePeopleDialog({
           record. Blank email/phone on the kept record backfill from the merged ones.
         </p>
         <div style={{ display: 'grid', gap: 6 }}>
-          {people.map((p) => (
+          {personRows.map((p) => (
             <label
               key={p.key}
               style={{
@@ -662,6 +664,27 @@ function MergePeopleDialog({
               </span>
               {survivorKey === p.key && <Pill tone="success">keep</Pill>}
             </label>
+          ))}
+          {identityRows.map((p) => (
+            <div
+              key={p.key}
+              style={{
+                display: 'flex',
+                gap: 10,
+                alignItems: 'center',
+                padding: '8px 10px',
+                border: `1px dashed ${tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                fontSize: 13,
+                color: tokens.color.textMuted,
+              }}
+            >
+              <span style={{ flex: 1 }}>
+                <strong style={{ color: tokens.color.text }}>{p.fullName}</strong>
+                <span style={{ marginLeft: 8 }}>{p.email ?? 'no email'}</span>
+              </span>
+              <Pill tone="warning">portal login — will be linked</Pill>
+            </div>
           ))}
         </div>
         <p style={{ fontSize: 12, color: tokens.color.warning, margin: 0 }}>

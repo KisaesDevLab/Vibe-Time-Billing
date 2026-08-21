@@ -542,7 +542,11 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
   // ---------------------------------------------------------------
   const MergeSchema = z.object({
     survivorId: z.string().uuid(),
-    mergeIds: z.array(z.string().uuid()).min(1).max(20),
+    mergeIds: z.array(z.string().uuid()).max(20).default([]),
+    // 0222 — standalone portal logins selected alongside: they can't be
+    // merged (no person row) but they CAN be linked to the survivor,
+    // which collapses them into the survivor's directory row.
+    identityIds: z.array(z.string().uuid()).max(20).default([]),
   });
   router.post(
     '/merge',
@@ -561,7 +565,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       const db = deps.db;
       const { survivorId } = parsed.data;
       const mergeIds = parsed.data.mergeIds.filter((id) => id !== survivorId);
-      if (mergeIds.length === 0) {
+      const identityIds = parsed.data.identityIds;
+      if (mergeIds.length === 0 && identityIds.length === 0) {
         res.status(400).json({ error: 'nothing_to_merge' });
         return;
       }
@@ -575,12 +580,35 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         res.status(404).json({ error: 'survivor_not_found' });
         return;
       }
-      const mergeRows = await db
-        .select()
-        .from(persons)
-        .where(and(inArray(persons.id, mergeIds), eq(persons.firmId, session.firmId)));
+      const mergeRows = mergeIds.length
+        ? await db
+            .select()
+            .from(persons)
+            .where(and(inArray(persons.id, mergeIds), eq(persons.firmId, session.firmId)))
+        : [];
       if (mergeRows.length !== mergeIds.length) {
         res.status(404).json({ error: 'person_not_found' });
+        return;
+      }
+      // Standalone (or merge-loser-linked) portal logins to attach.
+      const identityRowsToLink = identityIds.length
+        ? await db
+            .select({
+              id: portalIdentity.id,
+              personId: portalIdentity.personId,
+              email: portalIdentity.primaryEmail,
+              phone: portalIdentity.primaryPhone,
+            })
+            .from(portalIdentity)
+            .where(
+              and(
+                inArray(portalIdentity.id, identityIds),
+                eq(portalIdentity.firmId, session.firmId),
+              ),
+            )
+        : [];
+      if (identityRowsToLink.length !== identityIds.length) {
+        res.status(404).json({ error: 'identity_not_found' });
         return;
       }
 
@@ -593,6 +621,21 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
           if (!fillEmail && m.email) fillEmail = m.email;
           if (!fillPhone && m.phone) fillPhone = m.phone;
           if (!fillMobile && m.mobile) fillMobile = m.mobile;
+        }
+        for (const i of identityRowsToLink) {
+          if (!fillEmail && i.email) fillEmail = i.email;
+          if (!fillPhone && i.phone) fillPhone = i.phone;
+        }
+
+        // Attach selected portal logins to the survivor. Only steal a
+        // login already linked to a DIFFERENT person when that person is
+        // itself being merged away.
+        for (const i of identityRowsToLink) {
+          if (i.personId && i.personId !== survivorId && !mergeIds.includes(i.personId)) continue;
+          await tx
+            .update(portalIdentity)
+            .set({ personId: survivorId })
+            .where(eq(portalIdentity.id, i.id));
         }
 
         for (const m of mergeRows) {
@@ -695,9 +738,14 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         entityType: 'person',
         entityId: survivorId,
         actorAppUserId: session.appUserId,
-        after: { kind: 'people_merge', mergedIds: mergeIds },
+        after: { kind: 'people_merge', mergedIds: mergeIds, linkedIdentityIds: identityIds },
       }).catch(() => undefined);
-      res.json({ ok: true, merged: mergeIds.length, survivorId });
+      res.json({
+        ok: true,
+        merged: mergeIds.length,
+        linkedIdentities: identityIds.length,
+        survivorId,
+      });
     },
   );
 
