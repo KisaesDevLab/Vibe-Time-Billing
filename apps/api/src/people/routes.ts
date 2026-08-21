@@ -15,7 +15,7 @@
 // restore endpoints, keyed by the access ids this router returns.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, inArray, or, sql } from 'drizzle-orm';
+import { and, eq, inArray, ne, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -100,7 +100,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         bulkEmailOptOut: persons.bulkEmailOptOut,
       })
       .from(persons)
-      .where(eq(persons.firmId, firmId));
+      // Archived people (e.g. merge losers) stay out of the directory.
+      .where(and(eq(persons.firmId, firmId), ne(persons.status, 'ARCHIVED')));
     const identityRows = await db
       .select({
         id: portalIdentity.id,

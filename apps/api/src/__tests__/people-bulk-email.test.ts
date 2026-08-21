@@ -31,7 +31,7 @@ afterEach(async () => {
 
 async function invoke(
   router: ReturnType<typeof createPeopleRouter>,
-  method: 'post' | 'patch',
+  method: 'get' | 'post' | 'patch',
   path: string,
   req: Record<string, unknown>,
 ): Promise<{ statusCode: number; body: unknown }> {
@@ -200,5 +200,11 @@ describe('0221 — people merge', () => {
     const dup = contacts.rows.find((r) => r.person_id === b.personId);
     expect(dup?.status).toBe('ARCHIVED');
     expect(dup?.is_billing).toBe(false);
+
+    // The archived duplicate disappears from the People directory list.
+    const list = await invoke(router, 'get', '/', staffReq());
+    const rows = (list.body as { rows: { id: string }[] }).rows;
+    expect(rows.some((r) => r.id === b.personId)).toBe(false);
+    expect(rows.some((r) => r.id === a.personId)).toBe(true);
   });
 });
