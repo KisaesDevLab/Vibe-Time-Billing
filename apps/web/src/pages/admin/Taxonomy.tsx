@@ -30,10 +30,28 @@ interface ReasonCode {
   status: string;
 }
 
+interface EngagementType {
+  id: string;
+  key: string;
+  name: string;
+  serviceLineId: string | null;
+  defaultFeeStructure: string | null;
+  status: string;
+}
+
+const FEE_OPTIONS = [
+  { value: 'HOURLY', label: 'Hourly' },
+  { value: 'HOURLY_NTE', label: 'Hourly (NTE)' },
+  { value: 'FIXED_FEE', label: 'Fixed fee' },
+  { value: 'FIXED_FEE_WITH_MILESTONES', label: 'Fixed fee + milestones' },
+  { value: 'RECURRING_SUBSCRIPTION', label: 'Recurring subscription' },
+];
+
 export function TaxonomyPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <ServiceLinesPanel />
+      <EngagementTypesPanel />
       <WorkCodesPanel />
       <ReasonCodesPanel />
     </div>
@@ -144,6 +162,210 @@ function ServiceLinesPanel(): JSX.Element {
                 Rename
               </Button>
             ),
+          },
+        ]}
+        rows={items}
+        rowKey={(r) => r.id}
+      />
+    </Card>
+  );
+}
+
+function EngagementTypesPanel(): JSX.Element {
+  const [items, setItems] = useState<EngagementType[]>([]);
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([]);
+  const [key, setKey] = useState('');
+  const [name, setName] = useState('');
+  const [newServiceLineId, setNewServiceLineId] = useState('');
+  const [newFee, setNewFee] = useState('');
+  const [err, setErr] = useState<string | null>(null);
+
+  async function load(): Promise<void> {
+    const [r, sl] = await Promise.all([
+      api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types'),
+      api<{ items: ServiceLine[] }>('/api/staff/taxonomy/service-lines'),
+    ]);
+    setItems(r.items ?? []);
+    setServiceLines(sl.items ?? []);
+  }
+  useEffect(() => {
+    void load();
+  }, []);
+
+  function fail(e: unknown, fallback: string): void {
+    if (e instanceof Error && e.message === 'in_use') {
+      const count = (e as { body?: { count?: number } }).body?.count;
+      setErr(`In use by ${count ?? 'existing'} engagement(s) — cannot archive.`);
+      return;
+    }
+    setErr(e instanceof Error ? e.message : fallback);
+  }
+
+  async function create(e: FormEvent): Promise<void> {
+    e.preventDefault();
+    setErr(null);
+    try {
+      await api('/api/staff/taxonomy/engagement-types', {
+        method: 'POST',
+        body: JSON.stringify({
+          key,
+          name,
+          ...(newServiceLineId ? { serviceLineId: newServiceLineId } : {}),
+          ...(newFee ? { defaultFeeStructure: newFee } : {}),
+        }),
+      });
+      setKey('');
+      setName('');
+      setNewServiceLineId('');
+      setNewFee('');
+      await load();
+    } catch (e2) {
+      fail(e2, 'create_failed');
+    }
+  }
+
+  async function patch(id: string, body: Record<string, unknown>): Promise<void> {
+    setErr(null);
+    try {
+      await api(`/api/staff/taxonomy/engagement-types/${id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      await load();
+    } catch (e2) {
+      fail(e2, 'update_failed');
+    }
+  }
+
+  const slOptions = serviceLines.map((sl) => ({ value: sl.id, label: sl.name }));
+
+  return (
+    <Card title="Engagement types">
+      <form onSubmit={create} style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <Input
+          value={key}
+          onChange={(e) => setKey(e.target.value)}
+          placeholder="key (snake_case)"
+          required
+        />
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Display name"
+          required
+        />
+        <div style={{ width: 200 }}>
+          <Combobox
+            ariaLabel="Service line"
+            clearable
+            value={newServiceLineId}
+            onChange={setNewServiceLineId}
+            options={slOptions}
+            placeholder="No service line"
+          />
+        </div>
+        <div style={{ width: 200 }}>
+          <Combobox
+            ariaLabel="Default fee structure"
+            clearable
+            value={newFee}
+            onChange={setNewFee}
+            options={FEE_OPTIONS}
+            placeholder="Default fee"
+          />
+        </div>
+        <Button type="submit">Add</Button>
+      </form>
+      <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+        Types classify engagements and templates and derive their service line. The default fee
+        structure pre-fills new engagements of this type. Archiving is blocked while any engagement
+        references the type.
+      </p>
+      {err && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{err}</p>}
+      <Table<EngagementType>
+        columns={[
+          { key: 'key', header: 'Key', render: (r) => <code>{r.key}</code> },
+          { key: 'name', header: 'Name', render: (r) => r.name },
+          {
+            key: 'serviceLine',
+            header: 'Service line',
+            render: (r) =>
+              r.status === 'ARCHIVED' ? (
+                (serviceLines.find((s) => s.id === r.serviceLineId)?.name ?? '—')
+              ) : (
+                <div style={{ minWidth: 170 }}>
+                  <Combobox
+                    ariaLabel={`Service line for ${r.name}`}
+                    value={r.serviceLineId ?? ''}
+                    onChange={(val) => {
+                      if (val && val !== r.serviceLineId) void patch(r.id, { serviceLineId: val });
+                    }}
+                    options={slOptions}
+                    placeholder="None"
+                    size="sm"
+                  />
+                </div>
+              ),
+          },
+          {
+            key: 'fee',
+            header: 'Default fee',
+            render: (r) =>
+              r.status === 'ARCHIVED' ? (
+                (FEE_OPTIONS.find((f) => f.value === r.defaultFeeStructure)?.label ?? '—')
+              ) : (
+                <div style={{ minWidth: 170 }}>
+                  <Combobox
+                    ariaLabel={`Default fee structure for ${r.name}`}
+                    value={r.defaultFeeStructure ?? ''}
+                    onChange={(val) => {
+                      if (val && val !== r.defaultFeeStructure)
+                        void patch(r.id, { defaultFeeStructure: val });
+                    }}
+                    options={FEE_OPTIONS}
+                    placeholder="None"
+                    size="sm"
+                  />
+                </div>
+              ),
+          },
+          {
+            key: 'edit',
+            header: '',
+            align: 'right',
+            render: (r) =>
+              r.status === 'ARCHIVED' ? (
+                <Pill>ARCHIVED</Pill>
+              ) : (
+                <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      const next = prompt(`Rename engagement type "${r.name}":`, r.name);
+                      if (!next || next.trim() === r.name) return;
+                      void patch(r.id, { name: next.trim() });
+                    }}
+                  >
+                    Rename
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => {
+                      if (!confirm(`Archive engagement type "${r.name}"?`)) return;
+                      setErr(null);
+                      void api(`/api/staff/taxonomy/engagement-types/${r.id}/archive`, {
+                        method: 'PATCH',
+                      })
+                        .then(load)
+                        .catch((e2) => fail(e2, 'archive_failed'));
+                    }}
+                  >
+                    Archive
+                  </Button>
+                </div>
+              ),
           },
         ]}
         rows={items}
