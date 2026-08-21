@@ -672,7 +672,11 @@ export function createApp(deps: AppDeps): Express {
 
   // Firm-wide People directory (list / detail / edit). The per-client
   // People card stays on the clients router above; this is the global view.
-  const peopleRouter = createPeopleRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles });
+  const peopleRouter = createPeopleRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendStaffMail: deps.sendStaffMail,
+  });
   app.use('/api/staff/people', auth.requireAuth, auth.requireCsrf, peopleRouter);
 
   // Top-level firm-wide task list (My tasks / All tasks + create). The

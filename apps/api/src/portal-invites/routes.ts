@@ -18,6 +18,7 @@ import {
   clientContacts,
   clientPortalAccess,
   clients,
+  persons,
   portalIdentity,
   portalInvitation,
 } from '@vibe/db/schema';
@@ -123,6 +124,186 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
     },
   );
 
+  // ----- 0221 — bulk invite from the People page -----------------------
+  //
+  // Takes selected People rows and invites each person to the portal on
+  // EVERY client they are an active contact of. channel 'BOTH' sends on
+  // both email and SMS where a destination exists (the stored primary
+  // channel is email when present, else SMS). Rows that can't be invited
+  // are reported per-person, never a hard failure for the batch.
+  const BulkPeopleSchema = z.object({
+    people: z
+      .array(
+        z.object({
+          kind: z.enum(['person', 'portal_identity']),
+          id: z.string().uuid(),
+        }),
+      )
+      .min(1)
+      .max(200),
+    role: z.enum(['FULL', 'VIEW_ONLY', 'PAY_ONLY']).default('FULL'),
+    channel: z.enum(['EMAIL', 'SMS', 'BOTH']).default('EMAIL'),
+  });
+  router.post(
+    '/bulk-people',
+    requirePermission(deps, 'client:portal-access:manage'),
+    async (req: Request, res: Response) => {
+      const parsed = BulkPeopleSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true, results: [] });
+        return;
+      }
+
+      interface BulkResult {
+        kind: 'person' | 'portal_identity';
+        id: string;
+        fullName: string | null;
+        status: 'invited' | 'granted' | 'skipped' | 'failed';
+        reason?: string;
+        clients?: number;
+      }
+      const results: BulkResult[] = [];
+
+      for (const target of parsed.data.people) {
+        if (target.kind === 'portal_identity') {
+          results.push({
+            ...target,
+            fullName: null,
+            status: 'skipped',
+            reason: 'already_portal_identity',
+          });
+          continue;
+        }
+        const [person] = await deps.db
+          .select({
+            id: persons.id,
+            fullName: persons.fullName,
+            email: persons.email,
+            phone: persons.phone,
+            mobile: persons.mobile,
+          })
+          .from(persons)
+          .where(and(eq(persons.id, target.id), eq(persons.firmId, session.firmId)))
+          .limit(1);
+        if (!person) {
+          results.push({ ...target, fullName: null, status: 'skipped', reason: 'not_found' });
+          continue;
+        }
+        const email = person.email?.trim() || null;
+        const phone = person.mobile?.trim() || person.phone?.trim() || null;
+        if (
+          (parsed.data.channel === 'EMAIL' && !email) ||
+          (parsed.data.channel === 'SMS' && !phone)
+        ) {
+          results.push({
+            ...target,
+            fullName: person.fullName,
+            status: 'skipped',
+            reason: parsed.data.channel === 'EMAIL' ? 'no_email' : 'no_phone',
+          });
+          continue;
+        }
+        if (!email && !phone) {
+          results.push({
+            ...target,
+            fullName: person.fullName,
+            status: 'skipped',
+            reason: 'no_contact_info',
+          });
+          continue;
+        }
+
+        const links = await deps.db
+          .select({
+            clientId: clients.id,
+            clientName: clients.name,
+            contactId: clientContacts.id,
+            contactStatus: clientContacts.status,
+          })
+          .from(clientContacts)
+          .innerJoin(clients, eq(clients.id, clientContacts.clientId))
+          .where(and(eq(clientContacts.personId, person.id), eq(clients.firmId, session.firmId)));
+        const active = links.filter((l) => l.contactStatus === 'ACTIVE');
+        if (active.length === 0) {
+          results.push({
+            ...target,
+            fullName: person.fullName,
+            status: 'skipped',
+            reason: 'no_clients',
+          });
+          continue;
+        }
+
+        const primary: 'EMAIL' | 'SMS' =
+          parsed.data.channel === 'BOTH' ? (email ? 'EMAIL' : 'SMS') : parsed.data.channel;
+        let anyDeduped = false;
+        let anyInvited = false;
+        let failed = false;
+        for (const link of active) {
+          const result = await grantOrInvitePortalAccess(
+            {
+              db: deps.db,
+              sendEmail: deps.sendEmail,
+              sendSms: deps.sendSms,
+              portalBaseUrl: deps.portalBaseUrl,
+            },
+            {
+              firmId: session.firmId,
+              client: { id: link.clientId, name: link.clientName },
+              fullName: person.fullName,
+              email,
+              phone,
+              role: parsed.data.role,
+              deliveryChannel: primary,
+              sendBoth: parsed.data.channel === 'BOTH',
+              clientContactId: link.contactId,
+              personId: person.id,
+              actorAppUserId: session.appUserId,
+              ip: clientIp(req),
+              userAgent: req.header('user-agent') ?? null,
+            },
+          ).catch(() => ({ ok: false as const, error: 'invite_failed' }));
+          if (!result.ok) {
+            failed = true;
+            continue;
+          }
+          if (result.deduped) anyDeduped = true;
+          else anyInvited = true;
+        }
+        results.push({
+          ...target,
+          fullName: person.fullName,
+          status: anyInvited ? 'invited' : anyDeduped ? 'granted' : failed ? 'failed' : 'skipped',
+          clients: active.length,
+        });
+      }
+
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'portal_invitation_bulk',
+        entityId: null,
+        actorAppUserId: session.appUserId,
+        after: {
+          requested: parsed.data.people.length,
+          invited: results.filter((r) => r.status === 'invited').length,
+          granted: results.filter((r) => r.status === 'granted').length,
+          skipped: results.filter((r) => r.status === 'skipped').length,
+          channel: parsed.data.channel,
+          role: parsed.data.role,
+        },
+        ip: clientIp(req),
+        userAgent: req.header('user-agent') ?? null,
+      }).catch(() => undefined);
+
+      res.json({ ok: true, results });
+    },
+  );
+
   router.post(
     '/:id/resend',
     requirePermission(deps, 'client:portal-access:manage'),
@@ -177,7 +358,14 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
               client?.name ?? 'the client portal'
             }.\n\nAccept: ${link}\n\nLink expires in 7 days.`,
           },
-          context: { firm, link: { url: link } },
+          context: {
+            firm,
+            link: { url: link },
+            portal: { invite_url: link, url: link },
+            contact: { name: inv.proposedFullName },
+            person: { name: inv.proposedFullName },
+            client: { name: client?.name ?? '' },
+          },
         });
         await deps
           .sendEmail({
@@ -194,7 +382,14 @@ export function createPortalInviteRouter(deps: PortalInviteDeps): Router {
           kind: 'portal_invite',
           channel: 'SMS',
           fallback: { body: `Portal invite (resent) from ${client?.name ?? 'firm'}: ${link}` },
-          context: { firm, link: { url: link } },
+          context: {
+            firm,
+            link: { url: link },
+            portal: { invite_url: link, url: link },
+            contact: { name: inv.proposedFullName },
+            person: { name: inv.proposedFullName },
+            client: { name: client?.name ?? '' },
+          },
         });
         await deps
           .sendSms({

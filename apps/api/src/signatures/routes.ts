@@ -37,6 +37,7 @@ import {
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
+import { logger } from '../logger';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard } from '../lib/uuid-guard';
@@ -56,6 +57,13 @@ import {
 } from './profiles';
 import { sendSignatureRequest } from './send';
 import { FIELD_TYPES, validatePlacements, type PlacementInput } from './validation';
+import {
+  loadClientLetterData,
+  loadEngagementLetterData,
+  loadLetterTemplateBody,
+  renderLetterHtml,
+} from '../clients/letter-merge';
+import { firmScope } from '../notifications/templating';
 
 export interface SignaturesDeps extends RbacDeps {
   db: Database | null;
@@ -70,6 +78,8 @@ export interface SignaturesDeps extends RbacDeps {
   /** Portal base URL — the QR sheet encodes `${portalBaseUrl}/in-office/<token>`
    *  per signer so the printed QR works from the draft (before any send). */
   portalBaseUrl?: string;
+  /** Test seam for the letter-template bridge (Puppeteer in prod). */
+  renderPdf?: (html: string) => Promise<Buffer>;
 }
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
@@ -402,6 +412,241 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         after: { title: body.title, signerCount: body.signers.length, status: 'draft' },
       });
       res.status(201).json({ id: created });
+    },
+  );
+
+  // ---- 0221 — create a signature request FROM A LETTER TEMPLATE -----
+  //
+  // One call bridges the letter-template system into e-sign: render the
+  // template with the client/engagement merge context (same engine as
+  // mail-merge), print it to PDF via Puppeteer, store it as the request's
+  // source, and (by default) apply the firm's 'engagement-letter'
+  // placement profile so signature/date fields land on the last page.
+  // The request stays a DRAFT — staff review/nudge fields in the editor
+  // and hit Send as usual. Signers default to role 'client' so the
+  // profile's client fields match without extra input.
+  const FromLetterTemplateSchema = z.object({
+    letterTemplateId: z.string().uuid(),
+    clientId: z.string().uuid(),
+    engagementId: z.string().uuid().optional(),
+    title: z.string().min(1).max(200).optional(),
+    signers: z
+      .array(
+        z.object({
+          name: z.string().min(1).max(200),
+          email: z.string().email().max(320),
+          role: z.string().max(60).optional(),
+          order: z.number().int().min(1).max(20).optional(),
+          personId: z.string().uuid().optional(),
+          clientContactId: z.string().uuid().optional(),
+          portalIdentityId: z.string().uuid().optional(),
+        }),
+      )
+      .min(1)
+      .max(10),
+    applyProfile: z.boolean().default(true),
+  });
+  router.post(
+    '/from-letter-template',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const storage = getStorage();
+      if (!storage) {
+        res.status(503).json({ error: 'storage_unavailable' });
+        return;
+      }
+      const parsed = FromLetterTemplateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_body', issues: parsed.error.issues });
+        return;
+      }
+      const body = parsed.data;
+      if (!(await validateEngagement(deps.db, firmId, body.clientId, body.engagementId))) {
+        res.status(400).json({ error: 'invalid_engagement' });
+        return;
+      }
+
+      const template = await loadLetterTemplateBody(deps.db, firmId, body.letterTemplateId);
+      if (!template) {
+        res.status(404).json({ error: 'template_not_found' });
+        return;
+      }
+
+      // Merge context: engagement-aware when linked, plain client otherwise.
+      const letterData = body.engagementId
+        ? (await loadEngagementLetterData(deps.db, firmId, [body.engagementId]))[0]
+        : (await loadClientLetterData(deps.db, firmId, [body.clientId]))[0];
+      if (!letterData) {
+        res.status(404).json({ error: 'client_not_found' });
+        return;
+      }
+      const firm = await firmScope(deps.db, firmId);
+      const html = renderLetterHtml(
+        template.bodyHtml,
+        letterData,
+        firm,
+        new Date(),
+        template.pageMargin,
+      );
+
+      let pdf: Buffer;
+      try {
+        pdf = await (deps.renderPdf ?? renderHtmlToPdf)(html);
+      } catch (err) {
+        logger.error({ err }, 'letter-template signature pdf render failed');
+        res.status(502).json({ error: 'render_failed' });
+        return;
+      }
+      let geometry: PageGeometry[];
+      try {
+        geometry = await capturePageGeometry(pdf);
+      } catch {
+        res.status(502).json({ error: 'invalid_pdf' });
+        return;
+      }
+
+      const linkSets = await clientPeopleLinkSets(deps.db, body.clientId);
+      const title = body.title ?? `${template.name} — signature`;
+
+      const requestId = await deps.db.transaction(async (tx) => {
+        const [reqRow] = await tx
+          .insert(signatureRequests)
+          .values({
+            firmId,
+            clientId: body.clientId,
+            engagementId: body.engagementId ?? null,
+            title,
+            formType: 'engagement-letter',
+            sendInOrder: false,
+            pageGeometry: geometry,
+            signerCount: body.signers.length,
+            createdBy: actor,
+          })
+          .returning({ id: signatureRequests.id });
+        const id = reqRow!.id;
+        await tx.insert(signatureSigners).values(
+          body.signers.map((s, i) => ({
+            requestId: id,
+            name: s.name,
+            email: s.email,
+            // Default to 'client' so the engagement-letter profile matches.
+            role: s.role ?? 'client',
+            order: s.order ?? i + 1,
+            personId: s.personId && linkSets.personIds.has(s.personId) ? s.personId : null,
+            clientContactId:
+              s.clientContactId && linkSets.contactIds.has(s.clientContactId)
+                ? s.clientContactId
+                : null,
+            portalIdentityId:
+              s.portalIdentityId && linkSets.portalIdentityIds.has(s.portalIdentityId)
+                ? s.portalIdentityId
+                : null,
+          })),
+        );
+        await recordEvent(tx as unknown as Database, id, actor, 'created', {
+          title,
+          signerCount: body.signers.length,
+          fromLetterTemplateId: body.letterTemplateId,
+        });
+        return id;
+      });
+
+      // Store the rendered PDF as the request source.
+      const key = sourceKey(firmId, requestId);
+      await storage.put(key, pdf, { contentType: 'application/pdf' });
+      await deps.db
+        .update(signatureRequests)
+        .set({ sourceFileKey: key, updatedAt: new Date() })
+        .where(eq(signatureRequests.id, requestId));
+      await recordEvent(deps.db, requestId, actor, 'source_uploaded', {
+        pages: geometry.length,
+        fromLetterTemplateId: body.letterTemplateId,
+      });
+
+      // Best-effort: drop the engagement-letter profile's fields onto the
+      // LAST page (profiles pin page 1; letters sign at the end). Staff
+      // adjust in the field editor before sending; send re-validates.
+      let placed = 0;
+      let profileApplied = false;
+      if (body.applyProfile) {
+        let [profile] = await deps.db
+          .select()
+          .from(signaturePlacementProfiles)
+          .where(
+            and(
+              eq(signaturePlacementProfiles.firmId, firmId),
+              eq(signaturePlacementProfiles.formType, 'engagement-letter'),
+            ),
+          )
+          .orderBy(desc(signaturePlacementProfiles.version))
+          .limit(1);
+        if (!profile) {
+          await seedDefaultProfiles(deps.db, firmId).catch(() => 0);
+          [profile] = await deps.db
+            .select()
+            .from(signaturePlacementProfiles)
+            .where(
+              and(
+                eq(signaturePlacementProfiles.firmId, firmId),
+                eq(signaturePlacementProfiles.formType, 'engagement-letter'),
+              ),
+            )
+            .orderBy(desc(signaturePlacementProfiles.version))
+            .limit(1);
+        }
+        if (profile) {
+          const signerRows = await deps.db
+            .select({ id: signatureSigners.id, role: signatureSigners.role })
+            .from(signatureSigners)
+            .where(eq(signatureSigners.requestId, requestId));
+          const lastPage = geometry[geometry.length - 1]!.pageNumber;
+          const fields = (profile.fields as ProfileField[]).map((f) => ({
+            ...f,
+            pageNumber: lastPage,
+          }));
+          const applied = applyProfile(fields, signerRows, geometry);
+          if (applied.placements.length > 0) {
+            await deps.db.insert(signatureFieldPlacements).values(
+              applied.placements.map((p) => ({
+                requestId,
+                signerId: p.signerId,
+                fieldType: p.fieldType,
+                pageNumber: p.pageNumber,
+                nx: p.nx,
+                ny: p.ny,
+                nw: p.nw,
+                nh: p.nh,
+                required: p.required,
+              })),
+            );
+            placed = applied.placements.length;
+            profileApplied = true;
+          }
+        }
+      }
+
+      await emitAudit(deps.db, {
+        action: 'CREATE',
+        entityType: 'signature_request',
+        entityId: requestId,
+        actorAppUserId: actor,
+        after: {
+          title,
+          fromLetterTemplateId: body.letterTemplateId,
+          pages: geometry.length,
+          placements: placed,
+          status: 'draft',
+        },
+      });
+      res
+        .status(201)
+        .json({ id: requestId, pages: geometry.length, placements: placed, profileApplied });
     },
   );
 

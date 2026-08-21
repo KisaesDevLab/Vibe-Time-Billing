@@ -40,6 +40,7 @@ interface PersonDetail {
   email: string | null;
   phone: string | null;
   mobile: string | null;
+  bulkEmailOptOut?: boolean;
   status: string;
   clients: ClientEntry[];
 }
@@ -346,6 +347,7 @@ function EditHeader({
   const [email, setEmail] = useState(person.email ?? '');
   const [phone, setPhone] = useState(person.phone ?? '');
   const [mobile, setMobile] = useState(person.mobile ?? '');
+  const [blockBulk, setBlockBulk] = useState(Boolean(person.bulkEmailOptOut));
   const [saving, setSaving] = useState(false);
 
   function begin(): void {
@@ -353,6 +355,7 @@ function EditHeader({
     setEmail(person.email ?? '');
     setPhone(person.phone ?? '');
     setMobile(person.mobile ?? '');
+    setBlockBulk(Boolean(person.bulkEmailOptOut));
     setEditing(true);
   }
 
@@ -365,7 +368,10 @@ function EditHeader({
         email: email.trim() || null,
         phone: phone.trim() || null,
       };
-      if (person.kind === 'person') body['mobile'] = mobile.trim() || null;
+      if (person.kind === 'person') {
+        body['mobile'] = mobile.trim() || null;
+        body['bulkEmailOptOut'] = blockBulk;
+      }
       await api(`/api/staff/people/${person.id}`, { method: 'PATCH', body: JSON.stringify(body) });
       setEditing(false);
       onSaved('Saved.');
@@ -436,6 +442,18 @@ function EditHeader({
               />
             )}
           </div>
+          {person.kind === 'person' && (
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={blockBulk}
+                onChange={(e) => setBlockBulk(e.target.checked)}
+              />
+              Block bulk email — this person never receives firm bulk emails (transactional mail
+              like invoices and reminders still sends). The client can also manage this themselves
+              under portal notification preferences.
+            </label>
+          )}
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 20, fontSize: 13, flexWrap: 'wrap' }}>
@@ -452,6 +470,9 @@ function EditHeader({
               <span style={{ color: tokens.color.textMuted }}>Mobile: </span>
               {person.mobile ?? '—'}
             </span>
+          )}
+          {person.bulkEmailOptOut && (
+            <span style={{ color: tokens.color.warning }}>Blocked from bulk email</span>
           )}
         </div>
       )}

@@ -1041,6 +1041,7 @@ function EngagementTab(): JSX.Element {
                       </span>
                     )}
                     {t.isSystem && <Pill tone="accent">system</Pill>}
+                    {t.status === 'ARCHIVED' && <Pill tone="neutral">archived</Pill>}
                     {!isEditing && t.namePattern && (
                       <span
                         style={{
@@ -1216,6 +1217,13 @@ function EngagementTab(): JSX.Element {
 function LetterTab(): JSX.Element {
   const [items, setItems] = useState<LetterTpl[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // 0221 — author new letter templates in place (previously the only way
+  // in was importing the shipped system pack).
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newKey, setNewKey] = useState('');
+  const [newName, setNewName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
   const [editBody, setEditBody] = useState('');
   const [editMargin, setEditMargin] = useState('');
   const [editMode, setEditMode] = useState<'visual' | 'html'>('visual');
@@ -1264,6 +1272,59 @@ function LetterTab(): JSX.Element {
     void load();
   }, []);
 
+  async function createTemplate(): Promise<void> {
+    const key = newKey.trim();
+    const name = newName.trim();
+    if (!/^[a-z0-9][a-z0-9_-]*$/.test(key)) {
+      setError('Key must be lower_snake (letters, digits, _ or -).');
+      return;
+    }
+    if (!name) {
+      setError('Enter a template name.');
+      return;
+    }
+    setCreating(true);
+    setError(null);
+    try {
+      const r = await api<{ id: string }>('/api/staff/admin/templates/letter', {
+        method: 'POST',
+        body: JSON.stringify({
+          key,
+          name,
+          bodyHtml: '<p>Dear {{client.name}},</p><p></p><p>Sincerely,</p><p>{{firm.name}}</p>',
+        }),
+      });
+      setCreateOpen(false);
+      setNewKey('');
+      setNewName('');
+      await load();
+      // Drop straight into the editor for the new template.
+      if (r?.id) {
+        setEditingId(r.id);
+        setEditBody('<p>Dear {{client.name}},</p><p></p><p>Sincerely,</p><p>{{firm.name}}</p>');
+        setEditMargin('');
+        setEditMode('visual');
+      }
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'create_failed');
+    } finally {
+      setCreating(false);
+    }
+  }
+
+  async function archiveTemplate(t: LetterTpl): Promise<void> {
+    if (!window.confirm(`Archive letter template "${t.name}"? It disappears from pickers.`)) return;
+    try {
+      await api(`/api/staff/admin/templates/letter/${t.id}/archive`, {
+        method: 'PATCH',
+        body: '{}',
+      });
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'archive_failed');
+    }
+  }
+
   async function save(id: string): Promise<void> {
     try {
       await api(`/api/staff/admin/templates/letter/${id}`, {
@@ -1280,7 +1341,54 @@ function LetterTab(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
       <TemplateLibraryPanel area="letters" onImported={() => void load()} />
-      <Card title="Letter templates">
+      <Card
+        title="Letter templates"
+        action={
+          <span style={{ display: 'flex', gap: 8 }}>
+            {items.some((t) => t.status === 'ARCHIVED') && (
+              <Button size="sm" variant="ghost" onClick={() => setShowArchived((v) => !v)}>
+                {showArchived ? 'Hide archived' : 'Show archived'}
+              </Button>
+            )}
+            <Button size="sm" onClick={() => setCreateOpen((v) => !v)}>
+              + New template
+            </Button>
+          </span>
+        }
+      >
+        {createOpen && (
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              marginBottom: 12,
+              padding: '8px 10px',
+              border: `1px solid ${tokens.color.border}`,
+              borderRadius: tokens.radius.md,
+            }}
+          >
+            <input
+              value={newKey}
+              onChange={(e) => setNewKey(e.target.value)}
+              placeholder="key (lower_snake)"
+              style={{ ...fieldStyle, width: 180, fontFamily: tokens.font.mono }}
+            />
+            <input
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Template name"
+              style={{ ...fieldStyle, width: 260 }}
+            />
+            <Button size="sm" disabled={creating} onClick={() => void createTemplate()}>
+              {creating ? 'Creating…' : 'Create'}
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setCreateOpen(false)}>
+              Cancel
+            </Button>
+          </div>
+        )}
         {error && (
           <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
             {error}
@@ -1292,168 +1400,184 @@ function LetterTab(): JSX.Element {
           substitutes them in.
         </p>
         <div style={{ display: 'grid', gap: 12 }}>
-          {items.map((t) => (
-            <div
-              key={t.id}
-              style={{
-                padding: 12,
-                border: `1px solid ${tokens.color.border}`,
-                borderRadius: tokens.radius.md,
-                display: 'grid',
-                gap: 8,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <strong style={{ fontSize: 13 }}>{t.name}</strong>
-                <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
-                {t.isSystem && <Pill tone="accent">system</Pill>}
-                {t.variablesJson && t.variablesJson.length > 0 && (
-                  <Pill>{`${t.variablesJson.length} vars`}</Pill>
-                )}
-                <span style={{ marginLeft: 'auto' }}>
-                  {editingId === t.id ? (
-                    <>
-                      <Button size="sm" disabled={!marginValid} onClick={() => void save(t.id)}>
-                        Save
-                      </Button>
-                      <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
-                        Cancel
-                      </Button>
-                    </>
-                  ) : (
-                    <Button size="sm" variant="ghost" onClick={() => startEdit(t)}>
-                      Edit body
-                    </Button>
+          {items
+            .filter((t) => showArchived || t.status !== 'ARCHIVED')
+            .map((t) => (
+              <div
+                key={t.id}
+                style={{
+                  padding: 12,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.md,
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <strong style={{ fontSize: 13 }}>{t.name}</strong>
+                  <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
+                  {t.isSystem && <Pill tone="accent">system</Pill>}
+                  {t.status === 'ARCHIVED' && <Pill tone="neutral">archived</Pill>}
+                  {t.variablesJson && t.variablesJson.length > 0 && (
+                    <Pill>{`${t.variablesJson.length} vars`}</Pill>
                   )}
-                </span>
-              </div>
-              {editingId === t.id ? (
-                <div style={{ display: 'grid', gap: 8 }}>
-                  <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Editor:</span>
-                    <Button
-                      size="sm"
-                      variant={editMode === 'visual' ? 'secondary' : 'ghost'}
-                      disabled={isFullHtmlDoc(editBody)}
-                      title={
-                        isFullHtmlDoc(editBody)
-                          ? 'This letter has a letterhead/<style> block; the visual editor would strip it. Edit in HTML mode.'
-                          : undefined
-                      }
-                      onClick={() => setEditMode('visual')}
-                    >
-                      Visual
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant={editMode === 'html' ? 'secondary' : 'ghost'}
-                      onClick={() => setEditMode('html')}
-                    >
-                      {'</> HTML'}
-                    </Button>
-                    {isFullHtmlDoc(editBody) && (
-                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                        Letterhead/&lt;style&gt; letter — editing in HTML to preserve it.
-                      </span>
+                  <span style={{ marginLeft: 'auto' }}>
+                    {editingId === t.id ? (
+                      <>
+                        <Button size="sm" disabled={!marginValid} onClick={() => void save(t.id)}>
+                          Save
+                        </Button>
+                        <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>
+                          Cancel
+                        </Button>
+                      </>
+                    ) : (
+                      <>
+                        <Button size="sm" variant="ghost" onClick={() => startEdit(t)}>
+                          Edit body
+                        </Button>
+                        {t.status !== 'ARCHIVED' && (
+                          <Button size="sm" variant="ghost" onClick={() => void archiveTemplate(t)}>
+                            Archive
+                          </Button>
+                        )}
+                      </>
                     )}
-                  </div>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                    <label
-                      htmlFor={`letter-margin-${t.id}`}
-                      style={{ fontSize: 11, color: tokens.color.textMuted }}
-                    >
-                      Page margin
-                    </label>
-                    <input
-                      id={`letter-margin-${t.id}`}
-                      value={editMargin}
-                      onChange={(e) => setEditMargin(e.target.value)}
-                      placeholder="1in (default)"
-                      style={{ ...fieldStyle, width: 140, fontFamily: tokens.font.mono }}
-                    />
-                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                      CSS length — e.g. <code>1in</code>, <code>0.75in</code>, or per-side{' '}
-                      <code>1in 0.75in</code>. Blank = 1in.
-                    </span>
-                    {!marginValid && (
-                      <span style={{ fontSize: 11, color: tokens.color.danger }}>
-                        Enter a valid CSS length (in/cm/mm/px/pt).
-                      </span>
-                    )}
-                  </div>
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
-                    <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Insert:</span>
-                    {LETTER_BLOCKS.map((b) => (
+                  </span>
+                </div>
+                {editingId === t.id ? (
+                  <div style={{ display: 'grid', gap: 8 }}>
+                    <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Editor:</span>
                       <Button
-                        key={b.label}
                         size="sm"
-                        variant="ghost"
-                        onClick={() => insertBlock(b.snippet)}
-                        title={`Insert a ${b.label.toLowerCase()} block`}
+                        variant={editMode === 'visual' ? 'secondary' : 'ghost'}
+                        disabled={isFullHtmlDoc(editBody)}
+                        title={
+                          isFullHtmlDoc(editBody)
+                            ? 'This letter has a letterhead/<style> block; the visual editor would strip it. Edit in HTML mode.'
+                            : undefined
+                        }
+                        onClick={() => setEditMode('visual')}
                       >
-                        {b.label}
+                        Visual
                       </Button>
-                    ))}
-                  </div>
-                  {editMode === 'visual' ? (
-                    <RichTextEditor
-                      key={`${t.id}-visual`}
-                      format="html"
-                      value={editBody}
-                      onChange={setEditBody}
-                      onReady={(apiRef) => {
-                        insertApiRef.current = apiRef;
+                      <Button
+                        size="sm"
+                        variant={editMode === 'html' ? 'secondary' : 'ghost'}
+                        onClick={() => setEditMode('html')}
+                      >
+                        {'</> HTML'}
+                      </Button>
+                      {isFullHtmlDoc(editBody) && (
+                        <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                          Letterhead/&lt;style&gt; letter — editing in HTML to preserve it.
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}
+                    >
+                      <label
+                        htmlFor={`letter-margin-${t.id}`}
+                        style={{ fontSize: 11, color: tokens.color.textMuted }}
+                      >
+                        Page margin
+                      </label>
+                      <input
+                        id={`letter-margin-${t.id}`}
+                        value={editMargin}
+                        onChange={(e) => setEditMargin(e.target.value)}
+                        placeholder="1in (default)"
+                        style={{ ...fieldStyle, width: 140, fontFamily: tokens.font.mono }}
+                      />
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        CSS length — e.g. <code>1in</code>, <code>0.75in</code>, or per-side{' '}
+                        <code>1in 0.75in</code>. Blank = 1in.
+                      </span>
+                      {!marginValid && (
+                        <span style={{ fontSize: 11, color: tokens.color.danger }}>
+                          Enter a valid CSS length (in/cm/mm/px/pt).
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}
+                    >
+                      <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Insert:</span>
+                      {LETTER_BLOCKS.map((b) => (
+                        <Button
+                          key={b.label}
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => insertBlock(b.snippet)}
+                          title={`Insert a ${b.label.toLowerCase()} block`}
+                        >
+                          {b.label}
+                        </Button>
+                      ))}
+                    </div>
+                    {editMode === 'visual' ? (
+                      <RichTextEditor
+                        key={`${t.id}-visual`}
+                        format="html"
+                        value={editBody}
+                        onChange={setEditBody}
+                        onReady={(apiRef) => {
+                          insertApiRef.current = apiRef;
+                        }}
+                        variables={LETTER_VARIABLES}
+                        minHeight={260}
+                        placeholder="Write the letter. Use Insert for letterhead / address / variables."
+                      />
+                    ) : (
+                      <textarea
+                        ref={htmlRef}
+                        value={editBody}
+                        onChange={(e) => setEditBody(e.target.value)}
+                        rows={14}
+                        style={{ ...fieldStyle, fontFamily: tokens.font.mono, resize: 'vertical' }}
+                      />
+                    )}
+                    <div style={{ fontSize: 11, color: tokens.color.textMuted }}>Preview</div>
+                    <iframe
+                      title="Letter preview"
+                      srcDoc={
+                        isFullHtmlDoc(editBody)
+                          ? editBody
+                          : `<!doctype html><html><head><meta charset="utf-8" /><style>${DEFAULT_LETTER_CSS}</style></head><body>${editBody}</body></html>`
+                      }
+                      style={{
+                        width: '100%',
+                        height: 320,
+                        border: `1px solid ${tokens.color.border}`,
+                        borderRadius: tokens.radius.sm,
+                        background: '#fff',
                       }}
-                      variables={LETTER_VARIABLES}
-                      minHeight={260}
-                      placeholder="Write the letter. Use Insert for letterhead / address / variables."
                     />
-                  ) : (
-                    <textarea
-                      ref={htmlRef}
-                      value={editBody}
-                      onChange={(e) => setEditBody(e.target.value)}
-                      rows={14}
-                      style={{ ...fieldStyle, fontFamily: tokens.font.mono, resize: 'vertical' }}
-                    />
-                  )}
-                  <div style={{ fontSize: 11, color: tokens.color.textMuted }}>Preview</div>
+                  </div>
+                ) : (
+                  // 0221 — show the letter as it renders, not its HTML source.
                   <iframe
-                    title="Letter preview"
+                    title={`Preview of ${t.name}`}
+                    sandbox=""
                     srcDoc={
-                      isFullHtmlDoc(editBody)
-                        ? editBody
-                        : `<!doctype html><html><head><meta charset="utf-8" /><style>${DEFAULT_LETTER_CSS}</style></head><body>${editBody}</body></html>`
+                      isFullHtmlDoc(t.bodyHtml)
+                        ? t.bodyHtml
+                        : `<!doctype html><html><head><meta charset="utf-8" /><style>${DEFAULT_LETTER_CSS}</style></head><body>${t.bodyHtml}</body></html>`
                     }
                     style={{
                       width: '100%',
-                      height: 320,
+                      height: 220,
                       border: `1px solid ${tokens.color.border}`,
                       borderRadius: tokens.radius.sm,
                       background: '#fff',
+                      pointerEvents: 'none',
                     }}
                   />
-                </div>
-              ) : (
-                <pre
-                  style={{
-                    margin: 0,
-                    padding: 8,
-                    background: tokens.color.bg,
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    fontSize: 11,
-                    fontFamily: tokens.font.mono,
-                    whiteSpace: 'pre-wrap',
-                    maxHeight: 160,
-                    overflow: 'auto',
-                  }}
-                >
-                  {t.bodyHtml}
-                </pre>
-              )}
-            </div>
-          ))}
+                )}
+              </div>
+            ))}
         </div>
       </Card>
     </div>
@@ -2008,6 +2132,7 @@ function ClientTab(): JSX.Element {
                       <Pill>{t.clientType}</Pill>
                     )}
                     {t.isSystem && <Pill tone="accent">system</Pill>}
+                    {t.status === 'ARCHIVED' && <Pill tone="neutral">archived</Pill>}
                     {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
                     {!isEditing && (
                       <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
@@ -2485,6 +2610,7 @@ function RequestTab(): JSX.Element {
                     )}
                     <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{t.key}</code>
                     {t.isSystem && <Pill tone="accent">system</Pill>}
+                    {t.status === 'ARCHIVED' && <Pill tone="neutral">archived</Pill>}
                     {t.status === 'ARCHIVED' && <Pill tone="warning">archived</Pill>}
                     {!isEditing && <Pill>{t.defaultPriority}</Pill>}
                     {!isEditing && (

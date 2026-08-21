@@ -105,7 +105,8 @@ export function PaginationBar({
         >
           {options.map((o) => (
             <option key={o} value={o}>
-              {o}
+              {/* 0221 — sentinel size ≥ 99999 reads as "All" (server caps apply). */}
+              {o >= 99_999 ? 'All' : o}
             </option>
           ))}
         </select>

@@ -401,6 +401,13 @@ function CreateSignatureDialog({
   const [signers, setSigners] = useState<SignerDraft[]>([{ name: '', email: '', role: '' }]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // 0221 — optional "start from a letter template": server renders the
+  // template (client/engagement merge context) to PDF, attaches it as the
+  // request source, and pre-places the engagement-letter profile fields.
+  const [letterTemplates, setLetterTemplates] = useState<
+    { id: string; name: string; status: string }[]
+  >([]);
+  const [letterTemplateId, setLetterTemplateId] = useState('');
 
   // Client + its associated people + engagements.
   const [clients, setClients] = useState<ClientHit[]>([]);
@@ -410,10 +417,13 @@ function CreateSignatureDialog({
   const [engagements, setEngagements] = useState<EngagementHit[]>([]);
   const [engagementId, setEngagementId] = useState('');
 
-  const valid =
-    title.trim().length > 0 &&
-    signers.length > 0 &&
-    signers.every((s) => s.name.trim() && /.+@.+\..+/.test(s.email));
+  const valid = letterTemplateId
+    ? Boolean(clientId) &&
+      signers.length > 0 &&
+      signers.every((s) => s.name.trim() && /.+@.+\..+/.test(s.email))
+    : title.trim().length > 0 &&
+      signers.length > 0 &&
+      signers.every((s) => s.name.trim() && /.+@.+\..+/.test(s.email));
 
   function updateSigner(i: number, patch: Partial<SignerDraft>): void {
     setSigners((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
@@ -426,6 +436,11 @@ function CreateSignatureDialog({
     void api<{ rows?: ClientHit[]; items?: ClientHit[] }>('/api/staff/clients?limit=500')
       .then((r) => setClients(r.rows ?? r.items ?? []))
       .catch(() => undefined);
+    void api<{ items: { id: string; name: string; status: string }[] }>(
+      '/api/staff/admin/templates/letter',
+    )
+      .then((r) => setLetterTemplates((r.items ?? []).filter((t) => t.status === 'ACTIVE')))
+      .catch(() => setLetterTemplates([]));
   }, []);
 
   // When the selected client changes, reset client-scoped state and (if a
@@ -497,23 +512,35 @@ function CreateSignatureDialog({
     setBusy(true);
     setError(null);
     try {
-      const created = await api<{ id: string }>('/api/staff/signatures', {
-        method: 'POST',
-        body: JSON.stringify({
-          title: title.trim(),
-          formType: formType || undefined,
-          clientId: clientId || undefined,
-          engagementId: engagementId || undefined,
-          signers: signers.map((s) => ({
-            name: s.name.trim(),
-            email: s.email.trim(),
-            role: s.role.trim() || undefined,
-            personId: s.personId,
-            clientContactId: s.clientContactId,
-            portalIdentityId: s.portalIdentityId,
-          })),
-        }),
-      });
+      const signerPayload = signers.map((s) => ({
+        name: s.name.trim(),
+        email: s.email.trim(),
+        role: s.role.trim() || undefined,
+        personId: s.personId,
+        clientContactId: s.clientContactId,
+        portalIdentityId: s.portalIdentityId,
+      }));
+      const created = letterTemplateId
+        ? await api<{ id: string }>('/api/staff/signatures/from-letter-template', {
+            method: 'POST',
+            body: JSON.stringify({
+              letterTemplateId,
+              clientId,
+              engagementId: engagementId || undefined,
+              title: title.trim() || undefined,
+              signers: signerPayload,
+            }),
+          })
+        : await api<{ id: string }>('/api/staff/signatures', {
+            method: 'POST',
+            body: JSON.stringify({
+              title: title.trim(),
+              formType: formType || undefined,
+              clientId: clientId || undefined,
+              engagementId: engagementId || undefined,
+              signers: signerPayload,
+            }),
+          });
       onCreated(created.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'create_failed');
@@ -565,6 +592,32 @@ function CreateSignatureDialog({
                 ariaLabel="Form type"
               />
             </div>
+
+            {letterTemplates.length > 0 && (
+              <div>
+                <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
+                  Start from a letter template (optional)
+                </div>
+                <Combobox
+                  ariaLabel="Letter template"
+                  clearable
+                  options={[
+                    { value: '', label: '— Blank (upload a PDF later) —' },
+                    ...letterTemplates.map((t) => ({ value: t.id, label: t.name })),
+                  ]}
+                  value={letterTemplateId}
+                  onChange={setLetterTemplateId}
+                />
+                {letterTemplateId && (
+                  <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: '4px 0 0' }}>
+                    The letter is rendered for the selected client (client required; engagement
+                    fills its merge tokens), attached as the PDF, and client signature + date fields
+                    are pre-placed on the last page — adjust them in the editor before sending.
+                    Signers with no role are treated as &ldquo;client&rdquo;.
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Client picker */}
             <div>

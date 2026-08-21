@@ -47,6 +47,11 @@ export interface GrantArgs {
   phone?: string | null;
   role: PortalRole;
   deliveryChannel: 'EMAIL' | 'SMS';
+  /** 0221 — bulk invite "email and SMS": send on BOTH channels where a
+   *  destination exists. deliveryChannel stays the stored/primary channel
+   *  (the portal_channel enum has no BOTH value; resend + accept-flow
+   *  verified-at logic key off the primary). */
+  sendBoth?: boolean;
   clientContactId?: string;
   personId?: string;
   /** Staff user performing the grant (invite sender or request approver). */
@@ -226,7 +231,7 @@ export async function grantOrInvitePortalAccess(
 
   const firm = await firmScope(db, args.firmId);
 
-  if (args.deliveryChannel === 'EMAIL' && email && deps.sendEmail) {
+  if ((args.deliveryChannel === 'EMAIL' || args.sendBoth) && email && deps.sendEmail) {
     const rendered = await renderTemplate({
       db,
       firmId: args.firmId,
@@ -236,7 +241,17 @@ export async function grantOrInvitePortalAccess(
         subject: `Client portal invitation — ${args.client.name}`,
         body: `${args.fullName}, you've been invited to the ${args.client.name} client portal.\n\nAccept: ${link}\n\nLink expires in 7 days.`,
       },
-      context: { firm, link: { url: link } },
+      // Full token surface: seeded/firm templates reference {{contact.name}}
+      // and {{portal.invite_url}} (unresolved tokens render as ''), so every
+      // plausible alias is provided.
+      context: {
+        firm,
+        link: { url: link },
+        portal: { invite_url: link, url: link },
+        contact: { name: args.fullName },
+        person: { name: args.fullName },
+        client: { name: args.client.name },
+      },
     });
     const subject = rendered.subject ?? `Client portal invitation — ${args.client.name}`;
     const message = rendered.body;
@@ -253,14 +268,22 @@ export async function grantOrInvitePortalAccess(
       relatedEntityType: 'portal_invitation',
       relatedEntityId: invitation?.id,
     }).catch(() => undefined);
-  } else if (args.deliveryChannel === 'SMS' && normPhone && deps.sendSms) {
+  }
+  if ((args.deliveryChannel === 'SMS' || args.sendBoth) && normPhone && deps.sendSms) {
     const rendered = await renderTemplate({
       db,
       firmId: args.firmId,
       kind: 'portal_invite',
       channel: 'SMS',
       fallback: { body: `Portal invite from ${args.client.name}: ${link}` },
-      context: { firm, link: { url: link } },
+      context: {
+        firm,
+        link: { url: link },
+        portal: { invite_url: link, url: link },
+        contact: { name: args.fullName },
+        person: { name: args.fullName },
+        client: { name: args.client.name },
+      },
     });
     const smsBody = rendered.body;
     await deps
@@ -293,7 +316,7 @@ export async function grantOrInvitePortalAccess(
 async function notifyExisting(deps: GrantDeps, args: GrantArgs): Promise<void> {
   const firm = await firmScope(deps.db, args.firmId);
   const link = { url: deps.portalBaseUrl };
-  if (args.deliveryChannel === 'EMAIL' && args.email && deps.sendEmail) {
+  if ((args.deliveryChannel === 'EMAIL' || args.sendBoth) && args.email && deps.sendEmail) {
     const rendered = await renderTemplate({
       db: deps.db,
       firmId: args.firmId,
@@ -303,7 +326,14 @@ async function notifyExisting(deps: GrantDeps, args: GrantArgs): Promise<void> {
         subject: `You've been added to ${args.client.name} in your portal`,
         body: `You now have access to ${args.client.name}. Sign in to the portal to view and pay invoices.`,
       },
-      context: { firm, link },
+      context: {
+        firm,
+        link,
+        portal: { invite_url: link.url, url: link.url },
+        contact: { name: args.fullName },
+        person: { name: args.fullName },
+        client: { name: args.client.name },
+      },
     });
     const subject = rendered.subject ?? `You've been added to ${args.client.name} in your portal`;
     await deps
@@ -311,7 +341,8 @@ async function notifyExisting(deps: GrantDeps, args: GrantArgs): Promise<void> {
       .catch((err: unknown) =>
         logger.warn({ err, channel: 'EMAIL' }, 'portal grant notify failed'),
       );
-  } else if (args.deliveryChannel === 'SMS' && args.phone && deps.sendSms) {
+  }
+  if ((args.deliveryChannel === 'SMS' || args.sendBoth) && args.phone && deps.sendSms) {
     const normPhone = normalizePhone(args.phone);
     if (normPhone) {
       const rendered = await renderTemplate({
@@ -322,7 +353,14 @@ async function notifyExisting(deps: GrantDeps, args: GrantArgs): Promise<void> {
         fallback: {
           body: `You now have access to ${args.client.name}. Sign in to the portal to view and pay invoices.`,
         },
-        context: { firm, link },
+        context: {
+          firm,
+          link,
+          portal: { invite_url: link.url, url: link.url },
+          contact: { name: args.fullName },
+          person: { name: args.fullName },
+          client: { name: args.client.name },
+        },
       });
       await deps
         .sendSms({ to: normPhone, body: rendered.body })

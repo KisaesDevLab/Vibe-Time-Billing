@@ -1515,6 +1515,8 @@ export const persons = pgTable(
     // 0206 — global voice opt-out: set by pressing 9 on any automated call
     // or by staff on the contact card. Flagged people get SMS instead.
     doNotCall: boolean('do_not_call').notNull().default(false),
+    // 0221 — excluded from firm bulk emails (staff- or self-managed).
+    bulkEmailOptOut: boolean('bulk_email_opt_out').notNull().default(false),
     status: entityStatus('status').notNull().default('ACTIVE'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

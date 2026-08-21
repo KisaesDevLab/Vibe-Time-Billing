@@ -14,7 +14,8 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, ColumnFilter, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, ColumnFilter, Combobox, Input, Modal, Pill, Table, tokens } from '@vibe/ui';
+import { RichTextEditor } from '../proposal-editor/RichTextEditor';
 
 import { api } from '../api-client';
 import { usePermission } from '../auth-context';
@@ -32,16 +33,24 @@ interface PersonRow {
   mobile: string | null;
   status: string;
   hasPortalAccess: boolean;
+  portalStatus: 'yes' | 'invited' | 'no';
   clientCount: number;
+  bulkEmailOptOut: boolean;
 }
 
 const PORTAL_VALUES = [
   { value: 'yes', label: 'Enabled' },
+  { value: 'invited', label: 'Invite pending' },
   { value: 'no', label: 'None' },
 ];
 const KIND_VALUES = [
   { value: 'person', label: 'Directory contact' },
   { value: 'portal_identity', label: 'Portal-only' },
+];
+// 0221 — presence filters for the email/phone columns.
+const PRESENCE_VALUES = [
+  { value: 'not_blank', label: '(not blank)' },
+  { value: 'blank', label: '(blank)' },
 ];
 
 export function PeopleDirectoryPage(): JSX.Element {
@@ -54,11 +63,80 @@ export function PeopleDirectoryPage(): JSX.Element {
   // and paging run SERVER-side. `.v2` drops stale pre-migration state.
   const view = useColumnView('vibe.people.view.v2', { sortCol: 'name', sortDir: 'asc' });
   const query = useMemo(
-    () => viewToPagedQuery(view, { filterMap: { portal: 'portal', kind: 'kind' } }),
+    () =>
+      viewToPagedQuery(view, {
+        filterMap: { portal: 'portal', kind: 'kind', email: 'email', phone: 'phone' },
+      }),
     [view],
   );
   const list = usePagedList<PersonRow>('/api/staff/people', { query });
   const loading = list.loading;
+
+  // 0221 — bulk selection + bulk portal invite.
+  const canInvite = usePermission('client:portal-access:manage');
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkRole, setBulkRole] = useState<'FULL' | 'VIEW_ONLY' | 'PAY_ONLY'>('FULL');
+  const [bulkChannel, setBulkChannel] = useState<'EMAIL' | 'SMS' | 'BOTH'>('EMAIL');
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
+  // 0221 — bulk email compose dialog.
+  const [emailOpen, setEmailOpen] = useState(false);
+  // 0221 — merge duplicates dialog (persons only).
+  const [mergeOpen, setMergeOpen] = useState(false);
+  const selectedPersonKeys = Array.from(selected).filter((k) => k.startsWith('p:'));
+
+  const pageKeys = list.rows.map((r) => r.key);
+  const allPageSelected = pageKeys.length > 0 && pageKeys.every((k) => selected.has(k));
+  const somePageSelected = pageKeys.some((k) => selected.has(k));
+
+  function toggleSelectAll(): void {
+    setSelected((prev) => {
+      if (allPageSelected) {
+        const next = new Set(prev);
+        for (const k of pageKeys) next.delete(k);
+        return next;
+      }
+      return new Set([...prev, ...pageKeys]);
+    });
+  }
+
+  async function bulkInvite(): Promise<void> {
+    // Selection keys are `p:<id>` / `i:<id>`; rebuild kind+id for the API.
+    const people = Array.from(selected).map((k) => ({
+      kind: k.startsWith('i:') ? ('portal_identity' as const) : ('person' as const),
+      id: k.slice(2),
+    }));
+    if (people.length === 0) return;
+    setBulkBusy(true);
+    setBulkNotice(null);
+    try {
+      const r = await api<{
+        results: { status: string; reason?: string; fullName: string | null }[];
+      }>('/api/staff/portal-invites/bulk-people', {
+        method: 'POST',
+        body: JSON.stringify({ people, role: bulkRole, channel: bulkChannel }),
+      });
+      const count = (s: string): number => r.results.filter((x) => x.status === s).length;
+      const skipped = r.results.filter((x) => x.status === 'skipped');
+      const parts = [
+        count('invited') > 0 ? `${count('invited')} invited` : null,
+        count('granted') > 0 ? `${count('granted')} granted access (already had a login)` : null,
+        skipped.length > 0
+          ? `${skipped.length} skipped (${[...new Set(skipped.map((x) => x.reason))].join(', ')})`
+          : null,
+        count('failed') > 0 ? `${count('failed')} failed` : null,
+      ].filter(Boolean);
+      setBulkNotice(`Portal invites: ${parts.join(' · ')}.`);
+      setSelected(new Set());
+      list.reload();
+    } catch (e) {
+      setBulkNotice(
+        e instanceof Error ? `Bulk invite failed: ${e.message}` : 'Bulk invite failed.',
+      );
+    } finally {
+      setBulkBusy(false);
+    }
+  }
 
   // The list row doesn't carry access ids, so resolve them on demand:
   // exactly one ACTIVE access → open the portal directly; several →
@@ -124,11 +202,105 @@ export function PeopleDirectoryPage(): JSX.Element {
         <div style={{ marginBottom: 12 }}>
           <TableSearch view={view} placeholder="Search by name, email or phone…" />
         </div>
+        {bulkNotice && (
+          <p style={{ fontSize: 13, color: tokens.color.text, marginTop: 0 }}>{bulkNotice}</p>
+        )}
+        {selected.size > 0 && (
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              marginBottom: 10,
+              padding: '6px 10px',
+              borderRadius: tokens.radius.sm,
+              background: tokens.color.accentMuted,
+            }}
+          >
+            <span style={{ fontSize: 12, fontWeight: 600 }}>{selected.size} selected</span>
+            <div style={{ width: 140 }}>
+              <Combobox
+                ariaLabel="Portal role for bulk invite"
+                value={bulkRole}
+                onChange={(v) => setBulkRole(v as typeof bulkRole)}
+                size="sm"
+                options={[
+                  { value: 'FULL', label: 'Full access' },
+                  { value: 'VIEW_ONLY', label: 'View only' },
+                  { value: 'PAY_ONLY', label: 'Pay only' },
+                ]}
+              />
+            </div>
+            <div style={{ width: 150 }}>
+              <Combobox
+                ariaLabel="Delivery channel for bulk invite"
+                value={bulkChannel}
+                onChange={(v) => setBulkChannel(v as typeof bulkChannel)}
+                size="sm"
+                options={[
+                  { value: 'EMAIL', label: 'Email' },
+                  { value: 'SMS', label: 'Text (SMS)' },
+                  { value: 'BOTH', label: 'Email + text' },
+                ]}
+              />
+            </div>
+            <Button
+              size="sm"
+              disabled={bulkBusy || !canInvite}
+              title={!canInvite ? 'Needs client:portal-access:manage' : undefined}
+              onClick={() => void bulkInvite()}
+            >
+              {bulkBusy ? 'Inviting…' : `Invite ${selected.size} to portal`}
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => setEmailOpen(true)}>
+              Email {selected.size}…
+            </Button>
+            {selectedPersonKeys.length >= 2 && (
+              <Button size="sm" variant="secondary" onClick={() => setMergeOpen(true)}>
+                Merge {selectedPersonKeys.length}…
+              </Button>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setSelected(new Set())}>
+              Clear
+            </Button>
+          </div>
+        )}
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
           <Table<PersonRow>
             columns={[
+              {
+                key: 'sel',
+                header: (
+                  <input
+                    type="checkbox"
+                    aria-label="Select all people on this page"
+                    checked={allPageSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = somePageSelected && !allPageSelected;
+                    }}
+                    disabled={pageKeys.length === 0}
+                    onChange={toggleSelectAll}
+                  />
+                ) as unknown as string,
+                render: (p) => (
+                  <input
+                    type="checkbox"
+                    aria-label={`Select ${p.fullName}`}
+                    checked={selected.has(p.key)}
+                    onChange={() =>
+                      setSelected((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(p.key)) next.delete(p.key);
+                        else next.add(p.key);
+                        return next;
+                      })
+                    }
+                  />
+                ),
+              },
               {
                 key: 'name',
                 header: (
@@ -162,16 +334,25 @@ export function PeopleDirectoryPage(): JSX.Element {
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Email{' '}
                     <ColumnFilter
-                      ariaLabel="Sort by email"
-                      values={[]}
-                      selected={new Set()}
+                      ariaLabel="Filter or sort by email"
+                      values={PRESENCE_VALUES}
+                      selected={view.filterFor('email')}
                       searchable={false}
                       sort={view.sortFor('email')}
-                      onApply={(_, dir) => view.apply('email', new Set(), dir)}
+                      onApply={(sel, dir) => view.apply('email', sel, dir)}
                     />
                   </span>
                 ) as unknown as string,
-                render: (p) => p.email ?? '—',
+                render: (p) => (
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                    {p.email ?? '—'}
+                    {p.bulkEmailOptOut && (
+                      <span title="Blocked from bulk email">
+                        <Pill tone="warning">no bulk</Pill>
+                      </span>
+                    )}
+                  </span>
+                ),
               },
               {
                 key: 'phone',
@@ -179,12 +360,12 @@ export function PeopleDirectoryPage(): JSX.Element {
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Phone{' '}
                     <ColumnFilter
-                      ariaLabel="Sort by phone"
-                      values={[]}
-                      selected={new Set()}
+                      ariaLabel="Filter or sort by phone"
+                      values={PRESENCE_VALUES}
+                      selected={view.filterFor('phone')}
                       searchable={false}
                       sort={view.sortFor('phone')}
-                      onApply={(_, dir) => view.apply('phone', new Set(), dir)}
+                      onApply={(sel, dir) => view.apply('phone', sel, dir)}
                     />
                   </span>
                 ) as unknown as string,
@@ -224,7 +405,9 @@ export function PeopleDirectoryPage(): JSX.Element {
                   </span>
                 ) as unknown as string,
                 render: (p) =>
-                  p.hasPortalAccess ? (
+                  p.portalStatus === 'invited' ? (
+                    <Pill tone="warning">Invited</Pill>
+                  ) : p.hasPortalAccess ? (
                     <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                       <Pill tone="success">Enabled</Pill>
                       {canViewAs && (
@@ -263,12 +446,238 @@ export function PeopleDirectoryPage(): JSX.Element {
               },
             ]}
             rows={list.rows}
-            pagination={list.pagination}
+            pagination={{ ...list.pagination, pageSizeOptions: [25, 50, 100, 500, 1000, 100_000] }}
             rowKey={(p) => p.key}
             empty="No people match the current filters."
           />
         )}
+        {mergeOpen && (
+          <MergePeopleDialog
+            people={list.rows.filter((r) => selectedPersonKeys.includes(r.key))}
+            onClose={() => setMergeOpen(false)}
+            onMerged={(msg) => {
+              setMergeOpen(false);
+              setBulkNotice(msg);
+              setSelected(new Set());
+              list.reload();
+            }}
+          />
+        )}
+        {emailOpen && (
+          <BulkEmailPeopleDialog
+            selectedKeys={Array.from(selected)}
+            onClose={() => setEmailOpen(false)}
+            onSent={(msg) => {
+              setEmailOpen(false);
+              setBulkNotice(msg);
+              setSelected(new Set());
+            }}
+          />
+        )}
       </Card>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0221 — bulk email compose. Markdown body with {{firm.*}} + {{person.name}}
+// tokens; the server skips blank emails and opted-out people and reports
+// per-person results.
+// ---------------------------------------------------------------------------
+
+function BulkEmailPeopleDialog({
+  selectedKeys,
+  onClose,
+  onSent,
+}: {
+  selectedKeys: string[];
+  onClose: () => void;
+  onSent: (summary: string) => void;
+}): JSX.Element {
+  const [subject, setSubject] = useState('');
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function send(): Promise<void> {
+    if (!subject.trim() || !body.trim()) {
+      setError('Subject and body are required.');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const people = selectedKeys.map((k) => ({
+        kind: k.startsWith('i:') ? ('portal_identity' as const) : ('person' as const),
+        id: k.slice(2),
+      }));
+      const r = await api<{
+        results: { sent: boolean; reason: string | null }[];
+      }>('/api/staff/people/bulk-email', {
+        method: 'POST',
+        body: JSON.stringify({ people, subject: subject.trim(), body: body.trim() }),
+      });
+      const sent = r.results.filter((x) => x.sent).length;
+      const optedOut = r.results.filter((x) => x.reason === 'opted_out').length;
+      const noEmail = r.results.filter((x) => x.reason === 'no_email').length;
+      const failed = r.results.filter(
+        (x) => !x.sent && x.reason !== 'opted_out' && x.reason !== 'no_email',
+      ).length;
+      onSent(
+        `Bulk email: ${sent} sent` +
+          (optedOut ? ` · ${optedOut} opted out` : '') +
+          (noEmail ? ` · ${noEmail} without an email` : '') +
+          (failed ? ` · ${failed} failed` : '') +
+          '.',
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'send_failed');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Email ${selectedKeys.length} people`}
+      onClose={busy ? undefined : onClose}
+      maxWidth={640}
+    >
+      <div style={{ display: 'grid', gap: 12 }}>
+        <Input
+          label="Subject"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          placeholder="e.g. Office closed Friday — {{firm.name}}"
+          disabled={busy}
+        />
+        <div>
+          <span
+            style={{
+              fontSize: 12,
+              color: tokens.color.textMuted,
+              display: 'block',
+              marginBottom: 4,
+            }}
+          >
+            Body — Markdown; tokens: {'{{person.name}}'}, {'{{firm.name}}'}
+          </span>
+          <RichTextEditor value={body} onChange={setBody} minHeight={200} />
+        </div>
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+          People without an email or who opted out of bulk email are skipped automatically.
+        </p>
+        {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void send()} disabled={busy}>
+            {busy ? 'Sending…' : 'Send'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 0221 — merge duplicate people. Pick the surviving record; every client
+// contact, portal login, signature, booking, and call log repoints to it,
+// and the duplicates are archived (their email backfills the survivor's
+// blank fields). Portal-only rows can't merge — link them to a person first.
+// ---------------------------------------------------------------------------
+
+function MergePeopleDialog({
+  people,
+  onClose,
+  onMerged,
+}: {
+  people: PersonRow[];
+  onClose: () => void;
+  onMerged: (summary: string) => void;
+}): JSX.Element {
+  const [survivorKey, setSurvivorKey] = useState(people[0]?.key ?? '');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function merge(): Promise<void> {
+    const survivor = people.find((p) => p.key === survivorKey);
+    if (!survivor) return;
+    const mergeIds = people.filter((p) => p.key !== survivorKey).map((p) => p.id);
+    setBusy(true);
+    setError(null);
+    try {
+      await api('/api/staff/people/merge', {
+        method: 'POST',
+        body: JSON.stringify({ survivorId: survivor.id, mergeIds }),
+      });
+      onMerged(
+        `Merged ${mergeIds.length} ${mergeIds.length === 1 ? 'person' : 'people'} into ${survivor.fullName}.`,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'merge_failed');
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={`Merge ${people.length} people`}
+      onClose={busy ? undefined : onClose}
+      maxWidth={560}
+    >
+      <div style={{ display: 'grid', gap: 12 }}>
+        <p style={{ fontSize: 13, margin: 0 }}>
+          Pick the record to KEEP. The others are archived, and everything that referenced them —
+          client contacts, portal logins, signatures, appointments, call logs — moves to the kept
+          record. Blank email/phone on the kept record backfill from the merged ones.
+        </p>
+        <div style={{ display: 'grid', gap: 6 }}>
+          {people.map((p) => (
+            <label
+              key={p.key}
+              style={{
+                display: 'flex',
+                gap: 10,
+                alignItems: 'center',
+                padding: '8px 10px',
+                border: `1px solid ${survivorKey === p.key ? tokens.color.accent : tokens.color.border}`,
+                borderRadius: tokens.radius.md,
+                cursor: 'pointer',
+                fontSize: 13,
+              }}
+            >
+              <input
+                type="radio"
+                name="merge-survivor"
+                checked={survivorKey === p.key}
+                onChange={() => setSurvivorKey(p.key)}
+              />
+              <span style={{ flex: 1 }}>
+                <strong>{p.fullName}</strong>
+                <span style={{ color: tokens.color.textMuted, marginLeft: 8 }}>
+                  {p.email ?? 'no email'} · {p.phone ?? 'no phone'} · {p.clientCount} client
+                  {p.clientCount === 1 ? '' : 's'}
+                </span>
+              </span>
+              {survivorKey === p.key && <Pill tone="success">keep</Pill>}
+            </label>
+          ))}
+        </div>
+        <p style={{ fontSize: 12, color: tokens.color.warning, margin: 0 }}>
+          This cannot be undone from the UI. Archived duplicates keep their history but disappear
+          from pickers.
+        </p>
+        {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <Button onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={() => void merge()} disabled={busy || !survivorKey}>
+            {busy ? 'Merging…' : 'Merge'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }

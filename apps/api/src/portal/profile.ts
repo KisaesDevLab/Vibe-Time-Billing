@@ -16,6 +16,7 @@ import {
   invoices,
   paymentMethod,
   payments,
+  persons,
   portalAltContact,
   portalIdentity,
 } from '@vibe/db/schema';
@@ -602,6 +603,68 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       res.json({ ok: true, preferences: sanitized });
     },
   );
+
+  // ---------------------------------------------------------------
+  // 0221 — bulk-email preference. The firm's bulk emails target the
+  // directory PERSON, so the toggle only exists when this login is
+  // linked to one (standalone third-party logins have nothing to set).
+  // ---------------------------------------------------------------
+  router.get('/bulk-email-preference', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ available: false, optOut: false });
+      return;
+    }
+    const [ident] = await deps.db
+      .select({ personId: portalIdentity.personId })
+      .from(portalIdentity)
+      .where(eq(portalIdentity.id, session.portalIdentityId))
+      .limit(1);
+    if (!ident?.personId) {
+      res.json({ available: false, optOut: false });
+      return;
+    }
+    const [person] = await deps.db
+      .select({ optOut: persons.bulkEmailOptOut })
+      .from(persons)
+      .where(eq(persons.id, ident.personId))
+      .limit(1);
+    res.json({ available: Boolean(person), optOut: person?.optOut ?? false });
+  });
+
+  router.patch('/bulk-email-preference', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ ok: true });
+      return;
+    }
+    const optOut = (req.body as { optOut?: unknown })?.optOut;
+    if (typeof optOut !== 'boolean') {
+      res.status(400).json({ error: 'opt_out_required' });
+      return;
+    }
+    const [ident] = await deps.db
+      .select({ personId: portalIdentity.personId })
+      .from(portalIdentity)
+      .where(eq(portalIdentity.id, session.portalIdentityId))
+      .limit(1);
+    if (!ident?.personId) {
+      res.status(404).json({ error: 'no_linked_person' });
+      return;
+    }
+    await deps.db
+      .update(persons)
+      .set({ bulkEmailOptOut: optOut, updatedAt: new Date() })
+      .where(eq(persons.id, ident.personId));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'person',
+      entityId: ident.personId,
+      actorPortalIdentityId: session.portalIdentityId,
+      after: { bulkEmailOptOut: optOut, via: 'portal_preference' },
+    }).catch(() => undefined);
+    res.json({ ok: true, optOut });
+  });
 
   // ---------------------------------------------------------------
   // Pay-to-unlock signal (Phase 13 #24, 14 #13, 16 #20). Combines two

@@ -1967,6 +1967,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
           isPrimary: clientContacts.isPrimary,
           isBilling: clientContacts.isBilling,
           status: clientContacts.status,
+          bulkEmailOptOut: persons.bulkEmailOptOut,
         })
         .from(clientContacts)
         .innerJoin(persons, eq(persons.id, clientContacts.personId))
@@ -1992,12 +1993,26 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         reason: string | null;
       }> = [];
       for (const client of clientRows) {
-        const contacts = byClient.get(client.id) ?? [];
+        // 0221 — a person can be blocked from bulk email (staff- or
+        // self-managed). Opted-out contacts never receive the blast; when
+        // every emailable contact is opted out the client reports as such.
+        const allContacts = byClient.get(client.id) ?? [];
+        const contacts = allContacts.filter((c) => !c.bulkEmailOptOut);
         const pick =
           contacts.find((c) => c.isPrimary && c.email) ||
           contacts.find((c) => c.isBilling && c.email) ||
           contacts.find((c) => c.email);
         if (!pick || !pick.email) {
+          if (allContacts.some((c) => c.email && c.bulkEmailOptOut)) {
+            results.push({
+              clientId: client.id,
+              clientName: client.name,
+              sent: false,
+              to: null,
+              reason: 'opted_out',
+            });
+            continue;
+          }
           results.push({
             clientId: client.id,
             clientName: client.name,

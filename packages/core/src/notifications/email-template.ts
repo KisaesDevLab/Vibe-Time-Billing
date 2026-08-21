@@ -73,11 +73,15 @@ function brandedShell(innerHtml: string, branding: EmailBranding): string {
        </div>`
     : '';
 
+  // Responsive: fluid width up to 720px so desktop clients get a full-size
+  // reading column while phones shrink naturally (inline styles only —
+  // email clients strip <style>; max-width + width:100% is the one
+  // responsive technique they all honor).
   return `<!doctype html>
 <html>
   <body style="margin:0;padding:0;background:#f3f4f6;">
-    <div style="max-width:560px;margin:0 auto;padding:24px;">
-      <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:28px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,system-ui,sans-serif;color:#111827;">
+    <div style="max-width:720px;width:100%;box-sizing:border-box;margin:0 auto;padding:16px;">
+      <div style="background:#ffffff;border:1px solid #e5e7eb;border-radius:12px;padding:28px;box-sizing:border-box;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,system-ui,sans-serif;color:#111827;">
         <div style="margin-bottom:20px;">${header}</div>
         <div style="font-size:14px;line-height:1.55;color:#111827;">
           ${innerHtml}

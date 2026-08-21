@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { useCallback, useEffect, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 
 import { Button, Card, Combobox, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
@@ -215,8 +215,36 @@ function emptyDraftFrom(e: Engagement): EditDraft {
 
 export function EngagementDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
   // 0207 — header "▶ Timer" context-aware start (engagement pre-filled).
   const timers = useTimersOptional();
+  // 0221 — "New from this engagement" (manual rollover with budget-from-actuals).
+  const [rollingOver, setRollingOver] = useState(false);
+
+  async function rolloverFromThis(): Promise<void> {
+    if (!id) return;
+    if (
+      !window.confirm(
+        'Create a new engagement based on this one?\n\n' +
+          'The copy starts as PROPOSED. If time has been logged here, the logged hours become ' +
+          'the new budgeted hours; the fee is bumped by the auto-rollover price increase (if set).',
+      )
+    ) {
+      return;
+    }
+    setRollingOver(true);
+    try {
+      const r = await api<{ id: string }>(`/api/staff/engagements/${id}/rollover`, {
+        method: 'POST',
+        body: '{}',
+      });
+      navigate(`/engagements/${r.id}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'rollover_failed');
+    } finally {
+      setRollingOver(false);
+    }
+  }
   const [engagement, setEngagement] = useState<Engagement | null>(null);
   const [client, setClient] = useState<{ id: string; name: string } | null>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -538,16 +566,27 @@ export function EngagementDetailPage(): JSX.Element {
                 </Button>
               </>
             ) : (
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => {
-                  setDraft(emptyDraftFrom(engagement));
-                  setEditing(true);
-                }}
-              >
-                Edit
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setDraft(emptyDraftFrom(engagement));
+                    setEditing(true);
+                  }}
+                >
+                  Edit
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  title="Create a new engagement copied from this one — logged hours become the new budget"
+                  onClick={() => void rolloverFromThis()}
+                  disabled={rollingOver}
+                >
+                  {rollingOver ? 'Creating…' : '↻ New from this'}
+                </Button>
+              </>
             )}
           </span>
         }

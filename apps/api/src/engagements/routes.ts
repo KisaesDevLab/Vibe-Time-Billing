@@ -27,6 +27,7 @@ import {
 import { resolveEngagementName, type Period } from '@vibe/core/engagements';
 import { desc } from 'drizzle-orm';
 import { onEngagementCompleted } from './completion-hooks';
+import { budgetHoursFromActuals } from './logged-hours';
 import { queryStatusHistory } from './status-history';
 
 import { emitAudit } from '../auth/audit';
@@ -1704,6 +1705,10 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         eng.feeAmountCents != null
           ? Math.round(Number(eng.feeAmountCents) * (1 + pct / 100))
           : null;
+      // 0221 — successor budget = hours actually logged on this engagement
+      // (falls back to the old budget when no time was booked), matching
+      // the recurring spawner's 0202 behavior.
+      const successorBudgetHours = await budgetHoursFromActuals(deps.db, eng.id, eng.budgetHours);
       const [created] = await deps.db
         .insert(engagements)
         .values({
@@ -1712,8 +1717,9 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           name: `${eng.name} (rollover)`,
           feeStructure: eng.feeStructure,
           feeAmountCents: newFee,
-          budgetHours: eng.budgetHours,
+          budgetHours: successorBudgetHours,
           budgetAmountCents: eng.budgetAmountCents,
+          renewedFromEngagementId: eng.id,
           mixedModeEnabled: eng.mixedModeEnabled,
           inScopeWorkCodeIds: eng.inScopeWorkCodeIds,
           nteCapCents: eng.nteCapCents,

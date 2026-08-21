@@ -15,7 +15,7 @@
 // restore endpoints, keyed by the access ids this router returns.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, eq, inArray, or } from 'drizzle-orm';
+import { and, eq, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -29,14 +29,25 @@ import {
 } from '@vibe/db/schema';
 import { normalizePhone } from '@vibe/core/auth';
 
+import { resolveMergeTokens, type MergeContext } from '@vibe/core/proposals';
+
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { updatePerson } from '../clients/person-helpers';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { markdownToHtml } from '../lib/markdown';
 import { logger } from '../logger';
+import { firmScope } from '../notifications/templating';
 
 export interface PeopleRoutesDeps extends RbacDeps {
   db: Database | null;
+  /** 0221 — firm mailer for the People-page bulk email. */
+  sendStaffMail?: (args: {
+    to: string;
+    subject: string;
+    body: string;
+    html?: string;
+  }) => Promise<void>;
 }
 
 type Kind = 'person' | 'portal_identity';
@@ -46,6 +57,8 @@ const PatchSchema = z.object({
   email: z.string().email().max(254).nullable().optional(),
   phone: z.string().max(40).nullable().optional(),
   mobile: z.string().max(40).nullable().optional(),
+  // 0221 — block/unblock this person from firm bulk emails.
+  bulkEmailOptOut: z.boolean().optional(),
 });
 
 export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
@@ -72,7 +85,7 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
     const page = Math.max(1, Number(req.query['page']) || 1);
     // Cap lifted to 1000 so the staff People directory can load the full
     // firm set and run filter/sort/search client-side (standard table view).
-    const pageSize = Math.min(1000, Math.max(1, Number(req.query['pageSize']) || 25));
+    const pageSize = Math.min(100_000, Math.max(1, Number(req.query['pageSize']) || 25));
 
     // Load firm-scoped sources once, reconcile in memory. Single-firm
     // appliance, so the working set is bounded.
@@ -84,6 +97,7 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         phone: persons.phone,
         mobile: persons.mobile,
         status: persons.status,
+        bulkEmailOptOut: persons.bulkEmailOptOut,
       })
       .from(persons)
       .where(eq(persons.firmId, firmId));
@@ -116,6 +130,31 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       .from(clientPortalAccess)
       .innerJoin(clients, eq(clients.id, clientPortalAccess.clientId))
       .where(eq(clients.firmId, firmId));
+    // 0221 — live (unexpired) pending invitations, matched to people by
+    // the invited email/phone (invitations carry no person id).
+    const inviteRows = await db
+      .select({
+        email: portalInvitation.invitedEmail,
+        phone: portalInvitation.invitedPhone,
+        expiresAt: portalInvitation.expiresAt,
+      })
+      .from(portalInvitation)
+      .where(and(eq(portalInvitation.firmId, firmId), eq(portalInvitation.status, 'ACTIVE')));
+    const nowMs = Date.now();
+    const invitedEmails = new Set(
+      inviteRows
+        .filter((i) => i.expiresAt.getTime() > nowMs && i.email)
+        .map((i) => i.email!.toLowerCase()),
+    );
+    const invitedPhones = new Set(
+      inviteRows.filter((i) => i.expiresAt.getTime() > nowMs && i.phone).map((i) => i.phone!),
+    );
+    const invitePending = (email: string | null, phone: string | null, mobile: string | null) =>
+      Boolean(
+        (email && invitedEmails.has(email.toLowerCase())) ||
+        (phone && invitedPhones.has(phone)) ||
+        (mobile && invitedPhones.has(mobile)),
+      );
 
     const identitiesByPerson = new Map<string, string[]>();
     for (const i of identityRows) {
@@ -151,7 +190,9 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       mobile: string | null;
       status: string;
       hasPortalAccess: boolean;
+      portalStatus: 'yes' | 'invited' | 'no';
       clientCount: number;
+      bulkEmailOptOut: boolean;
       onThisClient?: boolean;
       alsoOn?: { clientId: string; name: string }[];
     }
@@ -168,7 +209,13 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         mobile: p.mobile,
         status: p.status,
         hasPortalAccess: ids.some((id) => activeByIdentity.has(id)),
+        portalStatus: ids.some((id) => activeByIdentity.has(id))
+          ? 'yes'
+          : invitePending(p.email, p.phone, p.mobile)
+            ? 'invited'
+            : 'no',
         clientCount: (contactsByPerson.get(p.id) ?? []).length,
+        bulkEmailOptOut: p.bulkEmailOptOut,
       });
     }
     for (const i of identityRows) {
@@ -183,7 +230,13 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         mobile: null,
         status: i.status,
         hasPortalAccess: activeByIdentity.has(i.id),
+        portalStatus: activeByIdentity.has(i.id)
+          ? 'yes'
+          : invitePending(i.email, i.phone, null)
+            ? 'invited'
+            : 'no',
         clientCount: (clientsByIdentity.get(i.id) ?? new Set()).size,
+        bulkEmailOptOut: false,
       });
     }
 
@@ -209,10 +262,29 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       );
     }
     if (portalFilter.length > 0) {
-      filtered = filtered.filter((r) => portalFilter.includes(r.hasPortalAccess ? 'yes' : 'no'));
+      // Tri-state: 'yes' (active access) | 'invited' (pending invite) | 'no'.
+      filtered = filtered.filter((r) => portalFilter.includes(r.portalStatus));
     }
     if (kindFilter.length > 0) {
       filtered = filtered.filter((r) => kindFilter.includes(r.kind));
+    }
+    // 0221 — presence filters ('blank' | 'not_blank') on email and phone,
+    // so staff can find people who can't be invited (or bulk-invite only
+    // those who can). Phone counts either landline or mobile.
+    const emailFilter = csv(req.query['email']);
+    if (emailFilter.length > 0) {
+      filtered = filtered.filter((r) =>
+        emailFilter.includes(r.email && r.email.trim() !== '' ? 'not_blank' : 'blank'),
+      );
+    }
+    const phoneFilter = csv(req.query['phone']);
+    if (phoneFilter.length > 0) {
+      filtered = filtered.filter((r) => {
+        const has = Boolean(
+          (r.phone && r.phone.trim() !== '') || (r.mobile && r.mobile.trim() !== ''),
+        );
+        return phoneFilter.includes(has ? 'not_blank' : 'blank');
+      });
     }
 
     const sortCol = String(req.query['sort'] ?? 'name');
@@ -273,6 +345,7 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         phone: persons.phone,
         mobile: persons.mobile,
         status: persons.status,
+        bulkEmailOptOut: persons.bulkEmailOptOut,
       };
       let person =
         (
@@ -328,6 +401,7 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
             phone: person.phone,
             mobile: person.mobile,
             status: person.status,
+            bulkEmailOptOut: person.bulkEmailOptOut,
           }
         : {
             id: identity!.id,
@@ -456,6 +530,317 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
   );
 
   // ---------------------------------------------------------------
+  // POST /merge — 0221. Collapse duplicate directory people into one.
+  // Every table referencing person repoints to the survivor (live FK
+  // list: client_contact, portal_identity, signature_signers,
+  // booking_request, portal_access_request, voice_call); a duplicate
+  // client_contact (survivor already on that client) merges its
+  // primary/billing flags then archives. Merged person rows are soft-
+  // archived with contact fields cleared (frees the firm-unique email
+  // for the survivor backfill). Soft delete per CLAUDE.md — no rows die.
+  // ---------------------------------------------------------------
+  const MergeSchema = z.object({
+    survivorId: z.string().uuid(),
+    mergeIds: z.array(z.string().uuid()).min(1).max(20),
+  });
+  router.post(
+    '/merge',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const parsed = MergeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const db = deps.db;
+      const { survivorId } = parsed.data;
+      const mergeIds = parsed.data.mergeIds.filter((id) => id !== survivorId);
+      if (mergeIds.length === 0) {
+        res.status(400).json({ error: 'nothing_to_merge' });
+        return;
+      }
+
+      const [survivor] = await db
+        .select()
+        .from(persons)
+        .where(and(eq(persons.id, survivorId), eq(persons.firmId, session.firmId)))
+        .limit(1);
+      if (!survivor) {
+        res.status(404).json({ error: 'survivor_not_found' });
+        return;
+      }
+      const mergeRows = await db
+        .select()
+        .from(persons)
+        .where(and(inArray(persons.id, mergeIds), eq(persons.firmId, session.firmId)));
+      if (mergeRows.length !== mergeIds.length) {
+        res.status(404).json({ error: 'person_not_found' });
+        return;
+      }
+
+      await db.transaction(async (tx) => {
+        // Survivor backfill candidates gathered before clearing sources.
+        let fillEmail = survivor.email;
+        let fillPhone = survivor.phone;
+        let fillMobile = survivor.mobile;
+        for (const m of mergeRows) {
+          if (!fillEmail && m.email) fillEmail = m.email;
+          if (!fillPhone && m.phone) fillPhone = m.phone;
+          if (!fillMobile && m.mobile) fillMobile = m.mobile;
+        }
+
+        for (const m of mergeRows) {
+          // client_contact: repoint unless the survivor already has a
+          // contact on that client — then merge flags + archive the dup.
+          const mergedContacts = await tx
+            .select()
+            .from(clientContacts)
+            .where(eq(clientContacts.personId, m.id));
+          for (const mc of mergedContacts) {
+            const [existing] = await tx
+              .select({
+                id: clientContacts.id,
+                isPrimary: clientContacts.isPrimary,
+                isBilling: clientContacts.isBilling,
+              })
+              .from(clientContacts)
+              .where(
+                and(
+                  eq(clientContacts.clientId, mc.clientId),
+                  eq(clientContacts.personId, survivorId),
+                ),
+              )
+              .limit(1);
+            if (!existing) {
+              await tx
+                .update(clientContacts)
+                .set({ personId: survivorId, updatedAt: new Date() })
+                .where(eq(clientContacts.id, mc.id));
+              continue;
+            }
+            const promotePrimary = mc.isPrimary && !existing.isPrimary;
+            const promoteBilling = mc.isBilling && !existing.isBilling;
+            // Free the partial unique indexes before promoting.
+            await tx
+              .update(clientContacts)
+              .set({
+                status: 'ARCHIVED',
+                isPrimary: false,
+                isBilling: false,
+                updatedAt: new Date(),
+              })
+              .where(eq(clientContacts.id, mc.id));
+            if (promotePrimary || promoteBilling) {
+              await tx
+                .update(clientContacts)
+                .set({
+                  ...(promotePrimary ? { isPrimary: true } : {}),
+                  ...(promoteBilling ? { isBilling: true } : {}),
+                  updatedAt: new Date(),
+                })
+                .where(eq(clientContacts.id, existing.id));
+            }
+          }
+
+          // Plain repoints (live FK list — see route comment).
+          await tx.execute(
+            sql`UPDATE portal_identity SET person_id = ${survivorId} WHERE person_id = ${m.id}`,
+          );
+          await tx.execute(
+            sql`UPDATE signature_signers SET person_id = ${survivorId} WHERE person_id = ${m.id}`,
+          );
+          await tx.execute(
+            sql`UPDATE booking_request SET person_id = ${survivorId} WHERE person_id = ${m.id}`,
+          );
+          await tx.execute(
+            sql`UPDATE portal_access_request SET person_id = ${survivorId} WHERE person_id = ${m.id}`,
+          );
+          await tx.execute(
+            sql`UPDATE voice_call SET person_id = ${survivorId} WHERE person_id = ${m.id}`,
+          );
+
+          // Soft-archive the merged person; clear contact fields so the
+          // firm-unique email frees up for the survivor backfill.
+          await tx
+            .update(persons)
+            .set({
+              status: 'ARCHIVED',
+              email: null,
+              phone: null,
+              mobile: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(persons.id, m.id));
+        }
+
+        await tx
+          .update(persons)
+          .set({
+            email: fillEmail,
+            phone: fillPhone,
+            mobile: fillMobile,
+            updatedAt: new Date(),
+          })
+          .where(eq(persons.id, survivorId));
+      });
+
+      await emitAudit(db, {
+        action: 'UPDATE',
+        entityType: 'person',
+        entityId: survivorId,
+        actorAppUserId: session.appUserId,
+        after: { kind: 'people_merge', mergedIds: mergeIds },
+      }).catch(() => undefined);
+      res.json({ ok: true, merged: mergeIds.length, survivorId });
+    },
+  );
+
+  // ---------------------------------------------------------------
+  // POST /bulk-email — 0221. Email the selected People rows directly
+  // (subject/body in Markdown with {{firm.*}} + {{person.name}} tokens).
+  // Skips rows with no email and anyone who opted out of bulk email;
+  // per-row results, never a batch-level failure.
+  // ---------------------------------------------------------------
+  const BulkEmailSchema = z.object({
+    people: z
+      .array(z.object({ kind: z.enum(['person', 'portal_identity']), id: z.string().uuid() }))
+      .min(1)
+      .max(500),
+    subject: z.string().min(1).max(200),
+    body: z.string().min(1).max(20_000),
+  });
+  router.post(
+    '/bulk-email',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const parsed = BulkEmailSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!deps.sendStaffMail) {
+        res.status(503).json({ error: 'mail_dispatch_not_configured' });
+        return;
+      }
+      const db = deps.db;
+      const firmTokens = await firmScope(db, session.firmId);
+
+      interface SendResult {
+        kind: Kind;
+        id: string;
+        fullName: string | null;
+        sent: boolean;
+        to: string | null;
+        reason: string | null;
+      }
+      const results: SendResult[] = [];
+
+      for (const target of parsed.data.people) {
+        let fullName: string | null = null;
+        let email: string | null = null;
+        let optedOut = false;
+        if (target.kind === 'person') {
+          const [p] = await db
+            .select({
+              fullName: persons.fullName,
+              email: persons.email,
+              optOut: persons.bulkEmailOptOut,
+            })
+            .from(persons)
+            .where(and(eq(persons.id, target.id), eq(persons.firmId, session.firmId)))
+            .limit(1);
+          if (!p) {
+            results.push({ ...target, fullName: null, sent: false, to: null, reason: 'not_found' });
+            continue;
+          }
+          fullName = p.fullName;
+          email = p.email?.trim() || null;
+          optedOut = p.optOut;
+        } else {
+          const [i] = await db
+            .select({
+              fullName: portalIdentity.fullName,
+              email: portalIdentity.primaryEmail,
+              personId: portalIdentity.personId,
+            })
+            .from(portalIdentity)
+            .where(and(eq(portalIdentity.id, target.id), eq(portalIdentity.firmId, session.firmId)))
+            .limit(1);
+          if (!i) {
+            results.push({ ...target, fullName: null, sent: false, to: null, reason: 'not_found' });
+            continue;
+          }
+          fullName = i.fullName;
+          email = i.email?.trim() || null;
+          if (i.personId) {
+            const [lp] = await db
+              .select({ optOut: persons.bulkEmailOptOut })
+              .from(persons)
+              .where(eq(persons.id, i.personId))
+              .limit(1);
+            optedOut = lp?.optOut ?? false;
+          }
+        }
+        if (optedOut) {
+          results.push({ ...target, fullName, sent: false, to: null, reason: 'opted_out' });
+          continue;
+        }
+        if (!email) {
+          results.push({ ...target, fullName, sent: false, to: null, reason: 'no_email' });
+          continue;
+        }
+        try {
+          const ctx: MergeContext = { firm: firmTokens, person: { name: fullName ?? '' } };
+          const subject = resolveMergeTokens(parsed.data.subject, ctx)
+            .output.replace(/[\r\n]+/g, ' ')
+            .trim();
+          const bodyText = resolveMergeTokens(parsed.data.body, ctx).output;
+          await deps.sendStaffMail({
+            to: email,
+            subject,
+            body: bodyText,
+            html: markdownToHtml(bodyText),
+          });
+          results.push({ ...target, fullName, sent: true, to: email, reason: null });
+        } catch (err) {
+          results.push({
+            ...target,
+            fullName,
+            sent: false,
+            to: email,
+            reason: err instanceof Error ? err.message : 'send_failed',
+          });
+        }
+      }
+
+      await emitAudit(db, {
+        action: 'UPDATE',
+        entityType: 'people_bulk_email',
+        entityId: null,
+        actorAppUserId: session.appUserId,
+        after: {
+          requested: parsed.data.people.length,
+          sent: results.filter((r) => r.sent).length,
+          skipped: results.filter((r) => !r.sent).length,
+          subject: parsed.data.subject,
+        },
+      }).catch(() => undefined);
+
+      res.json({ ok: true, results });
+    },
+  );
+
+  // ---------------------------------------------------------------
   // PATCH /:id — edit the canonical identity fields. For a person this
   // updates the shared person row (propagates to every client); for a
   // standalone portal identity it edits the login record.
@@ -485,8 +870,16 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         .where(and(eq(persons.id, id), eq(persons.firmId, firmId)))
         .limit(1);
       if (person) {
+        if (data.bulkEmailOptOut !== undefined) {
+          await db
+            .update(persons)
+            .set({ bulkEmailOptOut: data.bulkEmailOptOut, updatedAt: new Date() })
+            .where(eq(persons.id, person.id));
+        }
         try {
-          await updatePerson(db, person.id, data);
+          const { bulkEmailOptOut: _skip, ...personFields } = data;
+          void _skip;
+          await updatePerson(db, person.id, personFields);
         } catch (err) {
           logger.warn({ err }, 'person update failed');
           res.status(409).json({ error: 'email_in_use' });

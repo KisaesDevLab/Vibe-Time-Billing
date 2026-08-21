@@ -17,7 +17,7 @@
 // Returns a discriminated result so callers can render the right
 // status to the user / log line.
 
-import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -31,13 +31,13 @@ import {
   engagements,
   firmSettings,
   offices,
-  timeEntries,
 } from '@vibe/db/schema';
 import { advancePeriod, resolveEngagementName, type Period } from '@vibe/core/engagements';
 import { nextRunDate } from '@vibe/core/billing';
 import { mapDateTime, mapIsoWeek } from '@vibe/core/rollforward';
 
 import { emitAudit } from '../auth/audit';
+import { sumLoggedEffort } from './logged-hours';
 
 type TxOrDb = Database | Parameters<Parameters<Database['transaction']>[0]>[0];
 
@@ -347,20 +347,9 @@ export async function spawnNextEngagement(args: SpawnArgs): Promise<SpawnResult>
   let budgetHoursFromPrev: string | null = null;
   let budgetAmountFromPrev: number | null = null;
   if (rec.lastEngagementId) {
-    const [agg] = await args.db
-      .select({
-        hours: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)`,
-        costCents: sql<string>`COALESCE(SUM(${timeEntries.hours} * COALESCE(${timeEntries.costRateSnapshotCents}, 0)), 0)`,
-      })
-      .from(timeEntries)
-      .where(
-        and(
-          eq(timeEntries.engagementId, rec.lastEngagementId),
-          inArray(timeEntries.status, ['SUBMITTED', 'LOCKED', 'BILLED', 'WRITTEN_OFF']),
-        ),
-      );
-    const loggedHours = Number(agg?.hours ?? 0);
-    const costCents = Math.round(Number(agg?.costCents ?? 0));
+    // 0221 — aggregate extracted to the shared helper so the manual
+    // /rollover and rollforward paths compute the same number.
+    const { hours: loggedHours, costCents } = await sumLoggedEffort(args.db, rec.lastEngagementId);
     if (loggedHours > 0) budgetHoursFromPrev = loggedHours.toFixed(2);
     if (costCents > 0) {
       const [cfg] = await args.db

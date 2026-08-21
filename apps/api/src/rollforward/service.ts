@@ -23,6 +23,7 @@ import {
   rollforwardEngagementCandidates,
 } from '@vibe/db/schema';
 import { mapDate, type MappingMode } from '@vibe/core/rollforward';
+import { budgetHoursFromActuals } from '../engagements/logged-hours';
 
 export interface CreateBatchInput {
   firmId: string;
@@ -222,6 +223,10 @@ export async function commitRollforwardBatch(
         .where(eq(engagements.id, c.sourceEngagementId))
         .limit(1);
       if (!src) continue;
+      // 0221 — successor budget = prior actual logged hours (fallback:
+      // old budget). Query through the tx handle — the helper is shared
+      // with the recurring spawner + manual rollover so all paths agree.
+      const successorBudgetHours = await budgetHoursFromActuals(tx, src.id, src.budgetHours);
       const [created] = await tx
         .insert(engagements)
         .values({
@@ -230,7 +235,7 @@ export async function commitRollforwardBatch(
           name: src.name,
           feeStructure: src.feeStructure,
           feeAmountCents: c.suggestedFeeCents ?? src.feeAmountCents,
-          budgetHours: src.budgetHours,
+          budgetHours: successorBudgetHours,
           budgetAmountCents: src.budgetAmountCents,
           mixedModeEnabled: src.mixedModeEnabled,
           inScopeWorkCodeIds: src.inScopeWorkCodeIds,

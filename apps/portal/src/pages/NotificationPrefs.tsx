@@ -157,6 +157,10 @@ export function NotificationPrefsPage(): JSX.Element {
   const [prefs, setPrefs] = useState<Prefs | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
+  // 0221 — self-managed bulk-email preference (lives on the linked
+  // directory person; hidden for standalone third-party logins).
+  const [bulkEmail, setBulkEmail] = useState<{ available: boolean; optOut: boolean } | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
     void (async () => {
@@ -176,8 +180,31 @@ export function NotificationPrefsPage(): JSX.Element {
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed');
       }
+      try {
+        const b = await api<{ available: boolean; optOut: boolean }>(
+          '/api/portal/profile/bulk-email-preference',
+        );
+        setBulkEmail(b);
+      } catch {
+        setBulkEmail(null);
+      }
     })();
   }, []);
+
+  async function setBulkOptOut(optOut: boolean): Promise<void> {
+    setBulkBusy(true);
+    try {
+      await api('/api/portal/profile/bulk-email-preference', {
+        method: 'PATCH',
+        body: JSON.stringify({ optOut }),
+      });
+      setBulkEmail((prev) => (prev ? { ...prev, optOut } : prev));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
 
   function toggle(event: Event, channel: Channel): void {
     if (!prefs) return;
@@ -310,6 +337,21 @@ export function NotificationPrefsPage(): JSX.Element {
           {error && <span style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</span>}
         </div>
       </Card>
+
+      {bulkEmail?.available && (
+        <Card title="Firm announcements (bulk email)">
+          <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 13 }}>
+            <input
+              type="checkbox"
+              checked={!bulkEmail.optOut}
+              disabled={bulkBusy}
+              onChange={(e) => void setBulkOptOut(!e.target.checked)}
+            />
+            Receive bulk emails from your firm (announcements, office updates). Transactional
+            messages — invoices, payment receipts, reminders — are unaffected by this setting.
+          </label>
+        </Card>
+      )}
     </div>
   );
 }
