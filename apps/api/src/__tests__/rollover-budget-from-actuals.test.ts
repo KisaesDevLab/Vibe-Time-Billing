@@ -130,3 +130,76 @@ describe('0221 — rollover budget from actuals', () => {
     expect(Number(created!.budgetHours)).toBeCloseTo(12);
   });
 });
+
+// 0225 — DELETE /engagements/:id: only engagements with no usage.
+describe('0225 — delete unused engagement', () => {
+  async function invokeDelete(): Promise<{ statusCode: number; body: unknown }> {
+    const router = createEngagementRouter({
+      db: harness.db as Database,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const res = {
+      statusCode: 200,
+      body: undefined as unknown,
+      status(n: number) {
+        this.statusCode = n;
+        return this;
+      },
+      json(b: unknown) {
+        this.body = b;
+        return this;
+      },
+    };
+    const stack = (
+      router as unknown as {
+        stack: {
+          route?: {
+            path: string;
+            methods: Record<string, boolean>;
+            stack: { handle: (...a: unknown[]) => unknown }[];
+          };
+        }[];
+      }
+    ).stack;
+    const layer = stack.find(
+      (l) => l.route && l.route.path === '/:id' && l.route.methods['delete'],
+    );
+    if (!layer?.route) throw new Error('delete route not registered');
+    const handler = layer.route.stack[layer.route.stack.length - 1]!.handle;
+    const req = {
+      body: {},
+      params: { id: seed.engagementId },
+      query: {},
+      staffSession: { firmId: seed.firmId, appUserId: seed.appUserId },
+      ip: '127.0.0.1',
+      header: () => undefined,
+      get: () => undefined,
+    };
+    await (handler as (rq: unknown, rs: unknown) => Promise<void>)(req, res);
+    return res;
+  }
+
+  it('refuses with blockers when time is logged', async () => {
+    await logTime(1, 'SUBMITTED');
+    const res = await invokeDelete();
+    expect(res.statusCode).toBe(409);
+    const body = res.body as { error: string; blockers: { label: string; count: number }[] };
+    expect(body.error).toBe('engagement_in_use');
+    expect(body.blockers.some((b) => b.label === 'time entries' && b.count === 1)).toBe(true);
+    const [still] = await harness.db
+      .select({ id: engagements.id })
+      .from(engagements)
+      .where(eq(engagements.id, seed.engagementId));
+    expect(still).toBeDefined();
+  });
+
+  it('deletes when nothing references it', async () => {
+    const res = await invokeDelete();
+    expect(res.statusCode).toBe(200);
+    const [gone] = await harness.db
+      .select({ id: engagements.id })
+      .from(engagements)
+      .where(eq(engagements.id, seed.engagementId));
+    expect(gone).toBeUndefined();
+  });
+});

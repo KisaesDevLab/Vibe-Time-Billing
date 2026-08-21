@@ -1739,6 +1739,88 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   // a new engagement in PROPOSED status, optionally with the autoRollover
   // price-increase applied, and queues the old one to be CLOSED.
   // -----------------------------------------------------------------
+  // 0225 — hard delete an engagement that has never been USED. Archive is
+  // the normal path (soft delete per CLAUDE.md); this exists for the
+  // "created by mistake / duplicate" case. Refused (409 with reasons) when
+  // any financial or client-facing record references it: time entries,
+  // running timers, invoices/line items, billing batches, expenses,
+  // payment import rows, retainers/offers, tax payments/returns,
+  // appointments, signature requests, Stripe invoices. Notes, scope,
+  // assignments, letters, requests, tasks etc. cascade/null per the FKs.
+  router.delete(
+    '/:id',
+    requirePermission(deps, 'engagement:write'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ ok: true });
+        return;
+      }
+      const id = req.params['id']!;
+      const [eng] = await deps.db
+        .select({ id: engagements.id, clientId: engagements.clientId, name: engagements.name })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(and(eq(engagements.id, id), eq(clients.firmId, session.firmId)))
+        .limit(1);
+      if (!eng) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (await blockIfClientRestricted(deps, req, res, eng.clientId)) return;
+
+      // Usage check — table → human label. Any non-zero count blocks.
+      const checks: Array<{ table: string; col: string; label: string }> = [
+        { table: 'time_entry', col: 'engagement_id', label: 'time entries' },
+        { table: 'time_timer', col: 'engagement_id', label: 'running timers' },
+        { table: 'invoice', col: 'primary_engagement_id', label: 'invoices' },
+        { table: 'invoice_line_item', col: 'engagement_id', label: 'invoice lines' },
+        { table: 'billing_batch', col: 'engagement_id', label: 'billing batches' },
+        { table: 'billing_batch_engagement', col: 'engagement_id', label: 'billing batches' },
+        { table: 'engagement_expense', col: 'engagement_id', label: 'expenses' },
+        { table: 'payment_import_row', col: 'engagement_id', label: 'imported payments' },
+        { table: 'retainer', col: 'engagement_id', label: 'retainers' },
+        { table: 'retainer_offer', col: 'engagement_id', label: 'retainer offers' },
+        { table: 'tax_payment', col: 'engagement_id', label: 'tax payments' },
+        { table: 'tax_returns', col: 'engagement_id', label: 'tax returns' },
+        { table: 'appointment', col: 'engagement_id', label: 'appointments' },
+        { table: 'signature_requests', col: 'engagement_id', label: 'signature requests' },
+        { table: 'stripe_invoices', col: 'engagement_id', label: 'Stripe invoices' },
+        { table: 'stripe_subscriptions', col: 'engagement_id', label: 'Stripe subscriptions' },
+        {
+          table: 'engagement_recurrence',
+          col: 'last_engagement_id',
+          label: 'recurrence schedules',
+        },
+      ];
+      const blockers: { label: string; count: number }[] = [];
+      for (const c of checks) {
+        const r = (await deps.db.execute(
+          sql`SELECT count(*)::int AS n FROM ${sql.identifier(c.table)} WHERE ${sql.identifier(c.col)} = ${id}`,
+        )) as unknown as { rows?: { n: number }[] } & Array<{ n: number }>;
+        const n = Number((r.rows ?? r)[0]?.n ?? 0);
+        if (n > 0) blockers.push({ label: c.label, count: n });
+      }
+      if (blockers.length > 0) {
+        res.status(409).json({ error: 'engagement_in_use', blockers });
+        return;
+      }
+
+      await deps.db.delete(engagements).where(eq(engagements.id, id));
+      await emitAudit(deps.db, {
+        action: 'ARCHIVE',
+        entityType: 'engagement',
+        entityId: id,
+        actorAppUserId: session.appUserId,
+        before: { name: eng.name, clientId: eng.clientId },
+        after: { hardDeleted: true, reason: 'no_usage' },
+        ip: req.ip ?? null,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
   router.post(
     '/:id/rollover',
     requirePermission(deps, 'engagement:write'),

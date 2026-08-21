@@ -220,6 +220,41 @@ export function EngagementDetailPage(): JSX.Element {
   const timers = useTimersOptional();
   // 0221 — "New from this engagement" (manual rollover with budget-from-actuals).
   const [rollingOver, setRollingOver] = useState(false);
+  // 0225 — hard delete for never-used engagements (server refuses otherwise).
+  const [deleting, setDeleting] = useState(false);
+
+  async function deleteEngagement(): Promise<void> {
+    if (!id || !engagement) return;
+    if (
+      !window.confirm(
+        `Delete "${engagement.name}"?\n\nThis permanently removes the engagement. It only works ` +
+          'when nothing references it (no time, invoices, payments, appointments, etc.) — ' +
+          'otherwise archive it instead.',
+      )
+    ) {
+      return;
+    }
+    setDeleting(true);
+    try {
+      await api(`/api/staff/engagements/${id}`, { method: 'DELETE' });
+      navigate(`/clients/${engagement.clientId}`);
+    } catch (e) {
+      const body = (
+        e as { body?: { error?: string; blockers?: { label: string; count: number }[] } }
+      ).body;
+      if (body?.error === 'engagement_in_use' && body.blockers) {
+        setError(
+          `Can't delete — in use by ${body.blockers
+            .map((b) => `${b.count} ${b.label}`)
+            .join(', ')}. Archive it instead.`,
+        );
+      } else {
+        setError(e instanceof Error ? e.message : 'delete_failed');
+      }
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   async function rolloverFromThis(): Promise<void> {
     if (!id) return;
@@ -585,6 +620,15 @@ export function EngagementDetailPage(): JSX.Element {
                   disabled={rollingOver}
                 >
                   {rollingOver ? 'Creating…' : '↻ New from this'}
+                </Button>
+                <Button
+                  size="sm"
+                  variant="danger"
+                  title="Permanently delete — only allowed when no time, billing, or other records reference this engagement"
+                  onClick={() => void deleteEngagement()}
+                  disabled={deleting}
+                >
+                  {deleting ? 'Deleting…' : 'Delete'}
                 </Button>
               </>
             )}
