@@ -1021,6 +1021,13 @@ const REPORT_CARDS: CardSpec[] = [
     href: '/reports/signed-forms',
   },
   {
+    key: 'billing-realization',
+    title: 'Billing realization ★',
+    blurb:
+      'Hours · Amount · Adjusted · Fee · Charge rate · Fee rate · Real % by timekeeper, service line, engagement type, client, or engagement. CSV export.',
+    href: '/reports/billing-realization',
+  },
+  {
     key: 'realization',
     title: 'Realization',
     blurb: 'Original vs adjusted value by firm / timekeeper / engagement / client.',

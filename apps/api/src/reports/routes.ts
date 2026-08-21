@@ -22,6 +22,7 @@ import {
   creditMemos,
   engagementTypes,
   engagements,
+  offices,
   firmSettings,
   invoiceLineItems,
   invoices,
@@ -53,7 +54,21 @@ const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const QuerySchema = z.object({
   // 'service_line' rolls allocations up by engagement_type.service_line_id;
   // engagements without an assigned type are excluded from this dimension.
-  dimension: z.enum(['firm', 'timekeeper', 'engagement', 'client', 'service_line']).default('firm'),
+  dimension: z
+    .enum([
+      'firm',
+      'timekeeper',
+      'engagement',
+      'client',
+      'service_line',
+      'engagement_type',
+      // 0223 — client-attribute rollups for the billing report.
+      'firm_owner',
+      'location',
+      'entity_type',
+      'client_zip',
+    ])
+    .default('firm'),
   start: z.string().regex(DATE_RE).optional(),
   end: z.string().regex(DATE_RE).optional(),
   // Drill filters (Phase 17 #20). When provided, the rollup is scoped
@@ -387,6 +402,14 @@ interface EngagementMeta {
   partnerId: string | null;
   serviceLineId: string | null;
   serviceLineCategory: string | null;
+  // 0223 — engagement-type dimension.
+  engagementTypeId: string | null;
+  engagementTypeName: string | null;
+  // 0223 — client-attribute dimensions.
+  clientPartnerId: string | null;
+  clientOfficeId: string | null;
+  clientEntityType: string | null;
+  clientZip: string | null;
 }
 
 async function loadBilledRealization(
@@ -402,6 +425,12 @@ async function loadBilledRealization(
       partnerId: engagements.partnerId,
       serviceLineId: serviceLines.id,
       serviceLineCategory: serviceLines.category,
+      engagementTypeId: engagementTypes.id,
+      engagementTypeName: engagementTypes.name,
+      clientPartnerId: clients.partnerInChargeId,
+      clientOfficeId: clients.officeId,
+      clientEntityType: clients.entityType,
+      clientZip: clients.mailingPostal,
     })
     .from(engagements)
     .innerJoin(clients, eq(clients.id, engagements.clientId))
@@ -415,6 +444,12 @@ async function loadBilledRealization(
       partnerId: e.partnerId,
       serviceLineId: e.serviceLineId,
       serviceLineCategory: e.serviceLineCategory,
+      engagementTypeId: e.engagementTypeId,
+      engagementTypeName: e.engagementTypeName,
+      clientPartnerId: e.clientPartnerId,
+      clientOfficeId: e.clientOfficeId,
+      clientEntityType: e.clientEntityType,
+      clientZip: e.clientZip ? e.clientZip.trim().slice(0, 5) : null,
     });
   }
 
@@ -488,6 +523,7 @@ async function loadBilledRealization(
       appUserId: timeEntries.appUserId,
       engagementId: timeEntries.engagementId,
       standardAmountCents: timeEntries.standardAmountCents,
+      hours: timeEntries.hours,
     })
     .from(billingBatchEntries)
     .innerJoin(timeEntries, eq(timeEntries.id, billingBatchEntries.timeEntryId))
@@ -572,6 +608,7 @@ async function loadBilledRealization(
       clientId: meta.clientId,
       originalValueCents: std,
       adjustedValueCents: std + (deltaByEntry.get(e.timeEntryId) ?? 0),
+      hours: Number(e.hours ?? 0),
     });
   }
   return { rows, engagementMeta };
@@ -663,6 +700,16 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         // "__unassigned__" bucket so the rollup is total-preserving.
         service_line: (r: AllocationRow) =>
           enginToServiceLine.get(r.engagementId)?.serviceLineId ?? '__unassigned__',
+        engagement_type: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.engagementTypeId ?? '__unassigned__',
+        firm_owner: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.clientPartnerId ?? '__unassigned__',
+        location: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.clientOfficeId ?? '__unassigned__',
+        entity_type: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.clientEntityType ?? '__unassigned__',
+        client_zip: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.clientZip ?? '__unassigned__',
       }[parsed.data.dimension];
       const map = rollupBy(allocationRows, keyFn);
 
@@ -708,6 +755,13 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
           if (map.has('__unassigned__')) {
             nameMap.set('__unassigned__', '(No service line)');
           }
+        } else if (parsed.data.dimension === 'engagement_type') {
+          for (const meta of engagementMeta.values()) {
+            if (meta.engagementTypeId && meta.engagementTypeName) {
+              nameMap.set(meta.engagementTypeId, meta.engagementTypeName);
+            }
+          }
+          if (map.has('__unassigned__')) nameMap.set('__unassigned__', '(No engagement type)');
         }
       }
 
@@ -743,6 +797,229 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
         return;
       }
       res.json({ dimension: parsed.data.dimension, items });
+    },
+  );
+
+  // 0223 — Billing realization report (the classic "ID · Name · Hours ·
+  // Amount · Adjusted · Fee Amt · Charge Rate · Fee Rate · Real %" layout
+  // with a totals row). Same billed-WIP universe and window semantics as
+  // /realization; groups by timekeeper, service line, engagement type,
+  // client, or engagement. Short IDs: staff initials, taxonomy keys.
+  router.get(
+    '/billing-realization',
+    requirePermission(deps, 'report:realization:read'),
+    async (req: Request, res: Response) => {
+      const parsed = QuerySchema.safeParse(req.query);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_query' });
+        return;
+      }
+      const dimension = parsed.data.dimension === 'firm' ? 'timekeeper' : parsed.data.dimension;
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ dimension, rows: [], totals: null });
+        return;
+      }
+      const { rows: billedRows, engagementMeta } = await loadBilledRealization(
+        deps.db,
+        session.firmId,
+        { start: parsed.data.start ?? null, end: parsed.data.end ?? null },
+      );
+      const scoped = billedRows
+        .filter((r) => !parsed.data.appUserId || r.appUserId === parsed.data.appUserId)
+        .filter((r) => !parsed.data.engagementId || r.engagementId === parsed.data.engagementId)
+        .filter((r) => !parsed.data.clientId || r.clientId === parsed.data.clientId)
+        .filter(
+          (r) =>
+            !parsed.data.serviceLineId ||
+            engagementMeta.get(r.engagementId)?.serviceLineId === parsed.data.serviceLineId,
+        );
+
+      const keyFn = {
+        timekeeper: (r: AllocationRow) => r.appUserId,
+        engagement: (r: AllocationRow) => r.engagementId,
+        client: (r: AllocationRow) => r.clientId,
+        service_line: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.serviceLineId ?? '__unassigned__',
+        engagement_type: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.engagementTypeId ?? '__unassigned__',
+        firm_owner: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.clientPartnerId ?? '__unassigned__',
+        location: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.clientOfficeId ?? '__unassigned__',
+        entity_type: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.clientEntityType ?? '__unassigned__',
+        client_zip: (r: AllocationRow) =>
+          engagementMeta.get(r.engagementId)?.clientZip ?? '__unassigned__',
+      }[dimension];
+      const grouped = rollupBy(scoped, keyFn);
+      const ids = Array.from(grouped.keys()).filter((k) => k !== '__unassigned__');
+
+      // Labels + short IDs per dimension.
+      const label = new Map<string, { code: string; name: string }>();
+      if (ids.length > 0) {
+        if (dimension === 'timekeeper') {
+          const people = await deps.db
+            .select({
+              id: appUsers.id,
+              fullName: appUsers.fullName,
+              firstName: appUsers.firstName,
+              lastName: appUsers.lastName,
+            })
+            .from(appUsers)
+            .where(inArray(appUsers.id, ids));
+          for (const p of people) {
+            const initials =
+              `${(p.firstName ?? '').charAt(0)}${(p.lastName ?? '').charAt(0)}`.toUpperCase() ||
+              p.fullName
+                .split(/\s+/)
+                .map((w) => w.charAt(0))
+                .join('')
+                .toUpperCase();
+            label.set(p.id, { code: initials, name: p.fullName });
+          }
+        } else if (dimension === 'engagement') {
+          const engs = await deps.db
+            .select({ id: engagements.id, name: engagements.name, clientName: clients.name })
+            .from(engagements)
+            .innerJoin(clients, eq(clients.id, engagements.clientId))
+            .where(inArray(engagements.id, ids));
+          for (const e of engs) {
+            label.set(e.id, { code: e.id.slice(0, 8), name: `${e.clientName} — ${e.name}` });
+          }
+        } else if (dimension === 'client') {
+          const cls = await deps.db
+            .select({ id: clients.id, name: clients.name, externalId: clients.externalId })
+            .from(clients)
+            .where(inArray(clients.id, ids));
+          for (const c of cls)
+            label.set(c.id, { code: c.externalId ?? c.id.slice(0, 8), name: c.name });
+        } else if (dimension === 'service_line') {
+          const sls = await deps.db
+            .select({
+              id: serviceLines.id,
+              name: serviceLines.name,
+              category: serviceLines.category,
+            })
+            .from(serviceLines)
+            .where(inArray(serviceLines.id, ids));
+          for (const sl of sls)
+            label.set(sl.id, { code: sl.category.toUpperCase(), name: sl.name });
+        } else if (dimension === 'engagement_type') {
+          const ets = await deps.db
+            .select({
+              id: engagementTypes.id,
+              key: engagementTypes.key,
+              name: engagementTypes.name,
+            })
+            .from(engagementTypes)
+            .where(inArray(engagementTypes.id, ids));
+          for (const et of ets) label.set(et.id, { code: et.key, name: et.name });
+        } else if (dimension === 'firm_owner') {
+          const people = await deps.db
+            .select({
+              id: appUsers.id,
+              fullName: appUsers.fullName,
+              firstName: appUsers.firstName,
+              lastName: appUsers.lastName,
+            })
+            .from(appUsers)
+            .where(inArray(appUsers.id, ids));
+          for (const p of people) {
+            const initials =
+              `${(p.firstName ?? '').charAt(0)}${(p.lastName ?? '').charAt(0)}`.toUpperCase() ||
+              p.fullName.slice(0, 3).toUpperCase();
+            label.set(p.id, { code: initials, name: p.fullName });
+          }
+        } else if (dimension === 'location') {
+          const offs = await deps.db
+            .select({ id: offices.id, name: offices.name })
+            .from(offices)
+            .where(inArray(offices.id, ids));
+          for (const o of offs)
+            label.set(o.id, { code: o.name.slice(0, 12).toUpperCase(), name: o.name });
+        } else if (dimension === 'entity_type' || dimension === 'client_zip') {
+          for (const id of ids) label.set(id, { code: id, name: id });
+        }
+      }
+      const unassignedName =
+        {
+          service_line: '(No service line)',
+          engagement_type: '(No engagement type)',
+          firm_owner: '(No partner in charge)',
+          location: '(No office)',
+          entity_type: '(No entity type)',
+          client_zip: '(No zip code)',
+        }[dimension as string] ?? '(Unassigned)';
+
+      const rows = Array.from(grouped.entries())
+        .map(([key, v]) => ({
+          key,
+          code: label.get(key)?.code ?? (key === '__unassigned__' ? '—' : key.slice(0, 8)),
+          name: label.get(key)?.name ?? unassignedName,
+          hours: Number(v.hours.toFixed(2)),
+          originalValueCents: v.originalValueCents,
+          adjustmentCents: v.adjustmentCents,
+          adjustedValueCents: v.adjustedValueCents,
+          chargeRateCents: v.chargeRateCents,
+          feeRateCents: v.feeRateCents,
+          realizationPct: v.realizationPct,
+        }))
+        .sort((a, b) => a.code.localeCompare(b.code));
+      const t = rollup(scoped);
+      const totals = {
+        hours: Number(t.hours.toFixed(2)),
+        originalValueCents: t.originalValueCents,
+        adjustmentCents: t.adjustmentCents,
+        adjustedValueCents: t.adjustedValueCents,
+        chargeRateCents: t.chargeRateCents,
+        feeRateCents: t.feeRateCents,
+        realizationPct: t.realizationPct,
+      };
+
+      if (parsed.data.format === 'csv') {
+        const header = [
+          'id',
+          'name',
+          'hours',
+          'amount',
+          'adjusted',
+          'fee_amt',
+          'charge_rate',
+          'fee_rate',
+          'real_pct',
+        ];
+        const money = (c: number): string => (c / 100).toFixed(2);
+        const line = (
+          r: (typeof rows)[number] | (typeof totals & { code: string; name: string }),
+        ) =>
+          [
+            csvCell(r.code),
+            csvCell(r.name),
+            r.hours.toFixed(2),
+            money(r.originalValueCents),
+            money(r.adjustmentCents),
+            money(r.adjustedValueCents),
+            money(r.chargeRateCents),
+            money(r.feeRateCents),
+            (r.realizationPct * 100).toFixed(2),
+          ].join(',');
+        const lines = [
+          header.join(','),
+          ...rows.map(line),
+          line({ ...totals, code: '', name: 'Report Totals' }),
+        ];
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader(
+          'Content-Disposition',
+          `attachment; filename="billing-realization-${dimension}-${new Date()
+            .toISOString()
+            .slice(0, 10)}.csv"`,
+        );
+        res.send(lines.join('\n') + '\n');
+        return;
+      }
+      res.json({ dimension, rows, totals });
     },
   );
 

@@ -460,3 +460,103 @@ describe('GET /effective-rate', () => {
     expect(row.effectiveRateCents).toBe(30000);
   });
 });
+
+// 0223 — billing realization report: same universe as /realization, laid
+// out as the classic practice-management columns with a totals row. The
+// two endpoints must never disagree on amount / fee / real %.
+describe('GET /billing-realization', () => {
+  it('matches /realization and derives hours, adjustment, and rates', async () => {
+    const { firmId, appUserId } = await seedRealization();
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(
+      router,
+      '/billing-realization',
+      makeReq(firmId, appUserId, { dimension: 'timekeeper' }),
+    );
+    expect(res.statusCode).toBe(200);
+    const body = res.jsonBody as {
+      dimension: string;
+      rows: {
+        key: string;
+        code: string;
+        hours: number;
+        originalValueCents: number;
+        adjustmentCents: number;
+        adjustedValueCents: number;
+        chargeRateCents: number;
+        feeRateCents: number;
+        realizationPct: number;
+      }[];
+      totals: { hours: number; adjustedValueCents: number; realizationPct: number };
+    };
+    expect(body.dimension).toBe('timekeeper');
+    expect(body.rows).toHaveLength(1);
+    const r = body.rows[0]!;
+    expect(r.key).toBe(appUserId);
+    // $1,000 standard → $600 fee over 2 hours.
+    expect(r.originalValueCents).toBe(100000);
+    expect(r.adjustmentCents).toBe(-40000);
+    expect(r.adjustedValueCents).toBe(60000);
+    expect(r.hours).toBe(2);
+    expect(r.chargeRateCents).toBe(50000);
+    expect(r.feeRateCents).toBe(30000);
+    expect(r.realizationPct).toBeCloseTo(0.6);
+    expect(body.totals.hours).toBe(2);
+    expect(body.totals.adjustedValueCents).toBe(60000);
+    expect(body.totals.realizationPct).toBeCloseTo(0.6);
+  });
+
+  it('supports the engagement_type dimension (unassigned bucket when no type)', async () => {
+    const { firmId, appUserId } = await seedRealization();
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(
+      router,
+      '/billing-realization',
+      makeReq(firmId, appUserId, { dimension: 'engagement_type' }),
+    );
+    expect(res.statusCode).toBe(200);
+    const body = res.jsonBody as { rows: { key: string; adjustedValueCents: number }[] };
+    expect(body.rows).toHaveLength(1);
+    expect(body.rows[0]!.adjustedValueCents).toBe(60000);
+  });
+
+  it('csv export includes the Report Totals line', async () => {
+    const { firmId, appUserId } = await seedRealization();
+    const router = createReportRouter({ db: harness.db });
+    const res = await invoke(
+      router,
+      '/billing-realization',
+      makeReq(firmId, appUserId, { dimension: 'timekeeper', format: 'csv' }),
+    );
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(
+      'id,name,hours,amount,adjusted,fee_amt,charge_rate,fee_rate,real_pct',
+    );
+    expect(res.body).toContain('Report Totals');
+    expect(res.body).toContain('2.00,1000.00,-400.00,600.00,500.00,300.00,60.00');
+  });
+});
+
+describe('GET /billing-realization — client-attribute dimensions', () => {
+  it('firm_owner, location, entity_type, client_zip each preserve the total', async () => {
+    const { firmId, appUserId } = await seedRealization();
+    const router = createReportRouter({ db: harness.db });
+    for (const dimension of ['firm_owner', 'location', 'entity_type', 'client_zip'] as const) {
+      const res = await invoke(
+        router,
+        '/billing-realization',
+        makeReq(firmId, appUserId, { dimension }),
+      );
+      expect(res.statusCode).toBe(200);
+      const body = res.jsonBody as {
+        dimension: string;
+        rows: { adjustedValueCents: number }[];
+        totals: { adjustedValueCents: number };
+      };
+      expect(body.dimension).toBe(dimension);
+      const sum = body.rows.reduce((s, r) => s + r.adjustedValueCents, 0);
+      expect(sum).toBe(60000);
+      expect(body.totals.adjustedValueCents).toBe(60000);
+    }
+  });
+});

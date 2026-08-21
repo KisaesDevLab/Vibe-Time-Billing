@@ -14,21 +14,35 @@ export interface AllocationRow {
   clientId: Uuid;
   originalValueCents: Cents;
   adjustedValueCents: Cents;
+  /** 0223 — billed hours behind the value (optional for legacy callers). */
+  hours?: number;
 }
 
 export interface RealizationRollup {
   originalValueCents: Cents;
   adjustedValueCents: Cents;
   realizationPct: number; // 0-1 (e.g. 0.89 = 89%)
+  /** 0223 — billing-report columns. hours = Σ hours; adjustmentCents =
+   *  adjusted − original (signed); chargeRateCents = original / hours;
+   *  feeRateCents = adjusted / hours. */
+  hours: number;
+  adjustmentCents: Cents;
+  chargeRateCents: Cents;
+  feeRateCents: Cents;
 }
 
 export function rollup(rows: AllocationRow[]): RealizationRollup {
   const original = rows.reduce((s, r) => s + r.originalValueCents, 0);
   const adjusted = rows.reduce((s, r) => s + r.adjustedValueCents, 0);
+  const hours = rows.reduce((s, r) => s + (r.hours ?? 0), 0);
   return {
     originalValueCents: original,
     adjustedValueCents: adjusted,
     realizationPct: original === 0 ? 0 : adjusted / original,
+    hours,
+    adjustmentCents: adjusted - original,
+    chargeRateCents: hours > 0 ? Math.round(original / hours) : 0,
+    feeRateCents: hours > 0 ? Math.round(adjusted / hours) : 0,
   };
 }
 

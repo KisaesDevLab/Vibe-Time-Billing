@@ -140,6 +140,10 @@ const IntakeInboxPage = lazyPage(() => import('./pages/IntakeInbox'), 'IntakeInb
 const PaymentReceivePage = lazyPage(() => import('./pages/PaymentReceive'), 'PaymentReceivePage');
 const ProfitabilityPage = lazyPage(() => import('./pages/Profitability'), 'ProfitabilityPage');
 const ReportsPage = lazyPage(() => import('./pages/Reports'), 'ReportsPage');
+const BillingRealizationReportPage = lazyPage(
+  () => import('./pages/reports/BillingRealizationReport'),
+  'BillingRealizationReportPage',
+);
 const PaymentsReceivedReportPage = lazyPage(
   () => import('./pages/reports/PaymentsReceivedReport'),
   'PaymentsReceivedReportPage',
@@ -256,6 +260,10 @@ export function App(): JSX.Element {
                     />
                     <Route path="/reports/signed-forms" element={<SignedFormsReportPage />} />
                     <Route path="/reports/profitability" element={<ProfitabilityPage />} />
+                    <Route
+                      path="/reports/billing-realization"
+                      element={<BillingRealizationReportPage />}
+                    />
                     <Route path="/reports/view/:kind" element={<ReportViewerPage />} />
                     <Route path="/engagement-letters" element={<EngagementLettersPage />} />
                     <Route path="/recurring-plans" element={<RecurringPlansPage />} />
