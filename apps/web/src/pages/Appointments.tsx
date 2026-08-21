@@ -1637,7 +1637,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
     void api<{ items: LocOption[] }>('/api/staff/appointments/locations')
       .then((r) => setLocations(r.items ?? []))
       .catch(() => undefined);
-    void api<{ items: { id: string; name: string }[] }>('/api/staff/clients')
+    void api<{ items: { id: string; name: string }[] }>('/api/staff/clients/picker')
       .then((r) => setClients(r.items ?? []))
       .catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps

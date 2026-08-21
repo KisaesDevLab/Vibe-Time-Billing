@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Button, Card, Combobox, Input, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { downloadReportPdf } from '../lib/report-pdf';
 
 interface Eng {
   id: string;
@@ -96,7 +97,7 @@ export function ProfitabilityPage(): JSX.Element {
       if (start) qs.set('start', start);
       if (end) qs.set('end', end);
       const [engRes, profRes] = await Promise.all([
-        api<{ items: Eng[] }>('/api/staff/engagements?status=ACTIVE&limit=500'),
+        api<{ items: Eng[] }>('/api/staff/engagements?status=ACTIVE&limit=5000'),
         api<{ items: Summary[] }>(`/api/staff/reports/profitability?${qs.toString()}`),
       ]);
       const byEng = new Map((profRes.items ?? []).map((s) => [s.engagementId, s]));
@@ -123,7 +124,7 @@ export function ProfitabilityPage(): JSX.Element {
       try {
         const [u, c, t, sl] = await Promise.all([
           api<{ users: AppUser[] }>('/api/staff/admin/users').catch(() => ({ users: [] })),
-          api<{ items: ClientLite[] }>('/api/staff/clients').catch(() => ({ items: [] })),
+          api<{ items: ClientLite[] }>('/api/staff/clients/picker').catch(() => ({ items: [] })),
           api<{ items: EngType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
             items: [],
           })),
@@ -186,6 +187,51 @@ export function ProfitabilityPage(): JSX.Element {
   }, [filtered, sort]);
 
   const total = sorted.length;
+
+  // 0224 — native PDF of every sorted row (not just the current page).
+  const [pdfBusy, setPdfBusy] = useState(false);
+  async function downloadPdf(): Promise<void> {
+    setPdfBusy(true);
+    try {
+      const sum = (k: 'costCents' | 'billedCents' | 'paidCents' | 'marginCents'): number =>
+        sorted.reduce((s, r) => s + (r.summary?.[k] ?? 0), 0);
+      const billed = sum('billedCents');
+      const margin = sum('marginCents');
+      await downloadReportPdf({
+        title: 'Engagement Profitability',
+        columns: [
+          { label: 'Client', align: 'left' },
+          { label: 'Engagement', align: 'left' },
+          { label: 'Cost', align: 'right' },
+          { label: 'Billed', align: 'right' },
+          { label: 'Paid', align: 'right' },
+          { label: 'Margin', align: 'right' },
+          { label: 'Margin %', align: 'right' },
+        ],
+        rows: sorted.map((r) => [
+          r.eng.clientName ?? '',
+          r.eng.name,
+          r.summary ? formatCents(r.summary.costCents) : '',
+          r.summary ? formatCents(r.summary.billedCents) : '',
+          r.summary ? formatCents(r.summary.paidCents) : '',
+          r.summary ? formatCents(r.summary.marginCents) : '',
+          r.summary?.marginPct != null ? `${(r.summary.marginPct * 100).toFixed(1)}%` : '',
+        ]),
+        totals: [
+          'Totals',
+          `${sorted.length} engagements`,
+          formatCents(sum('costCents')),
+          formatCents(billed),
+          formatCents(sum('paidCents')),
+          formatCents(margin),
+          billed > 0 ? `${((margin / billed) * 100).toFixed(1)}%` : '',
+        ],
+        totalsLabel: 'Totals',
+      });
+    } finally {
+      setPdfBusy(false);
+    }
+  }
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const visible = useMemo(
     () => sorted.slice((page - 1) * pageSize, page * pageSize),
@@ -207,6 +253,13 @@ export function ProfitabilityPage(): JSX.Element {
         title="Engagement profitability"
         action={
           <span style={{ display: 'inline-flex', gap: 8, alignItems: 'center' }}>
+            <Button
+              size="sm"
+              onClick={() => void downloadPdf()}
+              disabled={pdfBusy || sorted.length === 0}
+            >
+              {pdfBusy ? 'Rendering…' : '↓ PDF'}
+            </Button>
             <Button size="sm" variant="secondary" onClick={() => void loadAll()} disabled={loading}>
               {loading ? 'Loading…' : 'Refresh'}
             </Button>

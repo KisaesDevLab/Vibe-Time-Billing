@@ -68,7 +68,7 @@ export function RecurringPlanComposer({
     if (!showPicker || engagementOptions) return;
     void (async () => {
       try {
-        const r = await api<{ items: EngagementOption[] }>('/api/staff/engagements');
+        const r = await api<{ items: EngagementOption[] }>('/api/staff/engagements/picker');
         setEngagements(r.items ?? []);
       } catch {
         // Picker stays empty; user sees a helpful error on submit.

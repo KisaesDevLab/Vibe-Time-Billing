@@ -89,7 +89,7 @@ export function EngagementRecurrencesPage(): JSX.Element {
     try {
       const [r, c, t] = await Promise.all([
         api<{ items: RecurrenceRow[] }>('/api/staff/engagement-recurrences'),
-        api<{ items: ClientLite[] }>('/api/staff/clients').catch(() => ({ items: [] })),
+        api<{ items: ClientLite[] }>('/api/staff/clients/picker').catch(() => ({ items: [] })),
         api<{ items: TemplateLite[] }>('/api/staff/admin/templates/engagement').catch(() => ({
           items: [],
         })),

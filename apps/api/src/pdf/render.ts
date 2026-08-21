@@ -102,6 +102,31 @@ export interface PdfRenderOptions {
   fetchImpl?: typeof fetch;
   // Render timeout in ms. Default 30s per addendum P14 spec.
   timeoutMs?: number;
+  // 0224 — report PDFs: page orientation + running header/footer
+  // templates (Puppeteer `headerTemplate`/`footerTemplate`; supports the
+  // .pageNumber/.totalPages spans). Margins grow to fit the footer.
+  landscape?: boolean;
+  headerTemplate?: string;
+  footerTemplate?: string;
+}
+
+function pdfOptions(opts: PdfRenderOptions): Record<string, unknown> {
+  const withFooter = Boolean(opts.headerTemplate || opts.footerTemplate);
+  return {
+    format: 'Letter',
+    printBackground: true,
+    landscape: opts.landscape ?? false,
+    margin: withFooter
+      ? { top: '0.5in', right: '0.5in', bottom: '0.7in', left: '0.5in' }
+      : { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' },
+    ...(withFooter
+      ? {
+          displayHeaderFooter: true,
+          headerTemplate: opts.headerTemplate ?? '<div></div>',
+          footerTemplate: opts.footerTemplate ?? '<div></div>',
+        }
+      : {}),
+  };
 }
 
 async function renderViaSidecar(
@@ -109,6 +134,7 @@ async function renderViaSidecar(
   url: string,
   fetchImpl: typeof fetch,
   timeoutMs: number,
+  opts: PdfRenderOptions,
 ): Promise<Buffer> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -116,14 +142,7 @@ async function renderViaSidecar(
     const res = await fetchImpl(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        html,
-        options: {
-          format: 'Letter',
-          printBackground: true,
-          margin: { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' },
-        },
-      }),
+      body: JSON.stringify({ html, options: pdfOptions(opts) }),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -141,18 +160,16 @@ export async function renderHtmlToPdf(html: string, opts: PdfRenderOptions = {})
   const timeoutMs = opts.timeoutMs ?? 30_000;
   if (sidecarUrl) {
     const fetchImpl = opts.fetchImpl ?? (globalThis.fetch as typeof fetch);
-    return renderViaSidecar(html, sidecarUrl, fetchImpl, timeoutMs);
+    return renderViaSidecar(html, sidecarUrl, fetchImpl, timeoutMs, opts);
   }
   const browser = await getBrowser();
   const page = await browser.newPage();
   try {
     await guardPageRequests(page);
     await page.setContent(html, { waitUntil: 'networkidle0' });
-    const pdf = await page.pdf({
-      format: 'Letter',
-      printBackground: true,
-      margin: { top: '0.5in', right: '0.5in', bottom: '0.5in', left: '0.5in' },
-    });
+    // reason: Puppeteer's PDFOptions type is stricter than our plain
+    // options bag; the shape is identical at runtime.
+    const pdf = await page.pdf(pdfOptions(opts) as Parameters<typeof page.pdf>[0]);
     return Buffer.from(pdf);
   } finally {
     await page.close().catch(() => undefined);

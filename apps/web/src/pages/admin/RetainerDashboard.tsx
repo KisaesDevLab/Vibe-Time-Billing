@@ -250,7 +250,9 @@ export function RetainerDashboardPage(): JSX.Element {
           if (r.tier2) flat.push({ ...r.tier2, returnType: r.returnType, tier: 'TIER_2' });
         }
         setTierConfigs(flat);
-        const engResp = await api<{ items: EngagementOption[] }>('/api/staff/engagements');
+        const engResp = await api<{ items: EngagementOption[] }>(
+          '/api/staff/engagements?limit=5000',
+        );
         setEngagements(engResp.items ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'options load failed');

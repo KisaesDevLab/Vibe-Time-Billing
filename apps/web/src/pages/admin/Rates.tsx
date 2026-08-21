@@ -108,7 +108,7 @@ export function RatesPage(): JSX.Element {
 
   // Load engagements once for the debug panel.
   useEffect(() => {
-    void api<{ items: Engagement[] }>('/api/staff/engagements')
+    void api<{ items: Engagement[] }>('/api/staff/engagements/picker')
       .then((r) => setDebugEngagements(r.items ?? []))
       .catch(() => undefined);
   }, []);

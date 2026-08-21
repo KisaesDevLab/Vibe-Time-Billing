@@ -55,8 +55,8 @@ export function useEngagementOptions(enabled: boolean): EngagementOptions {
     void (async () => {
       try {
         const [c, e, w] = await Promise.all([
-          api<{ items: ClientOpt[] }>('/api/staff/clients'),
-          api<{ items: EngagementOpt[] }>('/api/staff/engagements'),
+          api<{ items: ClientOpt[] }>('/api/staff/clients/picker'),
+          api<{ items: EngagementOpt[] }>('/api/staff/engagements/picker'),
           api<{ items: WorkCodeOpt[] }>('/api/staff/taxonomy/work-codes'),
         ]);
         setClients(c.items ?? []);

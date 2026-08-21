@@ -290,10 +290,10 @@ export function RequestsPage(): JSX.Element {
   async function loadRefData(): Promise<void> {
     try {
       const [c, e, u, t] = await Promise.all([
-        api<{ rows: ClientLite[] } | { items: ClientLite[] }>('/api/staff/clients?limit=500').catch(
+        api<{ rows: ClientLite[] } | { items: ClientLite[] }>('/api/staff/clients/picker').catch(
           () => ({ items: [] as ClientLite[] }),
         ),
-        api<{ items: EngagementLite[] }>('/api/staff/engagements?limit=500').catch(() => ({
+        api<{ items: EngagementLite[] }>('/api/staff/engagements/picker').catch(() => ({
           items: [] as EngagementLite[],
         })),
         api<{ items: FirmUser[] }>('/api/staff/firm-users').catch(() => ({

@@ -433,7 +433,7 @@ function CreateSignatureDialog({
   // bounded for a single firm, so we fetch all (the Combobox filters locally)
   // rather than a server typeahead — matches the Requests/Invoices pickers.
   useEffect(() => {
-    void api<{ rows?: ClientHit[]; items?: ClientHit[] }>('/api/staff/clients?limit=500')
+    void api<{ rows?: ClientHit[]; items?: ClientHit[] }>('/api/staff/clients/picker')
       .then((r) => setClients(r.rows ?? r.items ?? []))
       .catch(() => undefined);
     void api<{ items: { id: string; name: string; status: string }[] }>(

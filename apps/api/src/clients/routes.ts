@@ -349,10 +349,18 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       .leftJoin(offices, eq(offices.id, clients.officeId));
 
     if (!paginated) {
+      // 0224 — legacy callers may raise the cap via `limit`/`pageSize`
+      // (previously silently ignored → 500 of ~4,000 clients). Pickers
+      // should prefer /picker; this keeps ad-hoc callers honest.
+      const legacyRaw = req.query['limit'] ?? req.query['pageSize'];
+      const legacyLimit = Math.min(
+        5000,
+        Math.max(1, parseInt(String(legacyRaw ?? '500'), 10) || 500),
+      );
       const items = await baseSelect
         .where(and(...conds))
         .orderBy(sortDir === 'asc' ? asc(orderExpr) : desc(orderExpr))
-        .limit(500);
+        .limit(legacyLimit);
       res.json({ items });
       return;
     }
@@ -1733,6 +1741,36 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         .where(and(eq(clients.firmId, session.firmId), inArray(clients.id, effectiveIds)))
         .returning({ id: clients.id });
       res.json({ updated: updated.length });
+    },
+  );
+
+  // 0224 — lightweight picker list: EVERY non-archived client the caller
+  // may see, name + external id only (no joins, no 500 cap). Backs the
+  // time-entry client dropdown so a 4,000-client firm can find anyone by
+  // name or by the prior-system client id.
+  router.get(
+    '/picker',
+    requirePermission(deps, 'client:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const blocked = new Set(
+        await getBlockedClientIdsCached(deps, req, session.appUserId, session.firmId),
+      );
+      const rows = await deps.db
+        .select({
+          id: clients.id,
+          name: clients.name,
+          externalId: clients.externalId,
+          status: clients.status,
+        })
+        .from(clients)
+        .where(and(eq(clients.firmId, session.firmId), ne(clients.status, 'ARCHIVED')))
+        .orderBy(asc(clients.name));
+      res.json({ items: rows.filter((r) => !blocked.has(r.id)) });
     },
   );
 

@@ -45,9 +45,18 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { csvField } from '../lib/csv';
 import { namesByIds } from './names';
 import { renderHtmlToPdf } from '../pdf/render';
+import {
+  buildReportPdfHtml,
+  REPORT_PDF_FOOTER_TEMPLATE,
+  REPORT_PDF_HEADER_TEMPLATE,
+  type ReportPdfColumn,
+} from '../pdf-templates/report-table';
+import { firmScope } from '../notifications/templating';
 
 export interface ReportRoutesDeps extends RbacDeps {
   db: Database | null;
+  /** Test seam — captures the HTML handed to the PDF renderer. */
+  renderPdf?: (html: string, opts: { landscape: boolean }) => Promise<Buffer>;
 }
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -3070,14 +3079,40 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
   );
 
   // -------------------------------------------------------------------
-  // Generic report → PDF. The web report viewer posts the columns + rows it
-  // already fetched (firm-scoped at fetch time); we render a simple HTML
-  // table and pipe it through the shared Puppeteer renderer used for invoices.
+  // 0224 — Generic report → PDF (native print document, not a page
+  // capture). Accepts either the legacy viewer payload (columns as
+  // strings, rows as objects keyed by column) or the rich shape (typed
+  // columns with alignment/sub-labels, pre-formatted string rows, totals,
+  // group headers, subtitle). Numeric columns are auto-detected in the
+  // legacy shape so they right-align.
   // -------------------------------------------------------------------
+  const PdfColumnSchema = z.union([
+    z.string().max(60),
+    z.object({
+      label: z.string().max(60),
+      sub: z.string().max(20).optional(),
+      align: z.enum(['left', 'right']).optional(),
+      width: z.string().max(12).optional(),
+    }),
+  ]);
   const PdfSchema = z.object({
     title: z.string().max(120).default('Report'),
-    columns: z.array(z.string().max(60)).max(40),
-    rows: z.array(z.record(z.unknown())).max(5000),
+    subtitle: z.string().max(200).optional(),
+    columns: z.array(PdfColumnSchema).min(1).max(40),
+    rows: z.array(z.union([z.record(z.unknown()), z.array(z.unknown())])).max(5000),
+    totals: z.array(z.unknown()).max(40).optional(),
+    totalsLabel: z.string().max(40).optional(),
+    groupHeaders: z
+      .array(
+        z.object({
+          start: z.number().int().min(0),
+          span: z.number().int().min(1),
+          label: z.string().max(40),
+        }),
+      )
+      .max(10)
+      .optional(),
+    orientation: z.enum(['portrait', 'landscape']).optional(),
   });
   router.post(
     '/pdf',
@@ -3085,33 +3120,55 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
     async (req: Request, res: Response) => {
       const parsed = PdfSchema.safeParse(req.body);
       if (!parsed.success) {
-        res.status(400).json({ error: 'invalid_payload' });
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
         return;
       }
-      const { title, columns, rows } = parsed.data;
-      const esc = (v: unknown): string =>
-        String(v ?? '').replace(
-          /[&<>]/g,
-          (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c,
-        );
-      const head = columns.map((c) => `<th>${esc(c)}</th>`).join('');
-      const body = rows
-        .map((r) => `<tr>${columns.map((c) => `<td>${esc(r[c])}</td>`).join('')}</tr>`)
-        .join('');
-      const html = `<!doctype html><html><head><meta charset="utf-8"><style>
-        body{font-family:system-ui,-apple-system,sans-serif;font-size:11px;color:#111;padding:24px;}
-        h1{font-size:16px;margin:0 0 4px;}
-        .meta{color:#666;font-size:10px;margin-bottom:12px;}
-        table{border-collapse:collapse;width:100%;}
-        th,td{border:1px solid #ccc;padding:4px 6px;text-align:left;vertical-align:top;}
-        th{background:#f3f3f3;}
-      </style></head><body>
-        <h1>${esc(title)}</h1>
-        <div class="meta">${new Date().toISOString().slice(0, 10)} · ${rows.length} rows</div>
-        <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
-      </body></html>`;
-      const pdf = await renderHtmlToPdf(html);
-      const fname = title.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'report';
+      const session = req.staffSession!;
+      const d = parsed.data;
+      const labels = d.columns.map((c) => (typeof c === 'string' ? c : c.label));
+      const str = (v: unknown): string => (v == null ? '' : String(v));
+      const rows: string[][] = d.rows.map((r) =>
+        Array.isArray(r) ? r.map(str) : labels.map((l) => str((r as Record<string, unknown>)[l])),
+      );
+      // Numeric auto-detect for legacy string columns: every non-empty cell
+      // looks like a number / currency / percent → right-align.
+      const NUMISH = /^[-–(]?\$?\s?[\d,]+(\.\d+)?\s?%?\)?$/;
+      const columns: ReportPdfColumn[] = d.columns.map((c, i) => {
+        if (typeof c !== 'string')
+          return { label: c.label, sub: c.sub, align: c.align ?? 'left', width: c.width };
+        const cells = rows.map((r) => r[i] ?? '').filter((v) => v.trim() !== '');
+        const numeric = cells.length > 0 && cells.every((v) => NUMISH.test(v.trim()));
+        return { label: c, align: numeric ? 'right' : 'left' };
+      });
+      const firm = deps.db ? await firmScope(deps.db, session.firmId) : {};
+      const html = buildReportPdfHtml({
+        title: d.title,
+        subtitle: d.subtitle ?? null,
+        firm: {
+          name: firm['displayName'] || firm['name'] || '',
+          logoUrl: firm['logoUrl'] || null,
+          accentColor: firm['accentColor'] || null,
+        },
+        columns,
+        rows,
+        totals: d.totals ? d.totals.map(str) : null,
+        totalsLabel: d.totalsLabel,
+        groupHeaders: d.groupHeaders,
+        orientation: d.orientation,
+      });
+      const landscape =
+        d.orientation === 'landscape' || (d.orientation !== 'portrait' && columns.length > 6);
+      const pdf = deps.renderPdf
+        ? await deps.renderPdf(html, { landscape })
+        : await renderHtmlToPdf(html, {
+            landscape,
+            footerTemplate: REPORT_PDF_FOOTER_TEMPLATE.replace(
+              '<span class="title"></span>',
+              `<span>${d.title.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] ?? c)}</span>`,
+            ),
+            headerTemplate: REPORT_PDF_HEADER_TEMPLATE,
+          });
+      const fname = d.title.replace(/[^a-z0-9]+/gi, '-').toLowerCase() || 'report';
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${fname}.pdf"`);
       res.send(pdf);

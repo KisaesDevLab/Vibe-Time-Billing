@@ -340,6 +340,10 @@ export function EngagementsPage(): JSX.Element {
         params.set('serviceLineId', Array.from(serviceLineFilter)[0]!);
       }
 
+      // 0224 — load the full firm set (server previously hard-capped at 500
+      // unordered rows, silently dropping most engagements and the client
+      // filter's options with them).
+      params.set('limit', '5000');
       const r = await api<{ items: EngagementRow[] }>(
         `/api/staff/engagements?${params.toString()}`,
       );

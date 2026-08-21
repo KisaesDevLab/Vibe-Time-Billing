@@ -155,7 +155,7 @@ export function ClientDetailPage(): JSX.Element {
     setShowMerge(true);
     if (allClients.length === 0) {
       try {
-        const r = await api<{ items: ClientLite[] }>('/api/staff/clients');
+        const r = await api<{ items: ClientLite[] }>('/api/staff/clients/picker');
         setAllClients(r.items ?? []);
       } catch {
         // ignore — dialog still renders with empty list

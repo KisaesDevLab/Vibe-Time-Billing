@@ -2770,7 +2770,11 @@ function CreateDocumentRequestDialog({
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    void api<{ items: EngagementLite[] }>('/api/staff/engagements?limit=500')
+    // Scoped to this client server-side — the firm-wide list caps at 500
+    // unordered rows, so filtering it client-side usually found nothing.
+    void api<{ items: EngagementLite[] }>(
+      `/api/staff/engagements?clientId=${encodeURIComponent(clientId)}`,
+    )
       .then((r) => {
         const mine = (r.items ?? []).filter((e) => e.clientId === clientId);
         setEngagements(mine);

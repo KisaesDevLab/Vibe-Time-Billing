@@ -36,7 +36,7 @@ export function MilestonesPage(): JSX.Element {
     void (async () => {
       try {
         const r = await api<{ items: Engagement[] }>(
-          '/api/staff/engagements?feeStructure=FIXED_FEE_WITH_MILESTONES&limit=200',
+          '/api/staff/engagements?feeStructure=FIXED_FEE_WITH_MILESTONES&limit=5000',
         );
         setEngagements(r.items ?? []);
       } catch {

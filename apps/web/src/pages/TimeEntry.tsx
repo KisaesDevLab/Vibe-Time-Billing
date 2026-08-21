@@ -56,6 +56,8 @@ interface Client {
   id: string;
   name: string;
   status?: string;
+  // 0224 — prior-system client id; searchable in the picker.
+  externalId?: string | null;
 }
 
 interface WorkCode {
@@ -193,9 +195,12 @@ export function TimeEntryPage(): JSX.Element {
     void (async () => {
       try {
         const [e, w, c, p, s, cfg] = await Promise.all([
-          api<{ items: Engagement[] }>('/api/staff/engagements'),
+          // 0224 — picker endpoints return the FULL firm set (the generic
+          // list routes cap at 500 / default 50, which silently hid most
+          // clients and engagements at scale).
+          api<{ items: Engagement[] }>('/api/staff/engagements/picker'),
           api<{ items: WorkCode[] }>('/api/staff/taxonomy/work-codes'),
-          api<{ items: Client[] }>('/api/staff/clients'),
+          api<{ items: Client[] }>('/api/staff/clients/picker'),
           api<{ items: { clientId: string }[] }>('/api/staff/clients/pins').catch(() => ({
             items: [],
           })),
@@ -920,8 +925,10 @@ function LogView({
               options={activeClients.map<ComboboxOption>((c) => ({
                 value: c.id,
                 label: pinnedClientIds.has(c.id) ? `★ ${c.name}` : c.name,
+                // Combobox matches on description too → type the client id.
+                description: c.externalId ?? undefined,
               }))}
-              placeholder="— select client —"
+              placeholder="— select client or type client ID —"
             />
           </div>
           <div>

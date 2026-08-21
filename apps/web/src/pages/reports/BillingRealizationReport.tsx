@@ -14,6 +14,7 @@ import { Link } from 'react-router-dom';
 import { Button, Card, Combobox, Input, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { downloadReportPdf } from '../../lib/report-pdf';
 
 type Dimension =
   | 'timekeeper'
@@ -91,8 +92,62 @@ export function BillingRealizationReportPage(): JSX.Element {
   const [totals, setTotals] = useState<Totals | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
 
   const query = `dimension=${dimension}&start=${start}&end=${end}`;
+
+  async function exportPdf(): Promise<void> {
+    setPdfBusy(true);
+    try {
+      const dimLabel = DIMENSIONS.find((d) => d.value === dimension)?.label ?? dimension;
+      await downloadReportPdf({
+        title: 'Billing Realization',
+        subtitle: `${dimLabel} · Invoice dates ${start} to ${end}`,
+        orientation: 'landscape',
+        groupHeaders: [{ start: 2, span: 2, label: 'Chargeable' }],
+        columns: [
+          { label: 'ID', align: 'left', width: '9%' },
+          { label: 'Name/Description', align: 'left', width: '25%' },
+          { label: 'Hours/Units', sub: '(A)', align: 'right' },
+          { label: 'Amount', sub: '(B)', align: 'right' },
+          { label: 'Adjusted', sub: '(C)', align: 'right' },
+          { label: 'Fee Amt', sub: '(D=B+C)', align: 'right' },
+          { label: 'Charge Rate', sub: '(B/A)', align: 'right' },
+          { label: 'Fee Rate', sub: '(D/A)', align: 'right' },
+          { label: 'Real %', sub: '(D/B)', align: 'right' },
+        ],
+        rows: rows.map((r) => [
+          r.code,
+          r.name,
+          hrs(r.hours),
+          money(r.originalValueCents),
+          money(r.adjustmentCents),
+          money(r.adjustedValueCents),
+          money(r.chargeRateCents),
+          money(r.feeRateCents),
+          pct(r.realizationPct),
+        ]),
+        totals: totals
+          ? [
+              'Report Totals',
+              '',
+              hrs(totals.hours),
+              money(totals.originalValueCents),
+              money(totals.adjustmentCents),
+              money(totals.adjustedValueCents),
+              money(totals.chargeRateCents),
+              money(totals.feeRateCents),
+              pct(totals.realizationPct),
+            ]
+          : undefined,
+        totalsLabel: 'Report Totals',
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'pdf_failed');
+    } finally {
+      setPdfBusy(false);
+    }
+  }
 
   useEffect(() => {
     let alive = true;
@@ -157,19 +212,28 @@ export function BillingRealizationReportPage(): JSX.Element {
         title="Billing realization"
         description="Billed hours at standard value, net adjustments, and resulting fees — windowed by invoice date. Real % = Fee Amt ÷ Amount."
         action={
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() =>
-              window.open(
-                `/api/staff/reports/billing-realization?${query}&format=csv`,
-                '_blank',
-                'noopener',
-              )
-            }
-          >
-            Export CSV
-          </Button>
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button
+              size="sm"
+              onClick={() => void exportPdf()}
+              disabled={pdfBusy || rows.length === 0}
+            >
+              {pdfBusy ? 'Rendering…' : 'Export PDF'}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() =>
+                window.open(
+                  `/api/staff/reports/billing-realization?${query}&format=csv`,
+                  '_blank',
+                  'noopener',
+                )
+              }
+            >
+              Export CSV
+            </Button>
+          </span>
         }
       />
       <Card>

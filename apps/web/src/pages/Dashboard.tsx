@@ -153,7 +153,7 @@ export function DashboardPage(): JSX.Element {
       try {
         const [r, t] = await Promise.all([
           api<{ items: MyEngagement[] }>(
-            `/api/staff/engagements?assigneeUserId=${me.appUserId}&status=ACTIVE&limit=500`,
+            `/api/staff/engagements?assigneeUserId=${me.appUserId}&status=ACTIVE&limit=5000`,
           ),
           api<{ items: EngagementType[] }>('/api/staff/taxonomy/engagement-types').catch(() => ({
             items: [],

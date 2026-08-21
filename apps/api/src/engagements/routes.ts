@@ -25,7 +25,7 @@ import {
   timeEntries,
 } from '@vibe/db/schema';
 import { resolveEngagementName, type Period } from '@vibe/core/engagements';
-import { desc } from 'drizzle-orm';
+import { asc, desc } from 'drizzle-orm';
 import { onEngagementCompleted } from './completion-hooks';
 import { budgetHoursFromActuals } from './logged-hours';
 import { queryStatusHistory } from './status-history';
@@ -176,6 +176,41 @@ async function clientBelongsToFirm(
 export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // 0224 — lightweight picker list: every non-archived engagement the
+  // caller may see (name, client, status, workflow state, service line),
+  // no 500 cap. Backs the time-entry engagement dropdown.
+  router.get(
+    '/picker',
+    requirePermission(deps, 'engagement:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const blocked = new Set(
+        await getBlockedClientIdsCached(deps, req, session.appUserId, session.firmId),
+      );
+      const rows = await deps.db
+        .select({
+          id: engagements.id,
+          name: engagements.name,
+          clientId: engagements.clientId,
+          clientName: clients.name,
+          clientExternalId: clients.externalId,
+          status: engagements.status,
+          workflowState: engagements.workflowState,
+          serviceLineId: engagementTypes.serviceLineId,
+        })
+        .from(engagements)
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
+        .where(and(eq(clients.firmId, session.firmId), ne(engagements.status, 'ARCHIVED')))
+        .orderBy(asc(clients.name), asc(engagements.name));
+      res.json({ items: rows.filter((r) => !blocked.has(r.clientId)) });
+    },
+  );
 
   router.get(
     '/',
@@ -335,7 +370,18 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
           AND ${timeEntries.status} <> 'ARCHIVED'
       )`.as('unbilled_entry_count');
 
-      const items = await deps.db
+      // 0224 — deterministic order + real pagination. Legacy callers (no
+      // `page`) keep the `{ items }` shape but may raise the cap via
+      // `pageSize`/`limit` (max 5000); paginated callers get
+      // `{ items, rows, total, page, pageSize }`.
+      const paginated = req.query['page'] != null;
+      const page = Math.max(1, parseInt(String(req.query['page'] ?? '1'), 10) || 1);
+      const sizeRaw = req.query['pageSize'] ?? req.query['limit'];
+      const pageSize = Math.min(
+        5000,
+        Math.max(1, parseInt(String(sizeRaw ?? (paginated ? '50' : '500')), 10) || 500),
+      );
+      const baseQuery = deps.db
         .select({
           id: engagements.id,
           clientId: engagements.clientId,
@@ -367,7 +413,19 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         .leftJoin(engagementTypes, eq(engagementTypes.id, engagements.engagementTypeId))
         .leftJoin(serviceLines, eq(serviceLines.id, engagementTypes.serviceLineId))
         .where(and(...conds))
-        .limit(500);
+        .orderBy(asc(clients.name), asc(engagements.name));
+      const items = paginated
+        ? await baseQuery.limit(pageSize).offset((page - 1) * pageSize)
+        : await baseQuery.limit(pageSize);
+      let total: number | null = null;
+      if (paginated) {
+        const [t] = await deps.db
+          .select({ total: sql<number>`COUNT(*)` })
+          .from(engagements)
+          .innerJoin(clients, eq(clients.id, engagements.clientId))
+          .where(and(...conds));
+        total = Number(t?.total ?? 0);
+      }
 
       // CSV export — same shape, sent as text/csv.
       if (req.query['format'] === 'csv') {
@@ -418,6 +476,10 @@ export function createEngagementRouter(deps: EngagementRoutesDeps): Router {
         return;
       }
 
+      if (paginated) {
+        res.json({ items, rows: items, total, page, pageSize });
+        return;
+      }
       res.json({ items });
     },
   );

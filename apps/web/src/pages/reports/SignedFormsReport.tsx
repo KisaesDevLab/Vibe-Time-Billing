@@ -15,6 +15,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Card, ColumnFilter, Pill, Table, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { downloadReportPdf } from '../../lib/report-pdf';
 import { TableSearch } from '../../components/TableSearch';
 import { selectRows, useColumnView } from '../../lib/column-view';
 import { useClientPage } from '../../lib/use-paged-list';
@@ -155,6 +156,40 @@ export function SignedFormsReportPage(): JSX.Element {
 
   const { paged, pagination } = useClientPage(visible);
 
+  // 0224 — native PDF of the rows as currently filtered/sorted.
+  const [pdfBusy, setPdfBusy] = useState(false);
+  async function downloadPdf(): Promise<void> {
+    setPdfBusy(true);
+    try {
+      await downloadReportPdf({
+        title: 'Signed Forms',
+        subtitle: `${from} to ${to} · ${status}`,
+        columns: [
+          { label: 'Title', align: 'left' },
+          { label: 'Client', align: 'left' },
+          { label: 'Form type', align: 'left' },
+          { label: 'Mode', align: 'left' },
+          { label: 'Tax return', align: 'left' },
+          { label: 'Signed', align: 'right' },
+          { label: 'Sent', align: 'left' },
+          { label: 'Completed', align: 'left' },
+        ],
+        rows: rows.map((r) => [
+          r.title,
+          r.clientName ?? '',
+          r.formType ?? '',
+          r.signingMode,
+          r.taxReturnTitle ?? '',
+          `${r.signedCount}/${r.signerCount}`,
+          r.sentAt ? new Date(r.sentAt).toLocaleDateString() : '',
+          r.completedAt ? new Date(r.completedAt).toLocaleDateString() : '',
+        ]),
+      });
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
   function downloadCsv(): void {
     const qs = new URLSearchParams({ from, to, status, format: 'csv' });
     window.open(`/api/staff/reports/signed-forms?${qs.toString()}`, '_blank');
@@ -199,6 +234,13 @@ export function SignedFormsReportPage(): JSX.Element {
                 Clear filters
               </button>
             )}
+            <Button
+              size="sm"
+              onClick={() => void downloadPdf()}
+              disabled={pdfBusy || rows.length === 0}
+            >
+              {pdfBusy ? 'Rendering…' : '↓ PDF'}
+            </Button>
             <Button size="sm" variant="ghost" onClick={downloadCsv} disabled={rows.length === 0}>
               ↓ Download CSV
             </Button>

@@ -466,7 +466,7 @@ function FileToFolderDialog({
 
   useEffect(() => {
     if (!needsClient) return;
-    void api<{ rows?: ClientPick[]; items?: ClientPick[] }>('/api/staff/clients?limit=500')
+    void api<{ rows?: ClientPick[]; items?: ClientPick[] }>('/api/staff/clients/picker')
       .then((r) => setClients(r.rows ?? r.items ?? []))
       .catch(() => undefined);
   }, [needsClient]);

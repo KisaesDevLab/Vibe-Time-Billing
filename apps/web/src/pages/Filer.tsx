@@ -254,9 +254,7 @@ function InboxTab(): JSX.Element {
 
   const loadClients = useCallback(async (): Promise<void> => {
     // The picker endpoint may return `{rows}` or `{items}` — handle both.
-    const r = await api<{ rows?: ClientPick[]; items?: ClientPick[] }>(
-      '/api/staff/clients?limit=500',
-    );
+    const r = await api<{ rows?: ClientPick[]; items?: ClientPick[] }>('/api/staff/clients/picker');
     setClients(r.rows ?? r.items ?? []);
   }, []);
 
@@ -1072,7 +1070,7 @@ function ImportTab(): JSX.Element {
     void loadImports().catch((err) =>
       setError(err instanceof Error ? err.message : 'failed to load imports'),
     );
-    void api<{ rows?: ClientPick[]; items?: ClientPick[] }>('/api/staff/clients?limit=500')
+    void api<{ rows?: ClientPick[]; items?: ClientPick[] }>('/api/staff/clients/picker')
       .then((r) => setClients(r.rows ?? r.items ?? []))
       .catch(() => undefined);
   }, [loadImports]);

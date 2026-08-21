@@ -14,6 +14,7 @@ import { useClientPage } from '../../lib/use-paged-list';
 
 import { api } from '../../api-client';
 import { formatCents } from '../../lib/money';
+import { downloadReportPdf } from '../../lib/report-pdf';
 
 interface RowResp {
   id: string;
@@ -158,6 +159,42 @@ export function PaymentsReceivedReportPage(): JSX.Element {
     URL.revokeObjectURL(url);
   }
 
+  // 0224 — native PDF of the same rows (sorted as displayed), with a total.
+  const [pdfBusy, setPdfBusy] = useState(false);
+  async function downloadPdf(): Promise<void> {
+    if (!data) return;
+    setPdfBusy(true);
+    try {
+      const total = data.rows.reduce((s, r) => s + r.totalCents, 0);
+      await downloadReportPdf({
+        title: 'Payments Received',
+        subtitle: `${data.from} to ${data.to}`,
+        columns: [
+          { label: 'Date', align: 'left' },
+          { label: 'Client', align: 'left' },
+          { label: 'Office', align: 'left' },
+          { label: 'Method', align: 'left' },
+          { label: 'Reference', align: 'left' },
+          { label: 'Mode', align: 'left' },
+          { label: 'Amount', align: 'right' },
+        ],
+        rows: data.rows.map((r) => [
+          new Date(r.paymentDate).toLocaleDateString(),
+          r.clientName,
+          r.officeName ?? '',
+          r.paymentMethod,
+          r.reference ?? '',
+          r.mode,
+          formatCents(r.totalCents),
+        ]),
+        totals: ['Total', '', '', '', '', `${data.rows.length} payments`, formatCents(total)],
+        totalsLabel: 'Total',
+      });
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
   const totalCents = useMemo(() => data?.summary.totalCents ?? 0, [data]);
 
   const { paged, pagination } = useClientPage(data?.rows ?? []);
@@ -226,14 +263,23 @@ export function PaymentsReceivedReportPage(): JSX.Element {
       <Card
         title="Payments Received"
         action={
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={downloadCsv}
-            disabled={!data || data.rows.length === 0}
-          >
-            ↓ CSV
-          </Button>
+          <span style={{ display: 'flex', gap: 6 }}>
+            <Button
+              size="sm"
+              onClick={() => void downloadPdf()}
+              disabled={pdfBusy || !data || data.rows.length === 0}
+            >
+              {pdfBusy ? 'Rendering…' : '↓ PDF'}
+            </Button>
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={downloadCsv}
+              disabled={!data || data.rows.length === 0}
+            >
+              ↓ CSV
+            </Button>
+          </span>
         }
       >
         {/* Filter bar — two rows give each control a comfortable width

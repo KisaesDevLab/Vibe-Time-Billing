@@ -26,7 +26,7 @@ export function ProposalCreatePage(): JSX.Element {
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ items: ClientRow[] }>('/api/staff/clients');
+        const r = await api<{ items: ClientRow[] }>('/api/staff/clients/picker');
         setClients(r.items ?? []);
       } catch (e) {
         setErr(e instanceof Error ? e.message : 'load_failed');

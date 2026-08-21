@@ -138,7 +138,7 @@ export function PaymentImportTab(): JSX.Element {
       // Manual pickers: clients list (for unmatched codes) + each matched
       // client's billable engagements when the type produced no match.
       if (r.groups.some((g) => !g.client)) {
-        void api<{ items: { id: string; name: string }[] }>('/api/staff/clients')
+        void api<{ items: { id: string; name: string }[] }>('/api/staff/clients/picker')
           .then((c) => setAllClients(c.items ?? []))
           .catch(() => undefined);
       }

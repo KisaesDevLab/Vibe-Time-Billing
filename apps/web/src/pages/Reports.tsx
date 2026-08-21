@@ -5,6 +5,7 @@ import { useSearchParams } from 'react-router-dom';
 import { Button, Card, Input, Pill, Sparkline, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { downloadReportPdf } from '../lib/report-pdf';
 import { VIEWER_REPORTS } from './reports/ReportViewer';
 
 type Dimension = 'firm' | 'timekeeper' | 'engagement' | 'client' | 'service_line';
@@ -278,6 +279,56 @@ function RealizationCard({
               {d === 'service_line' ? 'service line' : d}
             </Button>
           ))}
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Download PDF"
+            disabled={dim === 'firm' ? !firmSummary : items.length === 0}
+            onClick={() =>
+              void downloadReportPdf({
+                title: 'Realization',
+                subtitle: `${dim === 'service_line' ? 'Service line' : dim} · ${start} to ${end}`,
+                columns: [
+                  { label: dim === 'firm' ? 'Scope' : 'Name', align: 'left' },
+                  { label: 'Original value', align: 'right' },
+                  { label: 'Billed', align: 'right' },
+                  { label: 'Realization %', align: 'right' },
+                ],
+                rows:
+                  dim === 'firm' && firmSummary
+                    ? [
+                        [
+                          'Firm',
+                          formatCents(firmSummary.originalValueCents),
+                          formatCents(firmSummary.adjustedValueCents),
+                          `${(firmSummary.realizationPct * 100).toFixed(1)}%`,
+                        ],
+                      ]
+                    : items.map((it) => [
+                        it.label ?? it.key,
+                        formatCents(it.originalValueCents),
+                        formatCents(it.adjustedValueCents),
+                        `${(it.realizationPct * 100).toFixed(1)}%`,
+                      ]),
+                totals:
+                  dim !== 'firm' && items.length > 0
+                    ? (() => {
+                        const o = items.reduce((a, b) => a + b.originalValueCents, 0);
+                        const v = items.reduce((a, b) => a + b.adjustedValueCents, 0);
+                        return [
+                          'Totals',
+                          formatCents(o),
+                          formatCents(v),
+                          o > 0 ? `${((v / o) * 100).toFixed(1)}%` : '',
+                        ];
+                      })()
+                    : undefined,
+                totalsLabel: 'Totals',
+              })
+            }
+          >
+            ↓ PDF
+          </Button>
           <a
             href={`${url}&format=csv`}
             download
@@ -819,6 +870,49 @@ function RevenueOpsCard(): JSX.Element {
               {b === 'accrual' ? 'Accrual' : 'Cash'}
             </Button>
           ))}
+          <Button
+            size="sm"
+            variant="ghost"
+            title="Download this card's monthly trend as PDF"
+            disabled={trend.length === 0}
+            onClick={() =>
+              void downloadReportPdf({
+                title: 'Revenue by Month',
+                subtitle:
+                  basis === 'cash' ? 'Cash basis (collected)' : 'Accrual basis (billed + paid)',
+                orientation: 'portrait',
+                columns:
+                  basis === 'cash'
+                    ? [
+                        { label: 'Month', align: 'left' },
+                        { label: 'Collected', align: 'right' },
+                        { label: 'Change %', align: 'right' },
+                      ]
+                    : [
+                        { label: 'Month', align: 'left' },
+                        { label: 'Billed', align: 'right' },
+                        { label: 'Paid', align: 'right' },
+                        { label: 'Change %', align: 'right' },
+                      ],
+                rows: trend.map((r) =>
+                  basis === 'cash'
+                    ? [
+                        r.month,
+                        formatCents(r.collectedCents ?? 0),
+                        r.pctChangeCollected != null ? `${r.pctChangeCollected.toFixed(1)}%` : '',
+                      ]
+                    : [
+                        r.month,
+                        formatCents(r.billedCents ?? 0),
+                        formatCents(r.paidCents ?? 0),
+                        r.pctChangeBilled != null ? `${r.pctChangeBilled.toFixed(1)}%` : '',
+                      ],
+                ),
+              })
+            }
+          >
+            ↓ PDF
+          </Button>
           <a
             href="/api/staff/invoices/export.csv?format=xlsx"
             title="Exports the invoice register, not this card"

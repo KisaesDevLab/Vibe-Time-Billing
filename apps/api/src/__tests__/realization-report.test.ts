@@ -81,14 +81,15 @@ async function invoke(
   router: ReturnType<typeof createReportRouter>,
   path: string,
   req: FakeReq,
+  method: 'get' | 'post' = 'get',
 ): Promise<FakeRes> {
   const res = makeRes();
   const layer = router.stack.find((l) => {
     if (!l.route) return false;
     const route = l.route as unknown as { path: string; methods: Record<string, boolean> };
-    return route.path === path && route.methods['get'] === true;
+    return route.path === path && route.methods[method] === true;
   });
-  if (!layer) throw new Error(`route not registered: GET ${path}`);
+  if (!layer) throw new Error(`route not registered: ${method.toUpperCase()} ${path}`);
   const route = layer.route as unknown as { stack: { handle: (...a: unknown[]) => unknown }[] };
   // Last handler in the stack is the route handler (permission middleware skipped).
   const handler = route.stack[route.stack.length - 1]!.handle;
@@ -558,5 +559,98 @@ describe('GET /billing-realization — client-attribute dimensions', () => {
       expect(sum).toBe(60000);
       expect(body.totals.adjustedValueCents).toBe(60000);
     }
+  });
+});
+
+// 0224 — native report PDF: the endpoint builds a print document (firm
+// header, repeating thead, right-aligned numerics, totals row, landscape
+// for wide tables) rather than capturing the page view.
+describe('POST /pdf — native report document', () => {
+  it('renders rich columns, auto-detects numerics in legacy shape, emits totals', async () => {
+    const { firmId, appUserId } = await seedRealization();
+    let captured: { html: string; landscape: boolean } | null = null;
+    const router = createReportRouter({
+      db: harness.db,
+      renderPdf: async (html, opts) => {
+        captured = { html, landscape: opts.landscape };
+        return Buffer.from('%PDF-stub');
+      },
+    });
+    // Legacy viewer shape: string columns + object rows.
+    const req = makeReq(firmId, appUserId, {});
+    (req as unknown as { body: unknown }).body = {
+      title: 'Utilization',
+      columns: ['Staff', 'Hours', 'Amount', 'Pct'],
+      rows: [
+        { Staff: 'Alice', Hours: '12.50', Amount: '$1,250.00', Pct: '85.0%' },
+        { Staff: 'Bob', Hours: '8.00', Amount: '$800.00', Pct: '60.0%' },
+      ],
+      totals: ['Totals', '20.50', '$2,050.00', ''],
+    };
+    const res = await invoke(router, '/pdf', req, 'post');
+    expect(res.statusCode).toBe(200);
+    expect(captured).not.toBeNull();
+    const html = captured!.html;
+    expect(captured!.landscape).toBe(false); // 4 columns → portrait
+    expect(html).toContain('Utilization');
+    expect(html).toContain('display: table-header-group'); // repeating header
+    // Numeric auto-detect: Hours/Amount/Pct right-aligned, Staff left.
+    expect(html).toContain('<th class="txt">Staff</th>');
+    expect(html).toContain('<th class="num">Hours</th>');
+    expect(html).toContain('<th class="num">Amount</th>');
+    expect(html).toContain('<th class="num">Pct</th>');
+    expect(html).toContain('class="totals"');
+    expect(html).toContain('Totals');
+    expect(html).toContain('$2,050.00');
+    expect(html).toContain('page-break-inside: avoid');
+  });
+
+  it('goes landscape for wide tables and honours group headers + sub labels', async () => {
+    const { firmId, appUserId } = await seedRealization();
+    let captured: { html: string; landscape: boolean } | null = null;
+    const router = createReportRouter({
+      db: harness.db,
+      renderPdf: async (html, opts) => {
+        captured = { html, landscape: opts.landscape };
+        return Buffer.from('%PDF-stub');
+      },
+    });
+    const req = makeReq(firmId, appUserId, {});
+    (req as unknown as { body: unknown }).body = {
+      title: 'Billing Realization',
+      subtitle: 'By timekeeper · 2026-01-01 to 2026-08-21',
+      groupHeaders: [{ start: 2, span: 2, label: 'Chargeable' }],
+      columns: [
+        { label: 'ID', align: 'left' },
+        { label: 'Name', align: 'left' },
+        { label: 'Hours', sub: '(A)', align: 'right' },
+        { label: 'Amount', sub: '(B)', align: 'right' },
+        { label: 'Adjusted', sub: '(C)', align: 'right' },
+        { label: 'Fee Amt', sub: '(D=B+C)', align: 'right' },
+        { label: 'Charge Rate', sub: '(B/A)', align: 'right' },
+        { label: 'Fee Rate', sub: '(D/A)', align: 'right' },
+        { label: 'Real %', sub: '(D/B)', align: 'right' },
+      ],
+      rows: [
+        [
+          'KWK',
+          'Krueger Kurt',
+          '909.00',
+          '358,117.50',
+          '107,137.67',
+          '465,255.17',
+          '393.97',
+          '511.83',
+          '129.92',
+        ],
+      ],
+    };
+    const res = await invoke(router, '/pdf', req, 'post');
+    expect(res.statusCode).toBe(200);
+    expect(captured!.landscape).toBe(true); // 9 columns → landscape
+    expect(captured!.html).toContain('size: Letter landscape');
+    expect(captured!.html).toContain('colspan="2">Chargeable');
+    expect(captured!.html).toContain('<span class="sub">(D=B+C)</span>');
+    expect(captured!.html).toContain('By timekeeper');
   });
 });

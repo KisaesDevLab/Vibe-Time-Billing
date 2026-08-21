@@ -147,8 +147,8 @@ function BatchListPage(): JSX.Element {
     try {
       const [b, e, c] = await Promise.all([
         api<{ items: BatchRow[] }>('/api/staff/billing-batches'),
-        api<{ items: Engagement[] }>('/api/staff/engagements'),
-        api<{ items: ClientLite[] }>('/api/staff/clients'),
+        api<{ items: Engagement[] }>('/api/staff/engagements/picker'),
+        api<{ items: ClientLite[] }>('/api/staff/clients/picker'),
       ]);
       setItems(b.items ?? []);
       setEngagements(e.items ?? []);

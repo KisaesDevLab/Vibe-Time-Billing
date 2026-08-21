@@ -261,7 +261,7 @@ function Inner({
   useEffect(() => {
     void (async () => {
       try {
-        const r = await api<{ items: ClientLite[] }>('/api/staff/clients?pageSize=200');
+        const r = await api<{ items: ClientLite[] }>('/api/staff/clients/picker');
         setAllClients(r.items ?? []);
       } catch (e) {
         setError(e instanceof Error ? e.message : 'failed to load clients');

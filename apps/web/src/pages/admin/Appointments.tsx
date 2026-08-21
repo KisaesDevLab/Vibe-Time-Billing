@@ -88,7 +88,7 @@ export function AppointmentsPage(): JSX.Element {
     setShowCreate(true);
     if (clients.length === 0) {
       try {
-        const r = await api<{ items: ClientOption[] }>('/api/staff/clients');
+        const r = await api<{ items: ClientOption[] }>('/api/staff/clients/picker');
         setClients(r.items ?? []);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'load clients failed');

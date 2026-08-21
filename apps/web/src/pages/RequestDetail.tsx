@@ -136,7 +136,7 @@ export function RequestDetailPage(): JSX.Element {
   async function loadRef(): Promise<void> {
     try {
       const [eng, u] = await Promise.all([
-        api<{ items: EngagementLite[] }>('/api/staff/engagements?limit=500').catch(() => ({
+        api<{ items: EngagementLite[] }>('/api/staff/engagements/picker').catch(() => ({
           items: [] as EngagementLite[],
         })),
         api<{ items: FirmUser[] }>('/api/staff/firm-users').catch(() => ({
