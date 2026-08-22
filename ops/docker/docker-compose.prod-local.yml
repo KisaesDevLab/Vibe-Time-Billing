@@ -60,7 +60,6 @@ services:
       WEBAUTHN_ORIGIN: ${WEBAUTHN_ORIGIN:-${APP_BASE_URL}}
       FEATURE_CALENDAR_WRITE: ${FEATURE_CALENDAR_WRITE:-true}
       FEATURE_PUBLIC_BOOKING: ${FEATURE_PUBLIC_BOOKING:-false}
-      COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
       # Interim safe default — 'console' isn't a valid MAIL_PROVIDER per
       # apps/api/src/config.ts's enum, but 'postmark' with no token set
       # falls back to createConsoleMailProvider (logs mail, no crash, no

@@ -34,14 +34,13 @@ authenticated inbox.
 ## Enabling intake
 
 1. **Turn the feature on.** Admin → **Document intake** → check *Document
-   intake enabled*. (Per-firm flag `firm_config.intake_enabled`; the
-   commercial license is also required, same as the portal.)
+   intake enabled*. (Per-firm flag `firm_config.intake_enabled`.)
 2. **Show staff cards.** In the same screen, check *Visible* for each staff
    member who should appear on the public page. Optionally set a *Title*
    (e.g. "Tax Manager"), display *Order*, notification prefs, and upload a
    *Headshot*. Every active staff member starts with a hidden card.
 3. **Publish the host.** Add `intake.<your-zone>` in Admin → Cloudflare
-   Tunnel with realm **Intake** (commercial-licensed, like Portal). This
+   Tunnel with realm **Intake**. This
    creates the ingress + DNS so the public page is reachable on the
    internet. Locally it is served at `https://<host>:5197`.
 

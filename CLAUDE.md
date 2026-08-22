@@ -1,7 +1,7 @@
 # CLAUDE.md — Vibe Time & Billing
 
 **Repository:** `KisaesDevLab/Vibe-Time-Billing`
-**License:** PolyForm Small Business License 1.0.0 (commercial license required for client portal access)
+**License:** PolyForm Small Business License 1.0.0 (client portal included; no separate license token)
 **Mode:** Autonomous build via Claude Code
 
 You (Claude Code) are building this product end-to-end. This file is your standing operating manual. Read it first, every session, before doing anything else.
@@ -289,7 +289,7 @@ These cannot be relaxed regardless of expedience:
 3. **Standard rate snapshot.** Time entries capture the rate at the moment of creation. Historical reports never shift when rates change.
 4. **Per-timekeeper allocation grain.** `adjustment_allocation` rows are at the (adjustment_id, time_entry_id, app_user_id) grain. Aggregations roll up FROM this grain, never the other way.
 5. **Customer-owned external resources.** Firm owns their Stripe account, their Cloudflare account, their domain. Kisaes never holds customer credentials.
-6. **License gate on portal.** The client portal feature requires a commercial license token. The token check runs at app boot and on critical portal routes. Token absence disables the portal cleanly (clear message, no crashes).
+6. **No license gate.** The client portal ships under the same PolyForm Small Business license as the rest of the product (the commercial-token gate was removed 2026-08-22). The only portal switch is the firm-level `portal_enabled` setting.
 7. **PolyForm Small Business License 1.0.0.** Every source file has the license header. No GPL or AGPL dependencies (license-check in CI).
 
 ---

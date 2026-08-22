@@ -50,7 +50,6 @@ const Schema = z.object({
   // setup. In prod the loader requires an explicit value (see below).
   KMS_KEY: z.string().optional(),
 
-  COMMERCIAL_LICENSE_TOKEN: z.string().optional(),
   MCP_ENABLED: z
     .string()
     .optional()

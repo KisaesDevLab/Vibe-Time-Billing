@@ -23,7 +23,6 @@ The Cloudflare Tunnel exposes the appliance on your own domain (`app.<zone>`, `p
 2. **Caddy isn't serving the tunnel origin on `:80`.** The tunnel ingress forwards to `http://caddy:80` and rewrites the Host header to `app.<zone>` / `portal.<zone>` (TLS is terminated at Cloudflare's edge, so plain HTTP here is fine). If Caddy isn't listening on `:80`, the tunnel is "up" but origin requests fail. Fix (operator): confirm Caddy handles `:80` (the local Caddyfile's `:80` block; prod maps `80:80`).
 3. **`provision_failed` — orphan tunnel of the same name.** A prior failed provision can leave a Cloudflare tunnel whose id never reached the DB, so a fresh create fails ("tunnel with this name already exists", code 1013). Provisioning tries to delete the orphan first, but a permissions gap can block cleanup. Fix: ensure the API token can list/delete tunnels, then re-provision; the status row is stamped `ERROR` with the Cloudflare message.
 4. **`provision_failed` — bad token, account, or zone.** Any Cloudflare API rejection surfaces as `provision_failed` with the underlying message. Fix: verify the API token scopes (account tunnels + zone DNS edit), the account id, and the zone id; read the **Last error** box for the exact message.
-5. **Portal hostname has no DNS yet.** Portal ingress and DNS are only created when a commercial license is active; PORTAL hostnames are recorded but get no CNAME until licensed. Fix: confirm the license, then re-provision.
 
 ## Tips
 

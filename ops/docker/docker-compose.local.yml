@@ -60,7 +60,6 @@ services:
       FEATURE_CALENDAR_WRITE: ${FEATURE_CALENDAR_WRITE:-true}
       # BK-8 — v2 client self-booking links (stub; off in v1).
       FEATURE_PUBLIC_BOOKING: ${FEATURE_PUBLIC_BOOKING:-false}
-      COMMERCIAL_LICENSE_TOKEN: ${COMMERCIAL_LICENSE_TOKEN:-}
       MAIL_PROVIDER: smtp
       MAIL_FROM: 'Vibe Dev <dev@localhost>'
       MAIL_SMTP_HOST: mailhog
@@ -360,7 +359,7 @@ services:
       - firm-key:/data/firm-key:ro
       # Mount the deployment's secret env files (read-only) so the raw *.env
       # are captured verbatim into the encrypted key bundle — the hand-picked
-      # env vars above drift as the appliance grows (license token, HMAC
+      # env vars above drift as the appliance grows (HMAC
       # seeds, SMS/voice creds, OpenSign login…); the raw file doesn't. Set
       # APPLIANCE_SECRETS_DIR to the persistent secrets dir; the default (the
       # compose dir) resolves but contains no root-level *.env, so it's inert.

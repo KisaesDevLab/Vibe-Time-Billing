@@ -391,7 +391,7 @@ export function createApp(deps: AppDeps): Express {
     const baseBody = {
       service: 'vibe-time-billing-api',
       env: config.NODE_ENV,
-      portalEnabled: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
+      portalEnabled: true,
     };
     if (lock.kind === 'locked' || lock.kind === 'not-bootstrapped') {
       res.status(503).json({
@@ -511,7 +511,7 @@ export function createApp(deps: AppDeps): Express {
         stripe: Boolean(deps.chargeInvoice),
         aiCloud: Boolean(deps.cloudAiProvider),
         aiLocal: Boolean(deps.localAiProvider),
-        portalEnabled: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
+        portalEnabled: true,
       },
     });
   });
@@ -615,7 +615,6 @@ export function createApp(deps: AppDeps): Express {
   const cloudflareTunnelRouter = createCloudflareTunnelRouter({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
-    commercialLicenseActive: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
     tokenFilePath: process.env['CLOUDFLARED_TOKEN_FILE'] ?? '/run/cloudflared/token',
   });
   app.use(
@@ -990,10 +989,11 @@ export function createApp(deps: AppDeps): Express {
   // Phase 16 #27 — unauth status endpoint so the portal SPA can render
   // a clear 'portal disabled' page without trying to log in.
   app.get('/api/portal/status', async (_req, res) => {
-    const cfgLocal = config;
-    const licensed = Boolean(cfgLocal.COMMERCIAL_LICENSE_TOKEN);
+    // `licensed` is kept (always true) so older portal SPAs keep rendering;
+    // the portal is part of the PolyForm Small Business license.
+    const licensed = true;
     let firmEnabled = true;
-    if (deps.db && licensed) {
+    if (deps.db) {
       try {
         const { firmSettings } = await import('@vibe/db/schema');
         const [first] = await deps.db

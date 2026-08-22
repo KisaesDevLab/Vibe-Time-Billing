@@ -53,8 +53,8 @@ remains supported for fully self-managed tunnels.
 ## Topology 2 — LAN-only (small firm, single office)
 
 Useful when all staff work from the same physical network and there is no
-need for a public portal. The client portal is disabled at boot by
-omitting the commercial license token.
+need for a public portal. The client portal can be switched off per firm
+in Admin → Firm settings.
 
 ```
        Office LAN (192.168.0.0/24)
@@ -101,7 +101,7 @@ tailscale serve https / http://localhost:80
 ## Hostname requirements
 
 The two ingress hosts MUST resolve to the appliance. The portal can be
-disabled (no commercial license token) but the staff host is required.
+disabled per firm, but the staff host is required.
 Caddy refuses to start without valid certs for whichever hosts are
 enabled.
 

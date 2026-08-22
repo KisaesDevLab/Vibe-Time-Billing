@@ -111,9 +111,7 @@ export function App(): JSX.Element {
         <div style={{ textAlign: 'center', maxWidth: 420 }}>
           <h1 style={{ fontSize: 20, color: tokens.color.text }}>Portal unavailable</h1>
           <p style={{ color: tokens.color.textMuted, fontSize: 14 }}>
-            {!status.licensed
-              ? 'This appliance does not have a commercial license token configured.'
-              : 'Your firm has disabled the client portal.'}
+            Your firm has disabled the client portal.
           </p>
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>
             Contact your firm administrator for help.
@@ -195,7 +193,6 @@ function PortalRoutes(): JSX.Element {
 }
 
 interface PortalStatus {
-  licensed: boolean;
   firmEnabled: boolean;
   enabled: boolean;
 }
@@ -205,7 +202,7 @@ function usePortalStatus(): PortalStatus | null {
   useEffect(() => {
     void api<PortalStatus>('/api/portal/status')
       .then(setS)
-      .catch(() => setS({ licensed: false, firmEnabled: false, enabled: false }));
+      .catch(() => setS({ firmEnabled: false, enabled: false }));
   }, []);
   return s;
 }

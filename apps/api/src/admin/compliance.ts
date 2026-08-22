@@ -314,7 +314,7 @@ Annual review covering:
 - TLS 1.3 only at the Caddy ingress
 - SameSite=Strict cookies + double-submit CSRF tokens
 - Hashed tokens at rest (bcrypt API keys; SHA-256 session/magic-link)
-- License-gated portal: no commercial license token → portal disabled
+- Portal: firm-level enable/disable switch (Admin → Firm settings)
 
 ## 6. Administrative safeguards
 - Staff onboarding: TOTP enrollment mandatory at first login
