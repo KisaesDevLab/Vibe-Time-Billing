@@ -28,6 +28,7 @@ import {
   isCalendarWriteEnabled,
 } from '../calendar/write-service';
 import { logger } from '../logger';
+import { pokeStaffEvents } from '../notifications/staff-events-bus';
 
 export interface ProviderJobDeps {
   db: Database;
@@ -151,6 +152,7 @@ async function markFailed(
         actionUrl: '/appointments#list',
       })
       .catch((err: unknown) => logger.warn({ err }, 'provider_write_failed notify insert failed'));
+    pokeStaffEvents([staffId]);
   }
 }
 

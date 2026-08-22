@@ -44,6 +44,7 @@ import {
   listAttachmentsByMessage,
   linkPendingAttachments,
 } from '../messaging/attachments';
+import { pokeStaffEvents } from '../notifications/staff-events-bus';
 
 const PostSchema = z.object({
   body: z.string().min(1).max(10_000),
@@ -344,6 +345,7 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
           actionUrl: `/clients/${activeClientId}`,
         })),
       );
+      pokeStaffEvents(staffIds);
     } catch (err) {
       logger.error({ err, threadId }, 'client thread staff notification failed');
     }

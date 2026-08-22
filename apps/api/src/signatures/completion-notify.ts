@@ -20,6 +20,7 @@ import {
 import { logger } from '../logger';
 import { firmScope, renderTemplate } from '../notifications/templating';
 import { printNotificationChannel } from '../notifications/print-channel';
+import { pokeStaffEvents } from '../notifications/staff-events-bus';
 
 /** Minimal mailer the caller wires from its provider (audit-wrapped). */
 export type CompletionMailer = (args: {
@@ -89,6 +90,7 @@ export async function notifySignatureCompleted(
           actionUrl: `/signatures/${request.id}`,
         })),
       );
+      pokeStaffEvents(recipients);
     }
   } catch (err) {
     logger.warn({ err, requestId: request.id }, 'signature completion: staff notification failed');

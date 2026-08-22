@@ -31,6 +31,10 @@ const RECEIVED_PREFIX = 'intake/received';
 const EMBEDDABLE = new Set(['image/jpeg', 'image/png']);
 
 export interface IntakeProcessDeps {
+  /** DS-2 — optional: publish a "poke" so open staff event streams in the
+   *  API refresh their intake counter immediately. Channel contract lives
+   *  in apps/api/src/notifications/staff-events.ts. */
+  publish?: (channel: string, message: string) => Promise<unknown>;
   sendEmail?: MailDispatch;
   sendSms?: SmsDispatch;
   appBaseUrl?: string;
@@ -191,6 +195,9 @@ export async function runIntakeProcess(
     .update(intakeSessions)
     .set({ status: 'received' })
     .where(eq(intakeSessions.id, sessionId));
+  if (deps.publish) {
+    await deps.publish(`vibe:staff-events:firm:${firmId}`, '1').catch(() => undefined);
+  }
 
   await notifyStaff(db, log, deps, {
     sessionId,

@@ -1045,6 +1045,7 @@ function setupIntakeProcessQueue(): void {
         sendEmail: dunningSendEmail,
         sendSms: dunningSendSms,
         appBaseUrl: process.env['APP_BASE_URL'],
+        publish: (channel, message) => connection.publish(channel, message),
       });
       logger.info({ jobId: job.id, ...result }, 'intake-process complete');
     },

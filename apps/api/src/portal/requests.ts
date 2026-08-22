@@ -29,6 +29,7 @@ import { emitAudit } from '../auth/audit';
 import { loadClientFolder } from '../clients/files';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { pokeFirmStaffEvents } from '../notifications/staff-events-bus';
 
 // req.portalSession augmented by portal-middleware.
 
@@ -170,6 +171,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       .update(clientRequests)
       .set({ clientReplyText: parsed.data.text, clientReplySeenAt: null, updatedAt: new Date() })
       .where(eq(clientRequests.id, scoped.id));
+    pokeFirmStaffEvents(session.firmId);
     await emitAudit(deps.db, {
       action: 'UPDATE',
       entityType: 'client_request',
@@ -221,6 +223,7 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
         updatedAt: new Date(),
       })
       .where(eq(clientRequests.id, scoped.id));
+    pokeFirmStaffEvents(session.firmId);
     await emitAudit(deps.db, {
       action: 'UPDATE',
       entityType: 'client_request',

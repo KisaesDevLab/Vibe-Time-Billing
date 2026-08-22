@@ -30,6 +30,7 @@ import {
   linkPendingAttachments,
 } from '../messaging/attachments';
 import type { StorageClient } from '@vibe/storage';
+import { pokeStaffEvents } from '../notifications/staff-events-bus';
 
 export interface InternalMessagingDeps extends RbacDeps {
   db: Database | null;
@@ -647,5 +648,18 @@ async function postMessage(
     actorAppUserId: senderAppUserId,
     after: { threadId, internal: true },
   }).catch(() => undefined);
+  // DS-2 — wake the recipients' event streams so the desktop toast is
+  // immediate rather than on the next poll.
+  try {
+    const members = await db
+      .select({ appUserId: threadMembers.appUserId })
+      .from(threadMembers)
+      .where(and(eq(threadMembers.threadId, threadId), isNull(threadMembers.removedAt)));
+    pokeStaffEvents(
+      members.map((m) => m.appUserId).filter((id): id is string => !!id && id !== senderAppUserId),
+    );
+  } catch {
+    // best-effort
+  }
   return messageId;
 }
