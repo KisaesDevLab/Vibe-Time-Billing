@@ -81,9 +81,9 @@ one-line fix; none changes behaviour.
 | Where | Watch for |
 | --- | --- |
 | `server.rs` / `lib.rs` | `WebviewWindow::navigate`, `WebviewWindowBuilder::disable_drag_drop_handler`, `Updater`/`updater_builder().endpoints()` names |
-| `capture.rs` | `xcap 0.3` accessor return types (`id()`, `title()`, `width()` are `Result`s here) |
+| `capture.rs` | ✅ fixed 2026-08-22: xcap accessors return plain values |
 | `watchers.rs` | `user-idle` — `UserIdle::get_time()?.as_seconds()` |
-| `notify.rs` (Windows) | `tauri-winrt-notification` — `Toast::on_activated` closure signature; `Toast::POWERSHELL_APP_ID` |
+| `notify.rs` (Windows) | ✅ `Toast::on_activated` compiles; `Toast::tag` does not exist (removed) |
 | `notify.rs` | `WebviewWindow::set_overlay_icon` (Windows) / `set_badge_count` (others) — Tauri ≥ 2.2 |
 | `hotkeys.rs` | `tauri-plugin-global-shortcut` — `ShortcutEvent::state()` vs field; `Shortcut::from_str` |
 | `lib.rs` | `tauri-plugin-deep-link` — `event.urls()`; `register_all()` is desktop-only |

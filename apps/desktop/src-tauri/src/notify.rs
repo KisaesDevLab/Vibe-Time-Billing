@@ -37,7 +37,8 @@ struct NotificationClick {
 
 fn remember<R: Runtime>(app: &AppHandle<R>, id: &str, href: Option<String>) {
     let state = app.state::<AppState>();
-    if let Ok(mut v) = state.toasts.lock() {
+    let guard = state.toasts.lock();
+    if let Ok(mut v) = guard {
         v.retain(|(x, _)| x != id);
         v.push((id.to_string(), href));
         if v.len() > 50 {
@@ -75,7 +76,7 @@ fn show_toast<R: Runtime>(app: &AppHandle<R>, n: &NativeNotification) -> Result<
     };
     let id = n.id.clone();
     let handle = app.clone();
-    let mut toast = Toast::new(&aumid)
+    Toast::new(&aumid)
         .title(&n.title)
         .text1(n.body.as_deref().unwrap_or(""))
         .sound(Some(Sound::Default))
@@ -83,11 +84,9 @@ fn show_toast<R: Runtime>(app: &AppHandle<R>, n: &NativeNotification) -> Result<
         .on_activated(move |_arg| {
             fire_click(&handle, &id);
             Ok(())
-        });
-    if let Some(tag) = n.id.get(..64) {
-        toast = toast.tag(tag);
-    }
-    toast.show().map_err(|e| format!("toast: {e:?}"))
+        })
+        .show()
+        .map_err(|e| format!("toast: {e:?}"))
 }
 
 #[cfg(not(windows))]
@@ -178,7 +177,10 @@ pub fn set_badge<R: Runtime>(app: AppHandle<R>, count: u32) -> Result<(), String
 
 #[tauri::command]
 pub fn clear_toasts(state: State<'_, AppState>) {
-    if let Ok(mut v) = state.toasts.lock() {
+    // Named guard: a tail-position `if let` would keep the lock temporary
+    // alive past `state` (E0597), as the first CI compile showed.
+    let guard = state.toasts.lock();
+    if let Ok(mut v) = guard {
         v.clear();
     }
 }
