@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "timer",
+  "description": "Always-on-top mini timer. Needs only events + the drag region; every timer mutation goes through the API, not the shell.",
+  "windows": ["timer"],
+  "permissions": ["core:default", "core:event:default", "core:window:allow-start-dragging"]
+}

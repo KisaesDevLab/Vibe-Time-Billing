@@ -2,7 +2,11 @@
 
 # Desktop shell build plan (`apps/desktop`)
 
-Status: proposal, 2026-08-22. Owner: TBD.
+Status: **built (uncompiled), 2026-08-22** — branch `feat/desktop-shell-v0.2`.
+Everything below is implemented in code; the Rust side still needs its first
+compile on a Windows box (see `apps/desktop/README.md` → First-compile
+checklist). Items marked ⏸ were deliberately left out and are listed at the
+end.
 
 ## Where we are
 
@@ -41,19 +45,18 @@ Design principles for everything below:
 
 Goal: `tauri dev` and `tauri build` succeed on the firm's Windows workstation.
 
-- [ ] Install Rust (stable), MSVC build tools, WebView2 on the build box.
-- [ ] Generate icons: `pnpm --filter @vibe/desktop tauri icon <logo.png>`;
-      commit `src-tauri/icons/`.
-- [ ] Compile; fix `xcap 0.3` accessor drift in `lib.rs` (return types of
+- [ ] Install Rust (stable), MSVC build tools, WebView2 on the build box. ⏸ (needs the Windows workstation)
+- [x] Generate icons (from `apps/portal/public/icon-512.png`; re-run with the firm logo to rebrand).
+- [ ] Compile; fix `xcap 0.3` accessor drift ⏸ (needs the Windows workstation) — in `lib.rs` (return types of
       `id()/title()/width()` etc. changed across 0.x — expect small edits).
-- [ ] Replace `"csp": null` with a real policy: `default-src 'self'; connect-src
-    'self' http://localhost:3001 https://<appliance>; img-src 'self' data:
-    blob:; style-src 'self' 'unsafe-inline'`. Tighten once plugins land.
-- [ ] Split `capabilities/default.json` per window (`main`, later `timer`) and
+- [x] Replace `"csp": null` with a real policy: `default-src 'self'; connect-src
+  'self' http://localhost:3001 https://<appliance>; img-src 'self' data:
+  blob:; style-src 'self' 'unsafe-inline'`. Tighten once plugins land.
+- [x] Split `capabilities/default.json` per window (`main`, later `timer`) and
       list only the commands each needs.
-- [ ] Validate live capture against a real UltraTax window; document the
+- [ ] Validate live capture against a real UltraTax window ⏸ (firm hardware); document the
       black-frame behavior under RDP/Citrix.
-- [ ] Add a GitHub Actions `desktop-build.yml` on `windows-latest` (manual
+- [x] Add a GitHub Actions `desktop-build.yml` on `windows-latest` (manual
       dispatch + tags only) that runs `tauri build` and uploads the NSIS/MSI
       artifact. Web CI remains Rust-free.
 
@@ -297,3 +300,46 @@ reinstalls for everything that follows.
   with the firm before 3.3.
 - **Multi-replica SSE** — requires Redis pub/sub; single-appliance today so
   low risk, but build it that way from the start.
+
+---
+
+## Build log (2026-08-22)
+
+Implemented on `feat/desktop-shell-v0.2` in three commits (API, web, shell):
+
+- **API**: `GET /api/staff/events` SSE (counts + notifications + appointment
+  reminders, Redis pokes from write paths, id-based dedupe), `POST
+/timers/:id/trim`, desktop device credentials (`/api/auth/desktop/enroll|
+refresh`, `/api/staff/desktop/devices`), release channel
+  (`/desktop/latest.json`, `/desktop/dl/:file`). Tests: `staff-events`,
+  `desktop-devices`, `desktop-releases`, trim cases in `time-timer`.
+- **Web**: `lib/desktop.ts` contract, `lib/staff-events.ts`,
+  `lib/desktop-settings.ts`, `lib/desktop-session.ts`,
+  `components/DesktopShellBridge.tsx` + `StaffToasts` + `OutboxAttachDialog`,
+  `timer/DesktopTimerBridge.tsx`, `pages/desktop/TimerWidget.tsx`,
+  `pages/account/DesktopSettingsCard.tsx`; Messages/InternalMessages react to
+  stream events; native open in Files; drop-to-fulfil on request items;
+  Capture Client Info from Intake Inbox.
+- **Shell**: `src-tauri/src/{capture,tray,windows,hotkeys,watchers,notify,
+secrets,rollout,files,state,lib}.rs`, `tauri.conf.json` (CSP, deep-link,
+  updater, NSIS/MSI), per-window capabilities, icons, `desktop-build.yml`.
+
+### Deliberately not done (⏸) and why
+
+- **Compile / run on Windows** — no toolchain here; first-compile checklist in
+  the README.
+- **`desktop_url` in notification emails (2.3)** — staff URLs are built in
+  many mailers; adding a second link everywhere is a separate pass once the
+  scheme is registered on real machines.
+- **Capture Client Info from Client Detail (4.4)** — applying a capture to an
+  _existing_ client means overwriting fields; that needs a product decision
+  (merge UI vs. overwrite) before it is worth building. Intake Inbox entry
+  point is done.
+- **Admin UI for device revoke (3.3)** — endpoint exists
+  (`DELETE /api/staff/desktop/devices/user/:appUserId`); no Admin → Users
+  button yet.
+- **Code signing certificate** — config supports it; the firm has to buy one.
+- **Multipart upload endpoint (4.1)** — unnecessary: staff uploads already
+  use presigned PUTs with no 20 MB cap (that cap is portal-only). Drag-drop
+  uses the existing path; Tauri's native drop handler is disabled so HTML5
+  drop keeps working.

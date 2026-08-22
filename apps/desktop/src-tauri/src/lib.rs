@@ -1,71 +1,167 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
-// Native window capture for "Capture Client Info". Two commands are exposed
-// to the wrapped web app:
-//   - list_capturable_windows() enumerates on-screen windows so the user can
-//     pick the UltraTax CS window.
-//   - capture_window(id) grabs that window as a PNG and returns it base64 so
-//     the frontend can POST it to the local GLM-OCR endpoint. The bytes stay
-//     in memory — nothing is written to disk — so no PII lingers on the box.
+// Vibe Time & Billing desktop shell. Thin Tauri 2 wrapper around the staff
+// web app that adds what a browser tab cannot:
 //
-// Windows note: xcap uses GDI BitBlt, which works for conventional Win32
-// apps like UltraTax CS but can return black frames for GPU-accelerated or
-// occluded windows (e.g. under RDP/Citrix). Validate on the firm hardware;
-// fall back to the print-to-PDF upload path when capture is black.
+//   capture.rs   native window capture for Capture Client Info (original)
+//   tray.rs      tray icon + menu mirroring the server-side timers  (DS-1)
+//   windows.rs   always-on-top mini timer window                    (DS-1)
+//   hotkeys.rs   global shortcuts                                    (DS-1)
+//   watchers.rs  idle detection, foreground-window (opt-in)         (DS-1)
+//   notify.rs    native toasts with click-through, badge            (DS-2)
+//   secrets.rs   OS credential store + device id                    (DS-3)
+//   rollout.rs   auto-update, autostart                             (DS-3)
+//   files.rs     download-and-open cache, print-to-PDF outbox       (DS-4)
+//
+// Contract with the web app: apps/web/src/lib/desktop.ts (command names,
+// argument shapes, event names). Keep the two in step.
 
-use base64::Engine;
+mod capture;
+mod files;
+mod hotkeys;
+mod notify;
+mod rollout;
+mod secrets;
+mod state;
+mod tray;
+mod watchers;
+mod windows;
+
+use std::sync::atomic::Ordering;
+use std::sync::Mutex;
+
 use serde::Serialize;
-use xcap::Window;
+use tauri::{Emitter, Manager, RunEvent, WindowEvent};
+use tauri_plugin_deep_link::DeepLinkExt;
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct CapturableWindow {
-    id: u32,
-    title: String,
-    app_name: String,
-    width: u32,
-    height: u32,
+use state::AppState;
+
+#[derive(Serialize, Clone)]
+struct DeepLinkPayload {
+    url: String,
 }
 
-#[tauri::command]
-fn list_capturable_windows() -> Result<Vec<CapturableWindow>, String> {
-    let wins = Window::all().map_err(|e| e.to_string())?;
-    let out = wins
-        .into_iter()
-        .filter(|w| !w.is_minimized().unwrap_or(true))
-        .map(|w| CapturableWindow {
-            id: w.id().unwrap_or(0),
-            title: w.title().unwrap_or_default(),
-            app_name: w.app_name().unwrap_or_default(),
-            width: w.width().unwrap_or(0),
-            height: w.height().unwrap_or(0),
-        })
-        .filter(|w| w.width > 0 && w.height > 0)
-        .collect();
-    Ok(out)
-}
-
-#[tauri::command]
-fn capture_window(id: u32) -> Result<String, String> {
-    let win = Window::all()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|w| w.id().unwrap_or(0) == id)
-        .ok_or_else(|| "window_not_found".to_string())?;
-    let img = win.capture_image().map_err(|e| e.to_string())?;
-    let mut buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut buf, image::ImageFormat::Png)
-        .map_err(|e| e.to_string())?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
+fn forward_deep_links<R: tauri::Runtime>(app: &tauri::AppHandle<R>, urls: &[String]) {
+    for u in urls {
+        if u.to_ascii_lowercase().starts_with("vibetb://") {
+            tray::show_main(app);
+            let _ = app.emit("desktop:deep-link", DeepLinkPayload { url: u.clone() });
+        }
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        // Must be first: a second launch (double-clicked shortcut, a
+        // vibetb:// link) hands its args to the running instance and exits.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            tray::show_main(app);
+            forward_deep_links(app, &args);
+        }))
+        .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_opener::init())
+        // Remembers size/position of every window (main + timer widget).
+        // VISIBLE is excluded on purpose: a main window closed to the tray
+        // must still appear on the next launch.
+        .plugin(
+            tauri_plugin_window_state::Builder::new()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::all()
+                        & !tauri_plugin_window_state::StateFlags::VISIBLE,
+                )
+                .build(),
+        )
+        .manage(AppState::default())
+        .manage(files::OutboxWatcher(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
-            list_capturable_windows,
-            capture_window
+            // capture
+            capture::list_capturable_windows,
+            capture::capture_window,
+            // tray / windows
+            tray::set_tray_state,
+            tray::set_close_to_tray,
+            tray::show_main_window,
+            tray::broadcast_timers_changed,
+            windows::show_timer_widget,
+            // hotkeys + watchers
+            hotkeys::set_hotkeys,
+            watchers::set_idle_threshold,
+            watchers::set_foreground_watch,
+            // notifications
+            notify::notify,
+            notify::set_badge,
+            notify::clear_toasts,
+            // secrets / identity
+            secrets::secret_get,
+            secrets::secret_set,
+            secrets::secret_delete,
+            secrets::device_info,
+            secrets::app_version,
+            // rollout
+            rollout::check_for_update,
+            rollout::install_update,
+            rollout::get_autostart,
+            rollout::set_autostart,
+            // files
+            files::download_and_open,
+            files::open_external,
+            files::set_outbox_watch,
+            files::read_outbox_file,
+            files::delete_outbox_file,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .setup(|app| {
+            let handle = app.handle().clone();
+
+            // Deep links: register the scheme at runtime too (dev builds
+            // have no installer to do it) and forward opens to the webview.
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                let _ = app.deep_link().register_all();
+            }
+            let h = handle.clone();
+            app.deep_link().on_open_url(move |event| {
+                let urls: Vec<String> = event.urls().iter().map(|u| u.to_string()).collect();
+                forward_deep_links(&h, &urls);
+            });
+
+            tray::build_tray(&handle)?;
+            watchers::spawn_idle_watcher(handle.clone());
+            watchers::spawn_foreground_watcher(handle.clone());
+            rollout::spawn_update_checker(handle.clone());
+            files::purge_cache(&handle, false);
+
+            // Close → tray (unless the user turned that off).
+            if let Some(main) = app.get_webview_window("main") {
+                let h = handle.clone();
+                let win = main.clone();
+                main.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        if h.state::<AppState>().close_to_tray.load(Ordering::Relaxed) {
+                            api.prevent_close();
+                            let _ = win.hide();
+                        }
+                    }
+                });
+                // Launched at login with --hidden → start in the tray.
+                if std::env::args().any(|a| a == "--hidden") {
+                    let _ = main.hide();
+                }
+            }
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    app.run(|app, event| {
+        if let RunEvent::Exit = event {
+            files::purge_cache(app, true);
+        }
+    });
 }

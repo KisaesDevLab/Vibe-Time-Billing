@@ -32,6 +32,7 @@ import {
   setBadge,
   setCloseToTray,
   setOutboxWatch,
+  setTimerWidgetVisible,
   showMainWindow,
   type OutboxFile,
 } from '../lib/desktop';
@@ -142,6 +143,14 @@ export function DesktopShellBridge({ counts }: { counts: StaffCounts }): JSX.Ele
     if (!desktop) return;
     void setOutboxWatch(settings.outboxWatch).catch(() => undefined);
   }, [desktop, settings.outboxWatch]);
+
+  // Floating widget on launch (once per window lifetime).
+  const widgetShown = useRef(false);
+  useEffect(() => {
+    if (!desktop || widgetShown.current || !settings.timerWidgetOnLaunch) return;
+    widgetShown.current = true;
+    void setTimerWidgetVisible(true).catch(() => undefined);
+  }, [desktop, settings.timerWidgetOnLaunch]);
 
   // Outbox files.
   useEffect(() => {

@@ -72,6 +72,7 @@ import { DesktopTimerBridge } from './timer/DesktopTimerBridge';
 import { DesktopShellBridge, useDesktopNotifier } from './components/DesktopShellBridge';
 import { StaffToasts } from './components/StaffToasts';
 import { useStaffEvents } from './lib/staff-events';
+import { desktopWindowLabel } from './lib/desktop';
 
 import { AuthProvider, useAuth, usePermission } from './auth-context';
 
@@ -191,6 +192,19 @@ const TotpEnrollPage = lazyPage(() => import('./pages/TotpEnroll'), 'TotpEnrollP
 const WipDashboardPage = lazyPage(() => import('./pages/Wip'), 'WipDashboardPage');
 
 export function App(): JSX.Element {
+  // DS-1 — the shell's always-on-top widget window loads
+  // `index.html?__window=timer` (works for both the Vite dev server and the
+  // bundled asset protocol, no SPA fallback needed) and renders only the
+  // widget, whatever the path.
+  if (desktopWindowLabel() === 'timer') {
+    return (
+      <AuthProvider>
+        <Suspense fallback={<FullPageMsg>Loading…</FullPageMsg>}>
+          <TimerWidgetGate />
+        </Suspense>
+      </AuthProvider>
+    );
+  }
   return (
     <AuthProvider>
       <Suspense fallback={<FullPageMsg>Loading…</FullPageMsg>}>
@@ -307,6 +321,17 @@ export function App(): JSX.Element {
         </Routes>
       </Suspense>
     </AuthProvider>
+  );
+}
+
+function TimerWidgetGate(): JSX.Element {
+  const { me, loading } = useAuth();
+  if (loading) return <FullPageMsg>Loading…</FullPageMsg>;
+  if (!me) return <FullPageMsg>Sign in from the main Vibe window.</FullPageMsg>;
+  return (
+    <TimerProvider>
+      <TimerWidgetPage />
+    </TimerProvider>
   );
 }
 

@@ -129,7 +129,7 @@ export interface TrayAction {
 }
 
 export function syncTray(state: TrayState): Promise<void> {
-  return invoke('set_tray_state', { state });
+  return invoke('set_tray_state', { newState: state });
 }
 
 export function onTrayAction(handler: (a: TrayAction) => void): () => void {
