@@ -18,6 +18,7 @@ import {
   isDesktop,
   setHotkeys,
   setTimerWidgetVisible,
+  testNotification,
   type HotkeyKind,
   type HotkeyRegistration,
 } from '../../lib/desktop';
@@ -316,11 +317,26 @@ export function DesktopSettingsCard(): JSX.Element | null {
 
         <section>
           <h4 style={{ margin: '0 0 6px', fontSize: 13 }}>Notifications</h4>
-          <Toggle
-            checked={s.notificationsEnabled}
-            onChange={(v) => updateDesktopSettings({ notificationsEnabled: v })}
-            label="Show Windows notifications while Vibe is in the background"
-          />
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
+            <Toggle
+              checked={s.notificationsEnabled}
+              onChange={(v) => updateDesktopSettings({ notificationsEnabled: v })}
+              label="Show Windows notifications while Vibe is in the background"
+            />
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() =>
+                void testNotification().catch((e: unknown) =>
+                  window.alert(
+                    `Notification failed: ${e instanceof Error ? e.message : String(e)}`,
+                  ),
+                )
+              }
+            >
+              Send test notification
+            </Button>
+          </div>
           <div style={{ display: 'grid', gap: 4, margin: '8px 0 8px 22px', fontSize: 13 }}>
             {NOTIFY_CATEGORIES.map((c) => (
               <Toggle

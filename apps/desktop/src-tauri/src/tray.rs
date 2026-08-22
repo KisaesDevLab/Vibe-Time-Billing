@@ -25,7 +25,7 @@ pub struct TrayAction {
     pub timer_id: Option<String>,
 }
 
-fn emit_action<R: Runtime>(app: &AppHandle<R>, kind: &'static str, timer_id: Option<String>) {
+pub fn emit_action<R: Runtime>(app: &AppHandle<R>, kind: &'static str, timer_id: Option<String>) {
     let _ = app.emit("tray:action", TrayAction { kind, timer_id });
 }
 
@@ -68,7 +68,7 @@ fn tooltip(state: &TrayState) -> String {
                     if paused == 1 { "" } else { "s" }
                 )
             } else {
-                "Vibe Time & Billing".to_string()
+                "Vibe Practice Management".to_string()
             }
         }
     }

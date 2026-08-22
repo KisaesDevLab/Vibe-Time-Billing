@@ -31,7 +31,7 @@ pub fn show_timer_widget_impl<R: Runtime>(app: &AppHandle<R>, show: bool) -> tau
         None => return Ok(()), // not connected yet — nothing to show
     };
     let w = WebviewWindowBuilder::new(app, TIMER_LABEL, url)
-        .title("Vibe timer")
+        .title("Vibe PM timer")
         .inner_size(320.0, 72.0)
         .min_inner_size(260.0, 60.0)
         .max_inner_size(520.0, 120.0)

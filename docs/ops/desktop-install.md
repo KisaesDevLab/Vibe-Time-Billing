@@ -4,7 +4,7 @@
 
 ## What it is
 
-A small Windows app (`Vibe Time & Billing`) that wraps the staff web app and
+A small Windows app (`Vibe Practice Management`) that wraps the staff web app and
 adds a tray timer, notifications, UltraTax screen capture and file helpers.
 It talks only to the firm's Vibe appliance (same URLs as the browser) and,
 for file uploads/downloads, to the firm's Backblaze bucket. Nothing goes to
@@ -15,7 +15,7 @@ Kisaes.
 1. Set `DESKTOP_RELEASES_DIR=/srv/vibe/desktop-releases` (any path the API
    container can read) and restart the API.
 2. Copy the contents of the `vibe-desktop-windows` build artifact into that
-   folder: `latest.json`, `Vibe Time & Billing_X.Y.Z_x64-setup.exe`, and its
+   folder: `latest.json`, `Vibe Practice Management_X.Y.Z_x64-setup.exe`, and its
    `.sig`.
 3. Confirm `https://<appliance>/desktop/latest.json` returns the manifest.
 
@@ -50,6 +50,6 @@ the upload the file is deleted from the folder.
 
 ## Uninstall
 
-Settings → Apps → _Vibe Time & Billing_ → Uninstall. Then, optionally,
+Settings → Apps → _Vibe Practice Management_ → Uninstall. Then, optionally,
 remove the device entry under Windows Credential Manager → Windows
 Credentials → `com.kisaes.vibe-tb`.

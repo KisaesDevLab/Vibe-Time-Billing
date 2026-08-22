@@ -229,6 +229,23 @@ export function onNotificationClick(handler: (n: { id: string; href: string | nu
   return onDesktopEvent<{ id: string; href: string | null }>('desktop:notification-click', handler);
 }
 
+/** Fires a sample toast so the user can confirm Windows notifications work. */
+export function testNotification(): Promise<void> {
+  return invoke('test_notification');
+}
+
+// ---- native menu ---------------------------------------------------------------------------
+
+export type MenuActionKind = 'settings' | 'change-server' | 'help' | 'check-update';
+
+export function onMenuAction(handler: (kind: MenuActionKind) => void): () => void {
+  return onDesktopEvent<{ kind: MenuActionKind }>('menu:action', (p) => handler(p.kind));
+}
+
+export function onMenuAbout(handler: (info: { name: string; version: string }) => void) {
+  return onDesktopEvent<{ name: string; version: string }>('menu:about', handler);
+}
+
 export function setBadge(count: number): Promise<void> {
   return invoke('set_badge', { count });
 }

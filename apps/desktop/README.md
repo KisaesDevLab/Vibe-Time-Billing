@@ -12,6 +12,7 @@ what a tab cannot do:
 | Timer         | Tray icon with live clock + switch/pause/finish menu, global hotkeys, idle-return prompt, floating widget | `tray.rs` `hotkeys.rs` `watchers.rs` `windows.rs` |
 | Notifications | Windows toasts (click opens the item), taskbar badge, quiet hours + per-category mute                      | `notify.rs`                 |
 | Links         | `vibetb://` deep links, single instance                                                                     | `lib.rs`                    |
+| Menu          | Native menu bar: File (settings, change server, close to tray, quit), Timer, View (reload/zoom/fullscreen), Help (help center, updates, test notification, about) | `menu.rs`                   |
 | Rollout       | Signed auto-update from the appliance, start at login, remembered device (Credential Manager)             | `rollout.rs` `secrets.rs`   |
 | Files         | Open files with the default app (cache purged), print-to-PDF outbox → attach to client                     | `files.rs`                  |
 
@@ -144,7 +145,7 @@ Events emitted to the web app: `tray:action`, `desktop:hotkey`,
 
 - Window capture stays in memory and goes only to the firm's LAN OCR server.
 - The foreground watcher (off by default) reads window **titles** only.
-- Toasts carry titles and ids, never document contents.
+- Toasts carry titles and ids, never document contents. The app registers its AppUserModelID under HKCU at startup so Windows shows toasts even for dev/portable runs; **Help → Send test notification** verifies it.
 - Downloaded files live in the app cache and are purged on quit / after 24 h.
 - The outbox PDF is deleted as soon as it is attached.
 - The only secret on the workstation is the device refresh credential, in

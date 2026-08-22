@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
-// Vibe Time & Billing desktop shell. Thin Tauri 2 wrapper around the staff
+// Vibe Practice Management desktop shell. Thin Tauri 2 wrapper around the staff
 // web app that adds what a browser tab cannot:
 //
 //   capture.rs   native window capture for Capture Client Info (original)
@@ -19,6 +19,7 @@
 mod capture;
 mod files;
 mod hotkeys;
+mod menu;
 mod notify;
 mod rollout;
 mod secrets;
@@ -99,6 +100,7 @@ pub fn run() {
             notify::notify,
             notify::set_badge,
             notify::clear_toasts,
+            notify::test_notification,
             // secrets / identity
             secrets::secret_get,
             secrets::secret_set,
@@ -129,7 +131,7 @@ pub fn run() {
             // the bundled connect page (first launch).
             let hidden = std::env::args().any(|a| a == "--hidden");
             tauri::WebviewWindowBuilder::new(app, "main", server::main_url(&handle))
-                .title("Vibe Time & Billing")
+                .title("Vibe Practice Management")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(960.0, 600.0)
                 .resizable(true)
@@ -151,6 +153,16 @@ pub fn run() {
                 forward_deep_links(&h, &urls);
             });
 
+            notify::register_aumid(&handle);
+            let menu = menu::build(&handle)?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                let id = event.id().as_ref().to_string();
+                // Tray items have no prefix letter + colon; route the rest here.
+                if id.len() > 2 && id.as_bytes()[1] == b':' {
+                    menu::handle(app, &id);
+                }
+            });
             tray::build_tray(&handle)?;
             watchers::spawn_idle_watcher(handle.clone());
             watchers::spawn_foreground_watcher(handle.clone());

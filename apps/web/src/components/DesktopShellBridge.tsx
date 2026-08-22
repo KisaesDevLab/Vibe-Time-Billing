@@ -16,15 +16,18 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Button, tokens } from '@vibe/ui';
+import { Button, Modal, tokens } from '@vibe/ui';
 
 import {
   checkForUpdate,
+  clearServerUrl,
   deepLinkToPath,
   installUpdate,
   isDesktop,
   notify,
   onDeepLink,
+  onMenuAbout,
+  onMenuAction,
   onNotificationClick,
   onOutboxFile,
   onUpdateAvailable,
@@ -106,6 +109,50 @@ export function DesktopShellBridge({ counts }: { counts: StaffCounts }): JSX.Ele
   const [outbox, setOutbox] = useState<OutboxFile[]>([]);
   const [update, setUpdate] = useState<{ version: string; notes: string | null } | null>(null);
   const [installing, setInstalling] = useState(false);
+  const [about, setAbout] = useState<{ name: string; version: string } | null>(null);
+
+  // Native menu bar (File / Timer / View / Help). Timer items arrive as
+  // tray:action and are handled by DesktopTimerBridge.
+  useEffect(() => {
+    if (!desktop) return;
+    const offAction = onMenuAction((kind) => {
+      switch (kind) {
+        case 'settings':
+          navigate('/account');
+          return;
+        case 'help':
+          navigate('/help');
+          return;
+        case 'change-server':
+          if (
+            window.confirm(
+              'Disconnect from this server? The app will restart and ask for a server address.',
+            )
+          ) {
+            void clearServerUrl();
+          }
+          return;
+        case 'check-update':
+          void checkForUpdate()
+            .then((r) => {
+              if (r.available && r.version) {
+                setUpdate({ version: r.version, notes: r.notes });
+              } else {
+                pushToast({ id: 'update:none', title: `Vibe ${r.currentVersion} is up to date` });
+              }
+            })
+            .catch(() =>
+              pushToast({ id: 'update:err', title: 'Update check failed', tone: 'warn' }),
+            );
+          return;
+      }
+    });
+    const offAbout = onMenuAbout(setAbout);
+    return () => {
+      offAction();
+      offAbout();
+    };
+  }, [desktop, navigate]);
 
   // Badge = everything the nav highlights.
   useEffect(() => {
@@ -227,6 +274,21 @@ export function DesktopShellBridge({ counts }: { counts: StaffCounts }): JSX.Ele
             Later
           </Button>
         </div>
+      )}
+      {about && (
+        <Modal title={about.name} onClose={() => setAbout(null)} minWidth={360}>
+          <p style={{ fontSize: 14, margin: '0 0 6px' }}>
+            Desktop app <strong>v{about.version}</strong>
+          </p>
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+            © Kisaes LLC · PolyForm Small Business License 1.0.0
+          </p>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 16 }}>
+            <Button size="sm" onClick={() => setAbout(null)}>
+              Close
+            </Button>
+          </div>
+        </Modal>
       )}
       {current && (
         <OutboxAttachDialog

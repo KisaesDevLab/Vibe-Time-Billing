@@ -1,7 +1,7 @@
 [package]
 name = "vibe-desktop"
-version = "0.2.0"
-description = "Vibe Time & Billing desktop shell"
+version = "0.2.1"
+description = "Vibe Practice Management desktop shell"
 edition = "2021"
 rust-version = "1.77"
 
@@ -48,6 +48,7 @@ tokio = { version = "1", features = ["fs", "io-util"] }
 futures-util = "0.3"
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 tauri-winrt-notification = "0.7"
 windows = { version = "0.58", features = [
   "Win32_Foundation",

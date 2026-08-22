@@ -71,11 +71,9 @@ pub fn fire_click<R: Runtime>(app: &AppHandle<R>, id: &str) {
 fn show_toast<R: Runtime>(app: &AppHandle<R>, n: &NativeNotification) -> Result<(), String> {
     use tauri_winrt_notification::{Duration, Sound, Toast};
 
-    let aumid: String = if cfg!(debug_assertions) {
-        Toast::POWERSHELL_APP_ID.to_string()
-    } else {
-        app.config().identifier.clone()
-    };
+    // Registered under HKCU by register_aumid() at startup, so it works in
+    // dev and portable runs as well as installed ones.
+    let aumid: String = app.config().identifier.clone();
     let id = n.id.clone();
     let handle = app.clone();
     Toast::new(&aumid)
@@ -96,7 +94,7 @@ fn show_toast<R: Runtime>(app: &AppHandle<R>, n: &NativeNotification) -> Result<
     let mut note = notify_rust::Notification::new();
     note.summary(&n.title)
         .body(n.body.as_deref().unwrap_or(""))
-        .appname("Vibe Time & Billing");
+        .appname("Vibe Practice Management");
     #[cfg(target_os = "linux")]
     {
         let id = n.id.clone();
@@ -116,6 +114,51 @@ fn show_toast<R: Runtime>(app: &AppHandle<R>, n: &NativeNotification) -> Result<
         let _ = app;
         note.show().map(|_| ()).map_err(|e| e.to_string())
     }
+}
+
+/// Windows shows toasts only for a registered AppUserModelID. The NSIS
+/// installer stamps one on the Start Menu shortcut, but `cargo tauri dev`
+/// and portable runs have no shortcut — so register the AUMID under HKCU
+/// ourselves (supported since Windows 10 1803). Idempotent; best-effort.
+#[cfg(windows)]
+pub fn register_aumid<R: Runtime>(app: &AppHandle<R>) {
+    use winreg::enums::HKEY_CURRENT_USER;
+    use winreg::RegKey;
+    let aumid = app.config().identifier.clone();
+    let Ok((key, _)) = RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(format!("Software\\Classes\\AppUserModelId\\{aumid}"))
+    else {
+        return;
+    };
+    let _ = key.set_value("DisplayName", &"Vibe Practice Management");
+    if let Ok(exe) = std::env::current_exe() {
+        // The exe's embedded icon is what Windows renders next to the toast.
+        let _ = key.set_value("IconUri", &exe.to_string_lossy().to_string());
+    }
+    let _ = key.set_value("ShowInSettings", &1u32);
+}
+
+#[cfg(not(windows))]
+pub fn register_aumid<R: Runtime>(_app: &AppHandle<R>) {}
+
+/// Help → Send test notification (also used by Account → Desktop).
+pub fn show_test_toast<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let n = NativeNotification {
+        id: format!("test:{}", crate::state::now_ms()),
+        title: "Vibe notifications are working".into(),
+        body: Some(
+            "Click me to return to Vibe. You can mute categories in Account → Desktop.".into(),
+        ),
+        href: Some("/account".into()),
+        category: Some("system".into()),
+    };
+    remember(app, &n.id, n.href.clone());
+    show_toast(app, &n)
+}
+
+#[tauri::command]
+pub fn test_notification<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    show_test_toast(&app)
 }
 
 #[tauri::command]
