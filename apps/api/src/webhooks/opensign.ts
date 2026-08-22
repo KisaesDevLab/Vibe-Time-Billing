@@ -89,9 +89,34 @@ function idempotencyKey(e: OpenSignWebhookEvent): string {
   return `${e.objectId}:${e.event}:${disc}`;
 }
 
+// Replay posture (0226). OpenSign's webhook contract signs ONLY the raw
+// body — there is no signed timestamp or nonce to enforce a classic
+// freshness window against. Defenses, in order:
+//   1. Idempotency: the synthesized event key is claimed on first sight
+//      (opensign_webhook_events PK); a replayed payload is a no-op.
+//   2. Authoritative re-fetch: every state change re-reads the document
+//      from OpenSign (reconcile / fetchCertificatePdf) under a FOR UPDATE
+//      lock, so a replayed or forged payload cannot move state — the
+//      webhook is a trigger, not a data source.
+//   3. Freshness where the payload allows it: `signedAt`, when present,
+//      must fall within REPLAY_WINDOW_MS of now (past or future). Stale or
+//      future-dated events are acknowledged and recorded as REPLAYED
+//      rather than dispatched.
+//   4. The worker poll (opensign-poll.ts) converges any lost or
+//      suppressed delivery independently.
+const REPLAY_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/** null = fresh or undated; otherwise the reason it is outside the window. */
+function replayReason(e: OpenSignWebhookEvent, now = Date.now()): 'stale' | 'future' | null {
+  if (!e.signedAt) return null;
+  const t = Date.parse(e.signedAt);
+  if (!Number.isFinite(t)) return null; // unparseable → don't reject on it
+  if (t < now - REPLAY_WINDOW_MS) return 'stale';
+  if (t > now + REPLAY_WINDOW_MS) return 'future';
+  return null;
+}
+
 function verifyHmac(rawBody: Buffer, signatureHeader: string, secret: string): boolean {
-  // TODO(security): no replay-window; the OpenSign signature covers only the
-  // raw body (no timestamp), so we rely on event-id idempotency instead.
   const expected = createHmac('sha256', secret).update(rawBody).digest('hex');
   // Normalize an optional "sha256=" prefix some senders use.
   const claimed = signatureHeader.startsWith('sha256=')
@@ -144,6 +169,31 @@ export function createOpenSignWebhookRouter(deps: OpenSignWebhookDeps): Router {
 
     const envelopeId = event.objectId;
     const eventKey = idempotencyKey(event);
+
+    // Freshness window on the dated events (see replay posture above).
+    // Acknowledge with 200 so the sender doesn't retry; record it.
+    const replay = replayReason(event);
+    if (replay) {
+      logger.warn(
+        { eventKey, type: event.event, replay },
+        'opensign webhook outside replay window',
+      );
+      await deps.db
+        .insert(opensignWebhookEvents)
+        .values({
+          opensignEventId: `${eventKey}:${replay}:${Date.now()}`,
+          eventType: event.event,
+          envelopeId,
+          payload: event as unknown as Record<string, unknown>,
+          state: 'IGNORED',
+          lastError: `replay_window_${replay}`,
+          processedAt: new Date(),
+        })
+        .onConflictDoNothing()
+        .catch(() => undefined);
+      res.json({ received: true, ignored: replay });
+      return;
+    }
 
     // Idempotency: claim the synthesized key. A redelivery finds the row
     // already present and we short-circuit.

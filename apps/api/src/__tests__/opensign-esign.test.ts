@@ -349,6 +349,54 @@ describe('Q35 — OpenSign webhook', () => {
     expect((second.jsonBody as { duplicate?: boolean }).duplicate).toBe(true);
   });
 
+  // 0226 — replay posture: dated events outside ±24h are acknowledged
+  // (200, no retry storm) but never dispatched; undated events still flow.
+  it('stale signedAt → acknowledged as ignored, not dispatched', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const provider = mockProvider();
+    const storage = mockStorage();
+    const r = router(provider, storage);
+    const { envelopeIds } = await createSentProposal(seed, {
+      signers: [{ name: 'Alice', email: 'a@co.example', method: 'OPENSIGN' }],
+    });
+    provider._signed.add(envelopeIds[0]!);
+    const stale = new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString();
+    const raw = Buffer.from(
+      JSON.stringify({ event: 'completed', objectId: envelopeIds[0], signedAt: stale }),
+    );
+    const res = await postWebhook(r, raw, { 'x-webhook-signature': signBody(raw) });
+    expect(res.statusCode).toBe(200);
+    expect((res.jsonBody as { ignored?: string }).ignored).toBe('stale');
+    // Nothing was signed.
+    const rows = await harness.db
+      .select({ state: signatures.state })
+      .from(signatures)
+      .where(eq(signatures.opensignEnvelopeId, envelopeIds[0]!));
+    expect(rows.every((x) => x.state !== 'SIGNED')).toBe(true);
+  });
+
+  it('future-dated signedAt → acknowledged as ignored', async () => {
+    const r = router();
+    const future = new Date(Date.now() + 3 * 24 * 3600 * 1000).toISOString();
+    const raw = Buffer.from(
+      JSON.stringify({ event: 'signed', objectId: 'doc-future', signedAt: future }),
+    );
+    const res = await postWebhook(r, raw, { 'x-webhook-signature': signBody(raw) });
+    expect(res.statusCode).toBe(200);
+    expect((res.jsonBody as { ignored?: string }).ignored).toBe('future');
+  });
+
+  it('recent signedAt passes the window', async () => {
+    const r = router();
+    const recent = new Date(Date.now() - 60 * 1000).toISOString();
+    const raw = Buffer.from(
+      JSON.stringify({ event: 'signed', objectId: 'doc-recent', signedAt: recent }),
+    );
+    const res = await postWebhook(r, raw, { 'x-webhook-signature': signBody(raw) });
+    expect(res.statusCode).toBe(200);
+    expect((res.jsonBody as { ignored?: string }).ignored).toBeUndefined();
+  });
+
   it('valid completed → row SIGNED + cert key + HMAC verifies + audit emitted; single-signer ACCEPTED+freeze', async () => {
     const seed = await seedMinimalFirm(harness.db);
     const provider = mockProvider();
