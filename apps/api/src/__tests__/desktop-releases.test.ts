@@ -34,6 +34,10 @@ beforeAll(async () => {
   await writeFile(path.join(dir, 'Vibe_0.2.0_x64-setup.exe'), Buffer.from('MZ-not-really'));
   app = express();
   app.use('/desktop', createDesktopReleasesRouter({ releasesDir: dir }));
+  app.use(
+    '/cfg',
+    createDesktopReleasesRouter({ releasesDir: dir, baseUrl: 'https://app.firm.test/' }),
+  );
   app.use('/api/staff/desktop/releases', createDesktopReleaseStatusRouter({ releasesDir: dir }));
 });
 afterAll(async () => {
@@ -49,6 +53,12 @@ describe('desktop releases', () => {
       'http://app.firm.test/desktop/dl/Vibe_0.2.0_x64-setup.exe',
     );
     expect(res.headers['cache-control']).toContain('no-cache');
+    // With APP_BASE_URL configured, that wins over the request host/proto
+    // (proxies here do not forward X-Forwarded-Proto).
+    const cfg = await request(app).get('/cfg/latest.json').set('Host', 'internal:3001');
+    expect(cfg.body.platforms['windows-x86_64'].url).toBe(
+      'https://app.firm.test/desktop/dl/Vibe_0.2.0_x64-setup.exe',
+    );
   });
 
   it('serves an installer with a binary content type', async () => {

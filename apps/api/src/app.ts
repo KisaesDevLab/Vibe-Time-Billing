@@ -582,7 +582,10 @@ export function createApp(deps: AppDeps): Express {
   // DS-3 — desktop auto-update manifest + installers (public, unauthenticated).
   app.use(
     '/desktop',
-    createDesktopReleasesRouter({ releasesDir: config.DESKTOP_RELEASES_DIR ?? null }),
+    createDesktopReleasesRouter({
+      releasesDir: config.DESKTOP_RELEASES_DIR ?? null,
+      baseUrl: config.APP_BASE_URL,
+    }),
   );
 
   // Protect everything else under /api/staff/* with requireAuth.

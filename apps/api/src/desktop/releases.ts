@@ -28,6 +28,10 @@ import { logger } from '../logger';
 
 export interface DesktopReleasesDeps {
   releasesDir: string | null;
+  /** Public origin of the staff app (APP_BASE_URL). Used to absolutise
+   *  relative download URLs; falls back to the request's host when unset
+   *  or left at the dev default. */
+  baseUrl?: string | null;
 }
 
 const SAFE_FILE = /^[A-Za-z0-9._-]{1,160}$/;
@@ -89,7 +93,12 @@ export function createDesktopReleasesRouter(deps: DesktopReleasesDeps): Router {
       return;
     }
     res.setHeader('Cache-Control', 'no-cache');
-    res.json(absolutize(manifest, `${req.protocol}://${req.get('host') ?? 'localhost'}`));
+    const configured = deps.baseUrl?.replace(/\/+$/, '');
+    const origin =
+      configured && !/localhost|127\.0\.0\.1/.test(configured)
+        ? configured
+        : `${req.protocol}://${req.get('host') ?? 'localhost'}`;
+    res.json(absolutize(manifest, origin));
   });
 
   router.get('/dl/:file', async (req: Request, res: Response) => {

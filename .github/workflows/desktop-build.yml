@@ -62,12 +62,18 @@ jobs:
         run: |
           $bundle = "apps/desktop/src-tauri/target/release/bundle"
           New-Item -ItemType Directory -Force -Path release | Out-Null
-          Get-ChildItem "$bundle/nsis" -Filter *.exe | Copy-Item -Destination release
-          Get-ChildItem "$bundle/nsis" -Filter *.sig | Copy-Item -Destination release
+          # NSIS names the file after productName ("Vibe Time & Billing_…");
+          # the API's download route allows only [A-Za-z0-9._-], so rename.
+          Get-ChildItem "$bundle/nsis" -Filter *-setup.exe | ForEach-Object {
+            $safe = ($_.Name -replace '[^A-Za-z0-9._-]+', '-')
+            Copy-Item $_.FullName "release/$safe"
+            Copy-Item "$($_.FullName).sig" "release/$safe.sig"
+          }
           $version = (Get-Content apps/desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
           $exe = Get-ChildItem release -Filter *-setup.exe | Select-Object -First 1
           $sig = Get-Content "release/$($exe.Name).sig" -Raw
           $notes = "${{ github.event.inputs.notes }}"
+          if (-not $notes) { $notes = "Vibe desktop $version" }
           $manifest = @{
             version  = $version
             notes    = $notes
