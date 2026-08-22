@@ -15,6 +15,7 @@ import { tokens } from '@vibe/ui';
 
 import { formatClock, useTimers, useTimerTick } from '../timer-context';
 import { TimerPopover, type PopoverAnchor } from './TimerPopover';
+import { OPEN_TIMER_PANEL_EVENT } from './DesktopTimerBridge';
 
 export function TimerChip({ collapsed = false }: { collapsed?: boolean }): JSX.Element | null {
   const { canUse, loaded, timers, running, elapsedSeconds, staleTimer } = useTimers();
@@ -40,6 +41,14 @@ export function TimerChip({ collapsed = false }: { collapsed?: boolean }): JSX.E
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [staleTimer]);
+
+  // DS-1 — tray "Start timer…" / global hotkey open the same panel.
+  useEffect(() => {
+    const onOpen = (): void => openPanel();
+    window.addEventListener(OPEN_TIMER_PANEL_EVENT, onOpen);
+    return () => window.removeEventListener(OPEN_TIMER_PANEL_EVENT, onOpen);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!canUse || !loaded) return null;
 

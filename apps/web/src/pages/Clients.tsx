@@ -1,6 +1,7 @@
 /* eslint-disable jsx-a11y/label-has-associated-control -- labels and controls are siblings inside grid containers; revisit with htmlFor/id pairs in a polish pass */
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { useEffect, useMemo, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 
 import { Button, Card, ColumnFilter, Pill, Printer, Table, tokens } from '@vibe/ui';
 
@@ -11,6 +12,7 @@ import { useColumnView, viewToPagedQuery } from '../lib/column-view';
 import { usePagedList } from '../lib/use-paged-list';
 import { formatCents } from '../lib/money';
 import { CreateClientWizard } from './clients/CreateClientWizard';
+import type { MappedIntake } from './clients/CaptureClientInfo';
 import { ImportClientsWizard } from './clients/ImportClientsWizard';
 import { MailMergeDialog } from './clients/MailMergeDialog';
 import { RichTextEditor, type RichTextVariable } from '../proposal-editor/RichTextEditor';
@@ -72,6 +74,18 @@ export function ClientsPage(): JSX.Element {
   // Route-sheet printing — the client whose dialog is open (or null).
   const [routeSheetClient, setRouteSheetClient] = useState<ClientRow | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
+  // DS-4 — arriving from Intake Inbox / Client Detail with a Capture Client
+  // Info result: open the wizard prefilled.
+  const location = useLocation();
+  const [captureFromState, setCaptureFromState] = useState<MappedIntake | null>(null);
+  useEffect(() => {
+    const st = location.state as { capture?: MappedIntake } | null;
+    if (st?.capture) {
+      setCaptureFromState(st.capture);
+      setWizardOpen(true);
+      window.history.replaceState({}, '');
+    }
+  }, [location.state]);
   const [importOpen, setImportOpen] = useState(false);
   const [rollOpen, setRollOpen] = useState(false);
   const [officeOptions, setOfficeOptions] = useState<
@@ -246,7 +260,11 @@ export function ClientsPage(): JSX.Element {
 
       <CreateClientWizard
         open={wizardOpen}
-        onClose={() => setWizardOpen(false)}
+        initialCapture={captureFromState}
+        onClose={() => {
+          setWizardOpen(false);
+          setCaptureFromState(null);
+        }}
         onCreated={() => {
           list.reload();
           void loadAux();

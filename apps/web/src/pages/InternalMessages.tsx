@@ -9,6 +9,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { STAFF_EVENT_WINDOW_EVENT } from '../components/DesktopShellBridge';
 import { NewConversationDialog } from './messaging/NewConversationDialog';
 import { ThreadView } from './messaging/ThreadView';
 
@@ -40,7 +41,15 @@ export function TeamMessagesPanel(): JSX.Element {
   useEffect(() => {
     void loadThreads();
     const t = setInterval(() => void loadThreads(), 20000);
-    return () => clearInterval(t);
+    // DS-2 — reload immediately when the event stream announces a team message.
+    const onEvent = (e: Event): void => {
+      if ((e as CustomEvent<{ category?: string }>).detail?.category === 'team') void loadThreads();
+    };
+    window.addEventListener(STAFF_EVENT_WINDOW_EVENT, onEvent);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener(STAFF_EVENT_WINDOW_EVENT, onEvent);
+    };
   }, [loadThreads]);
 
   function open(threadId: string): void {

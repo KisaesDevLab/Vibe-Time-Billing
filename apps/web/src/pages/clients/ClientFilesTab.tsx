@@ -46,6 +46,8 @@ import {
 } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { uploadOneClientFile } from '../../lib/client-files-upload';
+import { downloadAndOpen, isDesktop } from '../../lib/desktop';
 import { usePermission } from '../../auth-context';
 import { ShareFileDialog } from './ShareFileDialog';
 import { BulkShareDialog } from './BulkShareDialog';
@@ -865,6 +867,12 @@ export function ClientFilesTab({
       // need a separate translator. In a normal HTTPS deployment B2
       // serves the body straight from this URL.
       if (r.url.startsWith('http://') || r.url.startsWith('https://')) {
+        // DS-4 — in the desktop shell, fetch into the app cache and open
+        // with the OS default application instead of a browser download.
+        if (isDesktop()) {
+          await downloadAndOpen(r.url, r.filename || file.originalFilename);
+          return;
+        }
         window.open(r.url, '_blank', 'noopener');
         return;
       }
@@ -1784,57 +1792,8 @@ function PreviewDialog({ filename, url, onClose, onDownload }: PreviewDialogProp
 // dialog and the drag-and-drop path.
 // ---------------------------------------------------------------------------
 
-async function uploadOneClientFile(
-  clientId: string,
-  file: File,
-  category: string,
-  subfolderPath?: string,
-): Promise<void> {
-  // 1) Reserve a slot — server picks subfolder by category if we don't supply one.
-  const reserve = await api<{
-    fileId: string;
-    storageKey: string;
-    uploadUrl: string;
-    visibility: 'private' | 'client_visible';
-  }>(`/api/staff/clients/${clientId}/files`, {
-    method: 'POST',
-    body: JSON.stringify({
-      category,
-      subfolderPath: subfolderPath || undefined,
-      originalFilename: file.name,
-      sizeBytes: file.size,
-      mimeType: file.type || undefined,
-    }),
-  });
-
-  // 2) Upload the body. mock-presign:// URLs route through the dev-only
-  //    translator so the browser doesn't try to fetch an unsupported scheme.
-  if (reserve.uploadUrl.startsWith('mock-presign://')) {
-    const buf = await file.arrayBuffer();
-    const b64 = bufferToBase64(buf);
-    await api('/api/staff/admin/storage/upload-mock', {
-      method: 'POST',
-      body: JSON.stringify({
-        url: reserve.uploadUrl,
-        contentBase64: b64,
-        contentType: file.type || 'application/octet-stream',
-      }),
-    });
-  } else {
-    const r = await fetch(reserve.uploadUrl, {
-      method: 'PUT',
-      headers: file.type ? { 'Content-Type': file.type } : undefined,
-      body: file,
-    });
-    if (!r.ok) throw new Error(`upload_failed_${r.status}`);
-  }
-
-  // 3) Confirm.
-  await api(`/api/staff/files/${reserve.fileId}/complete`, {
-    method: 'POST',
-    body: '{}',
-  });
-}
+// uploadOneClientFile lives in lib/client-files-upload.ts (shared with the
+// desktop outbox dialog).
 
 // ---------------------------------------------------------------------------
 // Upload dialog
@@ -2059,16 +2018,6 @@ function RenameDialog({ clientId, currentPath, onClose, onDone }: RenameDialogPr
 // Browser-safe binary → base64 helper. atob/btoa choke on non-Latin1
 // bytes; build the base64 string in 8KB chunks.
 // ---------------------------------------------------------------------------
-
-function bufferToBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let binary = '';
-  const chunk = 0x2000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
 
 // ---------------------------------------------------------------------
 // FlagAsTaxReturnDialog — minimal partner-facing intake form. Posts to

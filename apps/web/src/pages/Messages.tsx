@@ -14,6 +14,7 @@ import { useLocation } from 'react-router-dom';
 import { Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { STAFF_EVENT_WINDOW_EVENT } from '../components/DesktopShellBridge';
 
 import { ThreadView } from './messaging/ThreadView';
 import { TeamMessagesPanel } from './InternalMessages';
@@ -35,9 +36,16 @@ export function MessagesPage(): JSX.Element {
     };
     poll();
     const t = setInterval(poll, 30000);
+    // DS-2 — the staff event stream announces new messages; refresh at once.
+    const onEvent = (e: Event): void => {
+      const c = (e as CustomEvent<{ category?: string }>).detail?.category;
+      if (c === 'team' || c === 'message') poll();
+    };
+    window.addEventListener(STAFF_EVENT_WINDOW_EVENT, onEvent);
     return () => {
       alive = false;
       clearInterval(t);
+      window.removeEventListener(STAFF_EVENT_WINDOW_EVENT, onEvent);
     };
   }, [tab]);
 
