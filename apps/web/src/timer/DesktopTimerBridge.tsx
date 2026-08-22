@@ -34,8 +34,8 @@ import {
   setForegroundWatch,
   setHotkeys,
   setIdleThreshold,
-  setTimerWidgetVisible,
   showMainWindow,
+  toggleTimerWidget,
   syncTray,
   type TrayAction,
 } from '../lib/desktop';
@@ -193,7 +193,7 @@ export function DesktopTimerBridge(): JSX.Element | null {
           await showMainWindow().catch(() => undefined);
           return;
         case 'widget':
-          await setTimerWidgetVisible(true).catch(() => undefined);
+          await toggleTimerWidget().catch(() => undefined);
           return;
         case 'start':
           await showMainWindow().catch(() => undefined);

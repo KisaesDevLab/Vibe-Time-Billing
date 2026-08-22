@@ -48,12 +48,46 @@ pub fn show_timer_widget_impl<R: Runtime>(app: &AppHandle<R>, show: bool) -> tau
         if let tauri::WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
             let _ = handle.hide();
+            let app = handle.app_handle().clone();
+            crate::tray::refresh_menu(&app);
+            crate::menu::refresh(&app);
         }
     });
     Ok(())
 }
 
+/// Show ↔ hide, then refresh the tray/menu labels.
+pub fn toggle_timer_widget_impl<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
+    let visible = app
+        .get_webview_window(TIMER_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
+    show_timer_widget_impl(app, !visible)?;
+    crate::tray::refresh_menu(app);
+    crate::menu::refresh(app);
+    Ok(())
+}
+
 #[tauri::command]
 pub fn show_timer_widget<R: Runtime>(app: AppHandle<R>, show: bool) -> Result<(), String> {
-    show_timer_widget_impl(&app, show).map_err(|e| e.to_string())
+    show_timer_widget_impl(&app, show).map_err(|e| e.to_string())?;
+    crate::tray::refresh_menu(&app);
+    crate::menu::refresh(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn toggle_timer_widget<R: Runtime>(app: AppHandle<R>) -> Result<bool, String> {
+    toggle_timer_widget_impl(&app).map_err(|e| e.to_string())?;
+    Ok(app
+        .get_webview_window(TIMER_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false))
+}
+
+#[tauri::command]
+pub fn timer_widget_visible<R: Runtime>(app: AppHandle<R>) -> bool {
+    app.get_webview_window(TIMER_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
 }

@@ -9,7 +9,6 @@
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use serde::Serialize;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
@@ -18,15 +17,22 @@ use crate::state::{now_ms, AppState, TrayState};
 
 pub const TRAY_ID: &str = "vibe-tray";
 
-#[derive(Serialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct TrayAction {
-    pub kind: &'static str,
-    pub timer_id: Option<String>,
-}
-
+/// Deliver an action to the web app two ways: the Tauri event (normal path)
+/// and a direct `eval` into the main webview. The second does not depend on
+/// event permissions for the remote origin, so menu/tray actions keep
+/// working even if the event pipe is misconfigured. The web side dedupes
+/// by `nonce`.
 pub fn emit_action<R: Runtime>(app: &AppHandle<R>, kind: &'static str, timer_id: Option<String>) {
-    let _ = app.emit("tray:action", TrayAction { kind, timer_id });
+    let nonce = crate::state::now_ms();
+    let payload = serde_json::json!({ "kind": kind, "timerId": timer_id, "nonce": nonce });
+    let _ = app.emit("tray:action", payload.clone());
+    if let Some(w) = app.get_webview_window("main") {
+        let js = format!(
+            "window.dispatchEvent(new CustomEvent('vibe:desktop-action',{{detail:{}}}));",
+            payload
+        );
+        let _ = w.eval(&js);
+    }
 }
 
 pub fn show_main<R: Runtime>(app: &AppHandle<R>) {
@@ -136,10 +142,18 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>, state: &TrayState) -> tauri::Resul
     }
 
     menu.append(&PredefinedMenuItem::separator(app)?)?;
+    let widget_visible = app
+        .get_webview_window(crate::windows::TIMER_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false);
     menu.append(&MenuItem::with_id(
         app,
         "widget",
-        "Show timer widget",
+        if widget_visible {
+            "Hide timer widget"
+        } else {
+            "Show timer widget"
+        },
         true,
         None::<&str>,
     )?)?;
@@ -177,7 +191,7 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> 
                 "pause" => emit_action(app, "pause", None),
                 "finish" => emit_action(app, "finish", None),
                 "widget" => {
-                    let _ = crate::windows::show_timer_widget_impl(app, true);
+                    let _ = crate::windows::toggle_timer_widget_impl(app);
                 }
                 "open" => show_main(app),
                 "quit" => {
@@ -234,6 +248,20 @@ pub fn build_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<TrayIcon<R>> 
         .ok();
 
     Ok(tray)
+}
+
+/// Rebuild the tray menu from the current snapshot (labels that depend on
+/// window state, e.g. Show/Hide timer widget).
+pub fn refresh_menu<R: Runtime>(app: &AppHandle<R>) {
+    let snapshot = match app.state::<AppState>().tray.lock() {
+        Ok(s) => s.clone(),
+        Err(_) => return,
+    };
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        if let Ok(menu) = build_menu(app, &snapshot) {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
 }
 
 #[tauri::command]

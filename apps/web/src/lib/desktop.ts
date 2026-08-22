@@ -126,6 +126,36 @@ export type TrayActionKind =
 export interface TrayAction {
   kind: TrayActionKind;
   timerId?: string | null;
+  /** Set by the shell so the two delivery paths can be de-duplicated. */
+  nonce?: number;
+}
+
+/**
+ * Shell actions arrive two ways — a Tauri event and a DOM CustomEvent the
+ * shell `eval`s into this window (independent of event permissions). This
+ * subscribes to both and drops duplicates by nonce.
+ */
+function onDualChannel<T extends { nonce?: number }>(
+  tauriEvent: string,
+  domEvent: string,
+  handler: (p: T) => void,
+): () => void {
+  const seen = new Set<number>();
+  const once = (p: T): void => {
+    if (p.nonce != null) {
+      if (seen.has(p.nonce)) return;
+      seen.add(p.nonce);
+      if (seen.size > 200) seen.delete(seen.values().next().value as number);
+    }
+    handler(p);
+  };
+  const offTauri = onDesktopEvent<T>(tauriEvent, once);
+  const onDom = (e: Event): void => once((e as CustomEvent<T>).detail);
+  if (typeof window !== 'undefined') window.addEventListener(domEvent, onDom);
+  return () => {
+    offTauri();
+    if (typeof window !== 'undefined') window.removeEventListener(domEvent, onDom);
+  };
 }
 
 export function syncTray(state: TrayState): Promise<void> {
@@ -133,7 +163,7 @@ export function syncTray(state: TrayState): Promise<void> {
 }
 
 export function onTrayAction(handler: (a: TrayAction) => void): () => void {
-  return onDesktopEvent<TrayAction>('tray:action', handler);
+  return onDualChannel<TrayAction>('tray:action', 'vibe:desktop-action', handler);
 }
 
 export function showMainWindow(): Promise<void> {
@@ -155,6 +185,15 @@ export interface TimerWidgetState {
 
 export function setTimerWidgetVisible(visible: boolean): Promise<void> {
   return invoke('show_timer_widget', { show: visible });
+}
+
+/** Show ↔ hide; resolves with the new visibility. */
+export function toggleTimerWidget(): Promise<boolean> {
+  return invoke<boolean>('toggle_timer_widget');
+}
+
+export function timerWidgetVisible(): Promise<boolean> {
+  return invoke<boolean>('timer_widget_visible');
 }
 
 // ---- hotkeys ----------------------------------------------------------------------
@@ -236,10 +275,40 @@ export function testNotification(): Promise<void> {
 
 // ---- native menu ---------------------------------------------------------------------------
 
-export type MenuActionKind = 'settings' | 'change-server' | 'help' | 'check-update';
+export type MenuActionKind =
+  | 'settings'
+  | 'change-server'
+  | 'help'
+  | 'check-update'
+  | 'add-favorite'
+  | 'manage-favorites';
 
 export function onMenuAction(handler: (kind: MenuActionKind) => void): () => void {
-  return onDesktopEvent<{ kind: MenuActionKind }>('menu:action', (p) => handler(p.kind));
+  return onDualChannel<{ kind: MenuActionKind; nonce?: number }>(
+    'menu:action',
+    'vibe:desktop-menu',
+    (p) => handler(p.kind),
+  );
+}
+
+export interface FavoriteEntry {
+  id: string;
+  label: string;
+  path: string;
+}
+
+/** Push the Favorites list into the native menu. */
+export function setFavorites(favorites: FavoriteEntry[]): Promise<void> {
+  return invoke('set_favorites', { favorites });
+}
+
+/** A Favorites menu click (or any shell-initiated navigation). */
+export function onMenuNavigate(handler: (path: string) => void): () => void {
+  return onDualChannel<{ path: string; nonce?: number }>(
+    'menu:navigate',
+    'vibe:desktop-navigate',
+    (p) => handler(p.path),
+  );
 }
 
 export function onMenuAbout(handler: (info: { name: string; version: string }) => void) {

@@ -13,6 +13,19 @@ struct MenuAction {
     kind: &'static str,
 }
 
+fn widget_visible<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.get_webview_window(crate::windows::TIMER_LABEL)
+        .and_then(|w| w.is_visible().ok())
+        .unwrap_or(false)
+}
+
+/// Rebuild the app menu (labels depend on window state).
+pub fn refresh<R: Runtime>(app: &AppHandle<R>) {
+    if let Ok(menu) = build(app) {
+        let _ = app.set_menu(menu);
+    }
+}
+
 pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let file = Submenu::with_items(
         app,
@@ -42,7 +55,17 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &MenuItem::with_id(app, "t:resume", "Resume last timer", true, None::<&str>)?,
             &MenuItem::with_id(app, "t:finish", "Finish on Time page…", true, None::<&str>)?,
             &PredefinedMenuItem::separator(app)?,
-            &MenuItem::with_id(app, "t:widget", "Show floating widget", true, None::<&str>)?,
+            &MenuItem::with_id(
+                app,
+                "t:widget",
+                if widget_visible(app) {
+                    "Hide floating widget"
+                } else {
+                    "Show floating widget"
+                },
+                true,
+                Some("CmdOrCtrl+Shift+W"),
+            )?,
         ],
     )?;
     let view = Submenu::with_items(
@@ -64,6 +87,53 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::fullscreen(app, Some("Toggle full screen"))?,
         ],
     )?;
+    // Favorites — user-saved pages. Entries come from the web app
+    // (`set_favorites`); ids are `f:<id>` so handle() can route them.
+    let favorites = Submenu::with_items(
+        app,
+        "F&avorites",
+        true,
+        &[
+            &MenuItem::with_id(
+                app,
+                "m:add-favorite",
+                "Add current page to favorites…",
+                true,
+                Some("CmdOrCtrl+D"),
+            )?,
+            &MenuItem::with_id(
+                app,
+                "m:manage-favorites",
+                "Manage favorites…",
+                true,
+                None::<&str>,
+            )?,
+        ],
+    )?;
+    let favs = app
+        .state::<crate::state::AppState>()
+        .favorites
+        .lock()
+        .map(|f| f.clone())
+        .unwrap_or_default();
+    if !favs.is_empty() {
+        favorites.append(&PredefinedMenuItem::separator(app)?)?;
+        for (i, f) in favs.iter().enumerate() {
+            let accel = if i < 9 {
+                Some(format!("CmdOrCtrl+{}", i + 1))
+            } else {
+                None
+            };
+            favorites.append(&MenuItem::with_id(
+                app,
+                format!("f:{}", f.id),
+                &f.label,
+                true,
+                accel.as_deref(),
+            )?)?;
+        }
+    }
+
     let help = Submenu::with_items(
         app,
         "&Help",
@@ -88,12 +158,20 @@ pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             )?,
         ],
     )?;
-    Menu::with_items(app, &[&file, &timer, &view, &help])
+    Menu::with_items(app, &[&file, &timer, &favorites, &view, &help])
 }
 
 fn emit_menu<R: Runtime>(app: &AppHandle<R>, kind: &'static str) {
     crate::tray::show_main(app);
     let _ = app.emit("menu:action", MenuAction { kind });
+    // Same belt-and-braces delivery as tray actions (see tray::emit_action).
+    if let Some(w) = app.get_webview_window("main") {
+        let js = format!(
+            "window.dispatchEvent(new CustomEvent('vibe:desktop-menu',{{detail:{{kind:'{kind}',nonce:{}}}}}));",
+            crate::state::now_ms()
+        );
+        let _ = w.eval(&js);
+    }
 }
 
 fn zoom<R: Runtime>(app: &AppHandle<R>, delta: Option<f64>) {
@@ -111,6 +189,8 @@ fn zoom<R: Runtime>(app: &AppHandle<R>, delta: Option<f64>) {
 pub fn handle<R: Runtime>(app: &AppHandle<R>, id: &str) {
     match id {
         "m:settings" => emit_menu(app, "settings"),
+        "m:add-favorite" => emit_menu(app, "add-favorite"),
+        "m:manage-favorites" => emit_menu(app, "manage-favorites"),
         "m:change-server" => emit_menu(app, "change-server"),
         "m:hide" => {
             if let Some(w) = app.get_webview_window("main") {
@@ -126,7 +206,7 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, id: &str) {
         "t:resume" => crate::tray::emit_action(app, "resume", None),
         "t:finish" => crate::tray::emit_action(app, "finish", None),
         "t:widget" => {
-            let _ = crate::windows::show_timer_widget_impl(app, true);
+            let _ = crate::windows::toggle_timer_widget_impl(app);
         }
         "v:reload" => {
             if let Some(w) = app.get_webview_window("main") {
@@ -149,6 +229,40 @@ pub fn handle<R: Runtime>(app: &AppHandle<R>, id: &str) {
             );
             crate::tray::show_main(app);
         }
-        _ => {}
+        other => {
+            if let Some(fid) = other.strip_prefix("f:") {
+                let path = app
+                    .state::<crate::state::AppState>()
+                    .favorites
+                    .lock()
+                    .ok()
+                    .and_then(|f| f.iter().find(|x| x.id == fid).map(|x| x.path.clone()));
+                if let Some(path) = path {
+                    crate::tray::show_main(app);
+                    let _ = app.emit("menu:navigate", serde_json::json!({ "path": path }));
+                    if let Some(w) = app.get_webview_window("main") {
+                        let js = format!(
+                            "window.dispatchEvent(new CustomEvent('vibe:desktop-navigate',{{detail:{}}}));",
+                            serde_json::json!({ "path": path, "nonce": crate::state::now_ms() })
+                        );
+                        let _ = w.eval(&js);
+                    }
+                }
+            }
+        }
     }
+}
+
+#[tauri::command]
+pub fn set_favorites<R: Runtime>(
+    app: AppHandle<R>,
+    state: tauri::State<'_, crate::state::AppState>,
+    favorites: Vec<crate::state::Favorite>,
+) -> Result<(), String> {
+    {
+        let mut f = state.favorites.lock().map_err(|_| "state_poisoned")?;
+        *f = favorites.into_iter().take(30).collect();
+    }
+    refresh(&app);
+    Ok(())
 }

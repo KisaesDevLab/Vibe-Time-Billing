@@ -32,8 +32,16 @@ export const NOTIFY_CATEGORIES: Array<{ key: NotifyCategory; label: string }> = 
   { key: 'system', label: 'App updates' },
 ];
 
+export interface Favorite {
+  id: string;
+  label: string;
+  path: string;
+}
+
 export interface DesktopSettings {
   closeToTray: boolean;
+  /** Native Favorites menu (per machine). */
+  favorites: Favorite[];
   hotkeys: Hotkeys;
   /** Minutes; 0 disables idle detection. */
   idleThresholdMinutes: number;
@@ -51,6 +59,7 @@ export interface DesktopSettings {
 
 export const DEFAULT_DESKTOP_SETTINGS: DesktopSettings = {
   closeToTray: true,
+  favorites: [],
   hotkeys: {
     toggle: 'CommandOrControl+Shift+T',
     start: 'CommandOrControl+Shift+N',
@@ -85,6 +94,7 @@ function read(): DesktopSettings {
       mutedCategories: Array.isArray(parsed.mutedCategories)
         ? parsed.mutedCategories
         : DEFAULT_DESKTOP_SETTINGS.mutedCategories,
+      favorites: Array.isArray(parsed.favorites) ? parsed.favorites : [],
     };
     return cached;
   } catch {

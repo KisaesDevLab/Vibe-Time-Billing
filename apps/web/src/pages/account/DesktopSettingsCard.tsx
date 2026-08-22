@@ -17,8 +17,8 @@ import {
   installUpdate,
   isDesktop,
   setHotkeys,
-  setTimerWidgetVisible,
   testNotification,
+  toggleTimerWidget,
   type HotkeyKind,
   type HotkeyRegistration,
 } from '../../lib/desktop';
@@ -227,15 +227,70 @@ export function DesktopSettingsCard(): JSX.Element | null {
               label="Show the floating timer widget on launch"
             />
             <div>
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => void setTimerWidgetVisible(true)}
-              >
-                Show timer widget now
+              <Button size="sm" variant="secondary" onClick={() => void toggleTimerWidget()}>
+                Show / hide timer widget
               </Button>
             </div>
           </div>
+        </section>
+
+        <section id="favorites">
+          <h4 style={{ margin: '0 0 6px', fontSize: 13 }}>Favorites menu</h4>
+          <p style={hint}>
+            Saved pages in the native <strong>Favorites</strong> menu (Ctrl+D adds the current page;
+            the first nine get Ctrl+1…9).
+          </p>
+          {s.favorites.length === 0 ? (
+            <p style={{ ...hint, fontStyle: 'italic' }}>No favorites yet.</p>
+          ) : (
+            s.favorites.map((f, i) => (
+              <div key={f.id} style={row}>
+                <div>
+                  <input
+                    style={{ ...input, width: 220 }}
+                    defaultValue={f.label}
+                    aria-label="Favorite name"
+                    onBlur={(e) => {
+                      const label = e.target.value.trim().slice(0, 60) || f.label;
+                      updateDesktopSettings({
+                        favorites: s.favorites.map((x) => (x.id === f.id ? { ...x, label } : x)),
+                      });
+                    }}
+                  />
+                  <p style={hint}>
+                    {i < 9 ? `Ctrl+${i + 1} · ` : ''}
+                    {f.path}
+                  </p>
+                </div>
+                <span style={{ display: 'flex', gap: 4 }}>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={i === 0}
+                    aria-label="Move up"
+                    onClick={() => {
+                      const arr = [...s.favorites];
+                      [arr[i - 1], arr[i]] = [arr[i]!, arr[i - 1]!];
+                      updateDesktopSettings({ favorites: arr });
+                    }}
+                  >
+                    ↑
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      updateDesktopSettings({
+                        favorites: s.favorites.filter((x) => x.id !== f.id),
+                      })
+                    }
+                  >
+                    Remove
+                  </Button>
+                </span>
+              </div>
+            ))
+          )}
         </section>
 
         <section>

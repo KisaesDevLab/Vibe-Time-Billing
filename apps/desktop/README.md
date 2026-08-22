@@ -12,7 +12,7 @@ what a tab cannot do:
 | Timer         | Tray icon with live clock + switch/pause/finish menu, global hotkeys, idle-return prompt, floating widget | `tray.rs` `hotkeys.rs` `watchers.rs` `windows.rs` |
 | Notifications | Windows toasts (click opens the item), taskbar badge, quiet hours + per-category mute                      | `notify.rs`                 |
 | Links         | `vibetb://` deep links, single instance                                                                     | `lib.rs`                    |
-| Menu          | Native menu bar: File (settings, change server, close to tray, quit), Timer, View (reload/zoom/fullscreen), Help (help center, updates, test notification, about) | `menu.rs`                   |
+| Menu          | Native menu bar: File, Timer, Favorites (Ctrl+D adds the current page; Ctrl+1…9 jump), View, Help | `menu.rs`                   |
 | Rollout       | Signed auto-update from the appliance, start at login, remembered device (Credential Manager)             | `rollout.rs` `secrets.rs`   |
 | Files         | Open files with the default app (cache purged), print-to-PDF outbox → attach to client                     | `files.rs`                  |
 
@@ -136,7 +136,9 @@ See `apps/web/src/lib/desktop.ts` for the typed facade. Summary:
 | `check_for_update`, `install_update`, `get_autostart`, `set_autostart` | rollout |
 | `download_and_open(url, filename)`, `open_external(url)`, `set_outbox_watch(enabled)`, `read_outbox_file(path)`, `delete_outbox_file(path)` | files |
 
-Events emitted to the web app: `tray:action`, `desktop:hotkey`,
+Shell → web actions are delivered twice — as a Tauri event and as a DOM `CustomEvent` `eval`'d into the main window (`vibe:desktop-action` / `vibe:desktop-menu` / `vibe:desktop-navigate`) — and de-duplicated by nonce, so menus keep working even if event permissions for the remote origin are wrong.
+
+Events emitted to the web app: `tray:action`, `menu:action`, `menu:navigate`, `menu:about`, `desktop:hotkey`,
 `desktop:idle-return`, `desktop:foreground-window`,
 `desktop:notification-click`, `desktop:deep-link`,
 `desktop:update-available`, `desktop:outbox-file`, `desktop:timers-changed`.

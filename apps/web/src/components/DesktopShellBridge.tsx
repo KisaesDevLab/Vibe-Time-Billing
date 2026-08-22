@@ -28,6 +28,8 @@ import {
   onDeepLink,
   onMenuAbout,
   onMenuAction,
+  onMenuNavigate,
+  setFavorites,
   onNotificationClick,
   onOutboxFile,
   onUpdateAvailable,
@@ -39,7 +41,13 @@ import {
   showMainWindow,
   type OutboxFile,
 } from '../lib/desktop';
-import { shouldNotify, useDesktopSettings, type NotifyCategory } from '../lib/desktop-settings';
+import {
+  shouldNotify,
+  updateDesktopSettings,
+  useDesktopSettings,
+  type NotifyCategory,
+} from '../lib/desktop-settings';
+import { useLocation } from 'react-router-dom';
 import type {
   StaffAppointmentEvent,
   StaffCounts,
@@ -105,8 +113,25 @@ export function useDesktopNotifier(): StaffEventHandlers {
 export function DesktopShellBridge({ counts }: { counts: StaffCounts }): JSX.Element | null {
   const desktop = isDesktop();
   const settings = useDesktopSettings();
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
   const navigate = useNavigate();
+  const location = useLocation();
+  const locationRef = useRef(location);
+  locationRef.current = location;
   const [outbox, setOutbox] = useState<OutboxFile[]>([]);
+
+  // Favorites → native menu (and back).
+  useEffect(() => {
+    if (!desktop) return;
+    void setFavorites(settings.favorites).catch(() => undefined);
+  }, [desktop, settings.favorites]);
+  useEffect(() => {
+    if (!desktop) return;
+    return onMenuNavigate((path) => {
+      if (path.startsWith('/')) navigate(path);
+    });
+  }, [desktop, navigate]);
   const [update, setUpdate] = useState<{ version: string; notes: string | null } | null>(null);
   const [installing, setInstalling] = useState(false);
   const [about, setAbout] = useState<{ name: string; version: string } | null>(null);
@@ -122,6 +147,23 @@ export function DesktopShellBridge({ counts }: { counts: StaffCounts }): JSX.Ele
           return;
         case 'help':
           navigate('/help');
+          return;
+        case 'add-favorite': {
+          const loc = locationRef.current;
+          const path = loc.pathname + loc.search;
+          const current = document.title.replace(/\s+—\s+.*$/, '').replace(/^⏱[^·]*·\s*/, '');
+          const label = window.prompt('Name this favorite', current || path);
+          if (!label) return;
+          const favorites = [
+            ...settingsRef.current.favorites.filter((f) => f.path !== path),
+            { id: `${Date.now().toString(36)}`, label: label.trim().slice(0, 60), path },
+          ].slice(-30);
+          updateDesktopSettings({ favorites });
+          pushToast({ id: `fav:${path}`, title: `Added "${label.trim()}" to Favorites` });
+          return;
+        }
+        case 'manage-favorites':
+          navigate('/account#favorites');
           return;
         case 'change-server':
           if (

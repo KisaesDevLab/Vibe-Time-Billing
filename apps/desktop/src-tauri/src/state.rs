@@ -36,8 +36,18 @@ pub struct Hotkeys {
     pub widget: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Favorite {
+    pub id: String,
+    pub label: String,
+    pub path: String,
+}
+
 pub struct AppState {
     pub tray: Mutex<TrayState>,
+    /// Native Favorites menu entries, pushed by the web app.
+    pub favorites: Mutex<Vec<Favorite>>,
     pub close_to_tray: AtomicBool,
     /// Seconds; 0 disables idle detection.
     pub idle_threshold_secs: AtomicU64,
@@ -51,6 +61,7 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             tray: Mutex::new(TrayState::default()),
+            favorites: Mutex::new(Vec::new()),
             close_to_tray: AtomicBool::new(true),
             idle_threshold_secs: AtomicU64::new(600),
             foreground_watch: AtomicBool::new(false),

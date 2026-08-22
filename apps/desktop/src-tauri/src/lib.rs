@@ -92,6 +92,9 @@ pub fn run() {
             tray::show_main_window,
             tray::broadcast_timers_changed,
             windows::show_timer_widget,
+            windows::timer_widget_visible,
+            windows::toggle_timer_widget,
+            menu::set_favorites,
             // hotkeys + watchers
             hotkeys::set_hotkeys,
             watchers::set_idle_threshold,
