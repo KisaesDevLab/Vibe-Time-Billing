@@ -1,16 +1,23 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "main",
-  "description": "Main window. App commands are registered via invoke_handler and are not gated by the plugin ACL; plugin permissions listed here are the minimum the Rust side needs to drive them on the window's behalf.",
+  "description": "Main window. The staff app is loaded from the firm's appliance (remote origin), so IPC must be allowed for remote URLs — any https host, plus localhost for development. App commands are registered via invoke_handler and are not gated by the plugin ACL.",
   "windows": ["main"],
+  "remote": {
+    "urls": [
+      "https://*",
+      "https://*:*",
+      "http://localhost:*",
+      "http://127.0.0.1:*",
+      "http://*.local:*"
+    ]
+  },
   "permissions": [
     "core:default",
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-set-focus",
     "core:window:allow-unminimize",
-    "core:event:default",
-    "opener:allow-open-url",
-    "global-shortcut:allow-is-registered"
+    "core:event:default"
   ]
 }

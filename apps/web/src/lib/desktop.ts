@@ -348,6 +348,17 @@ export function deleteOutboxFile(path: string): Promise<void> {
   return invoke('delete_outbox_file', { path });
 }
 
+// ---- server (which appliance the shell is connected to) --------------------------------------------
+
+export function getServerUrl(): Promise<string | null> {
+  return invoke<string | null>('get_server_url');
+}
+
+/** Forgets the server and restarts the shell on the connect page. */
+export function clearServerUrl(): Promise<void> {
+  return invoke('clear_server_url');
+}
+
 // ---- misc ---------------------------------------------------------------------------------------------
 
 export function appVersion(): Promise<string> {

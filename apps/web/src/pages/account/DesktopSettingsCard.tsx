@@ -12,6 +12,8 @@ import { api } from '../../api-client';
 import {
   appVersion,
   checkForUpdate,
+  clearServerUrl,
+  getServerUrl,
   installUpdate,
   isDesktop,
   setHotkeys,
@@ -83,6 +85,7 @@ function Toggle({
 export function DesktopSettingsCard(): JSX.Element | null {
   const s = useDesktopSettings();
   const [version, setVersion] = useState<string>('');
+  const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [hotkeyStatus, setHotkeyStatus] = useState<HotkeyRegistration | null>(null);
   const [updateMsg, setUpdateMsg] = useState<string | null>(null);
   const [devices, setDevices] = useState<DeviceRow[]>([]);
@@ -95,6 +98,9 @@ export function DesktopSettingsCard(): JSX.Element | null {
     if (!desktop) return;
     void appVersion()
       .then(setVersion)
+      .catch(() => undefined);
+    void getServerUrl()
+      .then(setServerUrl)
       .catch(() => undefined);
     void loadDevices();
     void hasDesktopCredential().then(setThisDeviceRemembered);
@@ -177,6 +183,28 @@ export function DesktopSettingsCard(): JSX.Element | null {
               </Button>
             )}
           </div>
+        </div>
+
+        <div style={row}>
+          <div>
+            <div>Server</div>
+            <p style={hint}>{serverUrl ?? '—'}</p>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => {
+              if (
+                window.confirm(
+                  'Disconnect from this server? The app will restart and ask for a server address.',
+                )
+              ) {
+                void clearServerUrl();
+              }
+            }}
+          >
+            Change server…
+          </Button>
         </div>
 
         <section>

@@ -4,40 +4,13 @@
   "version": "0.2.0",
   "identifier": "com.kisaes.vibe-tb",
   "build": {
-    "beforeDevCommand": "pnpm --filter @vibe/web dev",
-    "devUrl": "http://localhost:5195",
-    "beforeBuildCommand": "pnpm --filter @vibe/web build",
-    "frontendDist": "../../web/dist"
+    "frontendDist": "../connect"
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [
-      {
-        "label": "main",
-        "title": "Vibe Time & Billing",
-        "width": 1440,
-        "height": 900,
-        "minWidth": 960,
-        "minHeight": 600,
-        "resizable": true,
-        "dragDropEnabled": false,
-        "visible": true
-      }
-    ],
+    "windows": [],
     "security": {
-      "csp": {
-        "default-src": "'self'",
-        "connect-src": "'self' ipc: http://ipc.localhost http://localhost:3001 http://localhost:5195 ws://localhost:5195 https://*.backblazeb2.com https://*.backblaze.com",
-        "img-src": "'self' data: blob: https:",
-        "media-src": "'self' blob:",
-        "style-src": "'self' 'unsafe-inline'",
-        "font-src": "'self' data:",
-        "frame-src": "'self' blob: https:",
-        "worker-src": "'self' blob:",
-        "object-src": "'none'",
-        "base-uri": "'self'",
-        "form-action": "'self'"
-      },
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost",
       "dangerousDisableAssetCspModification": false
     }
   },
@@ -48,8 +21,7 @@
       }
     },
     "updater": {
-      "endpoints": ["https://app.kisaes.com/desktop/latest.json"],
-      "pubkey": "REPLACE_WITH_OUTPUT_OF__pnpm_tauri_signer_generate",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3Nzg2NUQyMkM5Njc0Q0EKUldUS2RKWXMwbVY0TjJtTE9XK0RrcnRSQ2xJbnE0ZGQzQzBCNUNiWE9sVW1JemRZNmY1ZmRXRy8K",
       "windows": {
         "installMode": "passive"
       }
@@ -71,7 +43,9 @@
         "installMode": "currentUser",
         "startMenuFolder": "Vibe Time & Billing"
       },
-      "webviewInstallMode": { "type": "downloadBootstrapper" }
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
     },
     "shortDescription": "Vibe Time & Billing",
     "longDescription": "Desktop shell for the Vibe Time & Billing staff app: tray timer, notifications, UltraTax capture."

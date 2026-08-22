@@ -22,6 +22,7 @@ mod hotkeys;
 mod notify;
 mod rollout;
 mod secrets;
+mod server;
 mod state;
 mod tray;
 mod watchers;
@@ -109,6 +110,10 @@ pub fn run() {
             rollout::install_update,
             rollout::get_autostart,
             rollout::set_autostart,
+            // server
+            server::get_server_url,
+            server::set_server_url,
+            server::clear_server_url,
             // files
             files::download_and_open,
             files::open_external,
@@ -118,6 +123,21 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // The main window is created here, not in tauri.conf.json, so it
+            // can load either the remote staff app (server configured) or
+            // the bundled connect page (first launch).
+            let hidden = std::env::args().any(|a| a == "--hidden");
+            tauri::WebviewWindowBuilder::new(app, "main", server::main_url(&handle))
+                .title("Vibe Time & Billing")
+                .inner_size(1440.0, 900.0)
+                .min_inner_size(960.0, 600.0)
+                .resizable(true)
+                // Leave HTML5 drag-and-drop to the web app (Files tab,
+                // request items); Tauri's native handler would swallow it.
+                .disable_drag_drop_handler()
+                .visible(!hidden)
+                .build()?;
 
             // Deep links: register the scheme at runtime too (dev builds
             // have no installer to do it) and forward opens to the webview.
@@ -149,10 +169,6 @@ pub fn run() {
                         }
                     }
                 });
-                // Launched at login with --hidden → start in the tray.
-                if std::env::args().any(|a| a == "--hidden") {
-                    let _ = main.hide();
-                }
             }
             Ok(())
         })

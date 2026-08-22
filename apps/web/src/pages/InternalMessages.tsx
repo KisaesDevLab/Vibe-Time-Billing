@@ -8,6 +8,7 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
+import { useLocation } from 'react-router-dom';
 import { api } from '../api-client';
 import { STAFF_EVENT_WINDOW_EVENT } from '../components/DesktopShellBridge';
 import { NewConversationDialog } from './messaging/NewConversationDialog';
@@ -24,7 +25,15 @@ interface ThreadRow {
 
 export function TeamMessagesPanel(): JSX.Element {
   const [threads, setThreads] = useState<ThreadRow[] | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // DS-2 — `?thread=<id>` (from a notification / deep link) opens that thread.
+  const location = useLocation();
+  const [activeId, setActiveId] = useState<string | null>(() =>
+    new URLSearchParams(location.search).get('thread'),
+  );
+  useEffect(() => {
+    const id = new URLSearchParams(location.search).get('thread');
+    if (id) setActiveId(id);
+  }, [location.search]);
   const [error, setError] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
 

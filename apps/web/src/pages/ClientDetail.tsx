@@ -13,6 +13,9 @@ import { TaxPaymentsCard } from './clients/TaxPaymentsCard';
 import { ClientCredentialsCard } from './clients/ClientCredentialsCard';
 import { usePermission } from '../auth-context';
 import { useTimersOptional } from '../timer-context';
+import { isDesktop } from '../lib/desktop';
+import { CaptureClientInfo, type MappedIntake } from './clients/CaptureClientInfo';
+import { CaptureMergeDialog } from './clients/CaptureMergeDialog';
 import { ClientMessagesCard } from './messaging/ClientMessagesCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
 // File manager v1 removed; v2 (B2-backed, addendum) lands in Phase 10.
@@ -38,6 +41,11 @@ interface Client {
   clientFacingName?: string | null;
   externalId?: string | null;
   filingStatus?: 'SINGLE' | 'MFJ' | 'MFS' | 'HOH' | 'QW' | null;
+  mailingStreet1?: string | null;
+  mailingCity?: string | null;
+  mailingState?: string | null;
+  mailingPostal?: string | null;
+  mailingCountry?: string | null;
   pipelineStage?: 'PROSPECT' | 'CLIENT' | 'OTHER';
   active?: boolean;
   // 0165 — per-client visibility restriction.
@@ -110,6 +118,15 @@ export function ClientDetailPage(): JSX.Element {
   const canViewCredentials = usePermission('client:credential:read');
   // 0207 — header "▶ Timer" context-aware start (client pre-filled).
   const timers = useTimersOptional();
+  // DS-4 — Capture Client Info on an existing client → field-by-field merge.
+  const [ocrAvailable, setOcrAvailable] = useState(false);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const [captured, setCaptured] = useState<MappedIntake | null>(null);
+  useEffect(() => {
+    void api<{ available: boolean }>('/api/staff/ocr/status')
+      .then((r) => setOcrAvailable(!!r.available))
+      .catch(() => setOcrAvailable(false));
+  }, []);
   const [staff, setStaff] = useState<StaffUser[]>([]);
 
   // 0165 — if the client is restricted for this caller, the only visible
@@ -210,6 +227,20 @@ export function ClientDetailPage(): JSX.Element {
                 }}
               >
                 ▶ Timer
+              </Button>
+            )}
+            {ocrAvailable && (
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setCaptureOpen(true)}
+                title={
+                  isDesktop()
+                    ? 'Capture the General Information screen from UltraTax and merge it into this client'
+                    : 'Upload a screenshot/PDF of the General Information screen and merge it into this client'
+                }
+              >
+                ⌗ Capture
               </Button>
             )}
             <Button
@@ -458,6 +489,19 @@ export function ClientDetailPage(): JSX.Element {
               and active session from the source client onto this one, then archives the source.
               Refuses when either client is under legal hold.
             </p>
+            <CaptureClientInfo
+              open={captureOpen}
+              onClose={() => setCaptureOpen(false)}
+              onApply={(mapped) => setCaptured(mapped)}
+            />
+            {captured && client && (
+              <CaptureMergeDialog
+                client={client}
+                mapped={captured}
+                onClose={() => setCaptured(null)}
+                onSaved={() => void load()}
+              />
+            )}
             {showMerge && (
               <MergeDialog
                 target={client}

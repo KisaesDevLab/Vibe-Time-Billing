@@ -1,7 +1,16 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "timer",
-  "description": "Always-on-top mini timer. Needs only events + the drag region; every timer mutation goes through the API, not the shell.",
+  "description": "Always-on-top mini timer, loaded from the same remote origin as the main window. Needs events + the drag region; every timer mutation goes through the API.",
   "windows": ["timer"],
+  "remote": {
+    "urls": [
+      "https://*",
+      "https://*:*",
+      "http://localhost:*",
+      "http://127.0.0.1:*",
+      "http://*.local:*"
+    ]
+  },
   "permissions": ["core:default", "core:event:default", "core:window:allow-start-dragging"]
 }

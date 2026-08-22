@@ -54,18 +54,42 @@ export async function readManifest(
   }
 }
 
+/**
+ * The build workflow writes *relative* download URLs (`/desktop/dl/<file>`)
+ * because one installer serves every firm; the Tauri updater, however,
+ * requires absolute URLs. Resolve them against the origin the shell is
+ * talking to (behind Caddy, `trust proxy` makes req.protocol/host right).
+ */
+export function absolutize(
+  manifest: Record<string, unknown>,
+  origin: string,
+): Record<string, unknown> {
+  const platforms = manifest['platforms'];
+  if (!platforms || typeof platforms !== 'object') return manifest;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(platforms as Record<string, unknown>)) {
+    if (v && typeof v === 'object' && typeof (v as { url?: unknown }).url === 'string') {
+      const url = (v as { url: string }).url;
+      out[k] = { ...(v as object), url: url.startsWith('/') ? origin + url : url };
+    } else {
+      out[k] = v;
+    }
+  }
+  return { ...manifest, platforms: out };
+}
+
 /** Public routes → mount at /desktop. */
 export function createDesktopReleasesRouter(deps: DesktopReleasesDeps): Router {
   const router = express.Router();
 
-  router.get('/latest.json', async (_req: Request, res: Response) => {
+  router.get('/latest.json', async (req: Request, res: Response) => {
     const manifest = await readManifest(deps.releasesDir);
     if (!manifest) {
       res.status(404).json({ error: 'no_release' });
       return;
     }
     res.setHeader('Cache-Control', 'no-cache');
-    res.json(manifest);
+    res.json(absolutize(manifest, `${req.protocol}://${req.get('host') ?? 'localhost'}`));
   });
 
   router.get('/dl/:file', async (req: Request, res: Response) => {

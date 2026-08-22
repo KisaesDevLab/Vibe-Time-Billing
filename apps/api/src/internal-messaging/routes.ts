@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, messages, threadMembers, threads } from '@vibe/db/schema';
+import { appUsers, messages, staffNotifications, threadMembers, threads } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -648,16 +648,40 @@ async function postMessage(
     actorAppUserId: senderAppUserId,
     after: { threadId, internal: true },
   }).catch(() => undefined);
-  // DS-2 — wake the recipients' event streams so the desktop toast is
-  // immediate rather than on the next poll.
+  // DS-2 — notification-center row per recipient (name + deep link; the
+  // body stays out because messages are encrypted at rest) and a poke so
+  // the desktop toast is immediate rather than on the next poll.
   try {
-    const members = await db
-      .select({ appUserId: threadMembers.appUserId })
-      .from(threadMembers)
-      .where(and(eq(threadMembers.threadId, threadId), isNull(threadMembers.removedAt)));
-    pokeStaffEvents(
-      members.map((m) => m.appUserId).filter((id): id is string => !!id && id !== senderAppUserId),
-    );
+    const [members, [sender], [thread]] = await Promise.all([
+      db
+        .select({ appUserId: threadMembers.appUserId })
+        .from(threadMembers)
+        .where(and(eq(threadMembers.threadId, threadId), isNull(threadMembers.removedAt))),
+      db
+        .select({ name: appUsers.fullName })
+        .from(appUsers)
+        .where(eq(appUsers.id, senderAppUserId))
+        .limit(1),
+      db.select({ title: threads.title }).from(threads).where(eq(threads.id, threadId)).limit(1),
+    ]);
+    const recipients = members
+      .map((m) => m.appUserId)
+      .filter((id): id is string => !!id && id !== senderAppUserId);
+    if (recipients.length) {
+      await db.insert(staffNotifications).values(
+        recipients.map((rid) => ({
+          firmId,
+          recipientAppUserId: rid,
+          type: 'team_message',
+          entityType: 'thread',
+          entityId: threadId,
+          title: `New team message from ${sender?.name ?? 'a colleague'}`,
+          body: thread?.title ?? null,
+          actionUrl: `/messages?tab=team&thread=${threadId}`,
+        })),
+      );
+    }
+    pokeStaffEvents(recipients);
   } catch {
     // best-effort
   }

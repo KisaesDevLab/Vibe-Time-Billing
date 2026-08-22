@@ -22,7 +22,14 @@ pub fn show_timer_widget_impl<R: Runtime>(app: &AppHandle<R>, show: bool) -> tau
     if !show {
         return Ok(());
     }
-    let url = WebviewUrl::App("index.html?__window=timer".into());
+    // Same origin as the main window so the session cookie is shared.
+    let url = match crate::server::server_url(app) {
+        Some(mut u) => {
+            u.set_query(Some("__window=timer"));
+            WebviewUrl::External(u)
+        }
+        None => return Ok(()), // not connected yet — nothing to show
+    };
     let w = WebviewWindowBuilder::new(app, TIMER_LABEL, url)
         .title("Vibe timer")
         .inner_size(320.0, 72.0)

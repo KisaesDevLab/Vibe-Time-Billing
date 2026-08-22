@@ -50,8 +50,8 @@ Goal: `tauri dev` and `tauri build` succeed on the firm's Windows workstation.
 - [ ] Compile; fix `xcap 0.3` accessor drift ⏸ (needs the Windows workstation) — in `lib.rs` (return types of
       `id()/title()/width()` etc. changed across 0.x — expect small edits).
 - [x] Replace `"csp": null` with a real policy: `default-src 'self'; connect-src
-  'self' http://localhost:3001 https://<appliance>; img-src 'self' data:
-  blob:; style-src 'self' 'unsafe-inline'`. Tighten once plugins land.
+'self' http://localhost:3001 https://<appliance>; img-src 'self' data:
+blob:; style-src 'self' 'unsafe-inline'`. Tighten once plugins land.
 - [x] Split `capabilities/default.json` per window (`main`, later `timer`) and
       list only the commands each needs.
 - [ ] Validate live capture against a real UltraTax window ⏸ (firm hardware); document the
@@ -323,6 +323,23 @@ refresh`, `/api/staff/desktop/devices`), release channel
 - **Shell**: `src-tauri/src/{capture,tray,windows,hotkeys,watchers,notify,
 secrets,rollout,files,state,lib}.rs`, `tauri.conf.json` (CSP, deep-link,
   updater, NSIS/MSI), per-window capabilities, icons, `desktop-build.yml`.
+
+### Q&A decisions (2026-08-22) and follow-up build
+
+- **Server URL is entered by the user, not baked in.** The shell now shows a
+  bundled _Connect to your Vibe server_ page on first launch, stores the URL,
+  and loads the staff app from that origin (remote webview + `remote`
+  capability). Updater endpoint and widget window derive from it;
+  `latest.json` download URLs are relative and absolutised by the API.
+  Caddy templates route `/desktop/*` to the API.
+- **Capture on an existing client = field-by-field merge** —
+  `CaptureMergeDialog` on Client Detail (pre-ticks differing fields, optional
+  new contact).
+- **Remember-device defaults ON.**
+- **Real notification rows** for intake submissions (worker), client request
+  replies, and team messages; the synthetic count-delta toasts were removed.
+- **Updater keypair generated**; pubkey in `tauri.conf.json`, private key in
+  the appliance secrets store (not in git).
 
 ### Deliberately not done (⏸) and why
 

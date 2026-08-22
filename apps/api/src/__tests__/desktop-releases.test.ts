@@ -26,7 +26,7 @@ beforeAll(async () => {
       platforms: {
         'windows-x86_64': {
           signature: 'sig',
-          url: 'https://app.example/desktop/dl/Vibe_0.2.0_x64-setup.exe',
+          url: '/desktop/dl/Vibe_0.2.0_x64-setup.exe',
         },
       },
     }),
@@ -41,10 +41,13 @@ afterAll(async () => {
 });
 
 describe('desktop releases', () => {
-  it('serves the manifest', async () => {
-    const res = await request(app).get('/desktop/latest.json');
+  it('serves the manifest with download URLs resolved against the request origin', async () => {
+    const res = await request(app).get('/desktop/latest.json').set('Host', 'app.firm.test');
     expect(res.status).toBe(200);
     expect(res.body.version).toBe('0.2.0');
+    expect(res.body.platforms['windows-x86_64'].url).toBe(
+      'http://app.firm.test/desktop/dl/Vibe_0.2.0_x64-setup.exe',
+    );
     expect(res.headers['cache-control']).toContain('no-cache');
   });
 

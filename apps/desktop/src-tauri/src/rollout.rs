@@ -30,9 +30,24 @@ struct UpdateAvailable {
     notes: Option<String>,
 }
 
+fn updater<R: Runtime>(app: &AppHandle<R>) -> Result<tauri_plugin_updater::Updater, String> {
+    // Manifest lives on whichever appliance this shell is connected to.
+    let Some(server) = crate::server::server_url(app) else {
+        return Err("no_server".into());
+    };
+    let endpoint = server
+        .join("desktop/latest.json")
+        .map_err(|e| e.to_string())?;
+    app.updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())
+}
+
 async fn check<R: Runtime>(app: &AppHandle<R>) -> Result<UpdateCheck, String> {
     let current = app.package_info().version.to_string();
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = updater(app)?;
     match updater.check().await.map_err(|e| e.to_string())? {
         Some(u) => Ok(UpdateCheck {
             available: true,
@@ -56,7 +71,7 @@ pub async fn check_for_update<R: Runtime>(app: AppHandle<R>) -> Result<UpdateChe
 
 #[tauri::command]
 pub async fn install_update<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    let updater = app.updater().map_err(|e| e.to_string())?;
+    let updater = updater(&app)?;
     let Some(update) = updater.check().await.map_err(|e| e.to_string())? else {
         return Err("no_update".into());
     };

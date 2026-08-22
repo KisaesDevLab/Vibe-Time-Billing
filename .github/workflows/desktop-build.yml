@@ -51,7 +51,7 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build (web + Tauri bundle)
+      - name: Build (Tauri bundle; the staff app is loaded from the appliance at runtime)
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -77,7 +77,7 @@ jobs:
             platforms = @{
               "windows-x86_64" = @{
                 signature = $sig.Trim()
-                url       = "https://app.kisaes.com/desktop/dl/$($exe.Name)"
+                url       = "/desktop/dl/$($exe.Name)"
               }
             }
           }

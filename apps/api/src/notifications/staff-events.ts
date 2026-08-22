@@ -87,6 +87,7 @@ export interface StaffEventsDeps extends RbacDeps {
  *  and the toast icon on the desktop). Unknown types fall to 'alert'. */
 export function categoryForType(type: string): StaffEventCategory {
   const t = type.toLowerCase();
+  if (t.startsWith('team')) return 'team';
   if (t.includes('message')) return 'message';
   if (t.includes('intake')) return 'intake';
   // Booking/appointment types before the generic 'request' match
@@ -107,53 +108,6 @@ function countsEqual(a: StaffCounts, b: StaffCounts): boolean {
     a.requestsNew === b.requestsNew &&
     a.intakeNew === b.intakeNew
   );
-}
-
-/** Synthetic notifications for counters that rose without a
- *  staff_notification row behind them (team DMs, intake submissions,
- *  client replies on requests). Generic titles — the row-level detail
- *  lives behind the href. */
-function syntheticFromDelta(
-  prev: StaffCounts,
-  next: StaffCounts,
-  now: Date,
-): StaffNotificationEvent[] {
-  const out: StaffNotificationEvent[] = [];
-  const ts = now.toISOString();
-  if (next.teamUnread > prev.teamUnread) {
-    const n = next.teamUnread - prev.teamUnread;
-    out.push({
-      id: `team:${now.getTime()}`,
-      category: 'team',
-      title: n === 1 ? 'New team message' : `${n} new team messages`,
-      body: null,
-      href: '/messages?tab=team',
-      createdAt: ts,
-    });
-  }
-  if (next.intakeNew > prev.intakeNew) {
-    const n = next.intakeNew - prev.intakeNew;
-    out.push({
-      id: `intake:${now.getTime()}`,
-      category: 'intake',
-      title: n === 1 ? 'New intake submission' : `${n} new intake submissions`,
-      body: null,
-      href: '/intake',
-      createdAt: ts,
-    });
-  }
-  if (next.requestsNew > prev.requestsNew) {
-    const n = next.requestsNew - prev.requestsNew;
-    out.push({
-      id: `request:${now.getTime()}`,
-      category: 'request',
-      title: n === 1 ? 'A client responded to a request' : `${n} requests have client responses`,
-      body: null,
-      href: '/requests',
-      createdAt: ts,
-    });
-  }
-  return out;
 }
 
 // ---- router ---------------------------------------------------------------
@@ -243,12 +197,10 @@ export function createStaffEventsRouter(deps: StaffEventsDeps): Router {
       try {
         const now = new Date();
         const next = await loadStaffCounts(db, subject);
-        const synthetic = syntheticFromDelta(counts, next, now);
         if (!countsEqual(counts, next)) {
           counts = next;
           send('counts', counts);
         }
-        for (const ev of synthetic) send('notification', ev);
 
         const rows = await recentRows(new Date(now.getTime() - NOTIF_WINDOW_MS));
         const windowIds = new Set<string>();

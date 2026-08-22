@@ -38,24 +38,40 @@ first-compile pass; the spots most likely to need a touch are listed below.
 Linux for development only: `webkit2gtk-4.1`, `libayatana-appindicator3`,
 `libdbus-1-dev` (notify-rust), `libxdo-dev`.
 
+## How it loads the app
+
+Nothing firm-specific is baked into the build. On first launch the shell
+shows a bundled **Connect to your Vibe server** page (`connect/index.html`);
+the user enters the staff URL (the same one they use in a browser). The shell
+probes `<url>/api/auth/me`, stores the URL in its config dir, and from then
+on the main window loads the staff app **from the appliance** — cookies,
+CSRF, relative `/api` calls and the web app's own updates work exactly as in
+a browser, and `withGlobalTauri` + the `remote` capability inject
+`window.__TAURI__` into that remote page so the native extras light up.
+The mini timer window loads the same origin with `?__window=timer`, and the
+auto-updater reads `<url>/desktop/latest.json`. *Account → Desktop app →
+Change server…* forgets the URL and restarts on the connect page.
+
+Consequences: one installer serves every firm; no `@vibe/web` build is
+needed to build the shell; the CSP in `tauri.conf.json` only governs the
+connect page (the remote app is governed by the appliance's own headers —
+the staff host must not send a `Content-Security-Policy` whose
+`connect-src` blocks `ipc:` / `http://ipc.localhost`, or the shell's IPC
+from the remote page is refused; the shipped Caddy templates send none).
+
 ## Run / build
 
 Driven explicitly (not by the repo's `pnpm dev`/`pnpm build` fan-out) so web
 CI never needs Rust:
 
 ```bash
-# Dev: launches the Vite dev server (@vibe/web on :5195) then the native window
+# Dev: opens the connect page; enter http://localhost:5195 (Vite, started
+# separately with `pnpm --filter @vibe/web dev`) or any appliance URL.
 pnpm --filter @vibe/desktop tauri dev
 
-# Production bundle (builds @vibe/web first, then packages NSIS + MSI)
+# Production bundle (NSIS + MSI + updater artefacts)
 pnpm --filter @vibe/desktop tauri build
 ```
-
-The API is reached exactly as in the browser: the SPA calls `/api/...`, which
-the Vite dev proxy forwards to `http://localhost:3001` in dev and the
-appliance origin serves in production. The CSP in `tauri.conf.json` lists
-those origins plus Backblaze (presigned file uploads/downloads); add your
-appliance host there before shipping.
 
 ## First-compile checklist
 
@@ -64,6 +80,7 @@ one-line fix; none changes behaviour.
 
 | Where | Watch for |
 | --- | --- |
+| `server.rs` / `lib.rs` | `WebviewWindow::navigate`, `WebviewWindowBuilder::disable_drag_drop_handler`, `Updater`/`updater_builder().endpoints()` names |
 | `capture.rs` | `xcap 0.3` accessor return types (`id()`, `title()`, `width()` are `Result`s here) |
 | `watchers.rs` | `user-idle` — `UserIdle::get_time()?.as_seconds()` |
 | `notify.rs` (Windows) | `tauri-winrt-notification` — `Toast::on_activated` closure signature; `Toast::POWERSHELL_APP_ID` |
@@ -73,15 +90,14 @@ one-line fix; none changes behaviour.
 | `secrets.rs` | `keyring 3` — `delete_credential()` (was `delete_password()` in 2.x); feature names |
 | `files.rs` | `tauri::ipc::Response::new(Vec<u8>)` returns raw bytes to JS (`readOutboxFile` handles both shapes) |
 
-Then update `tauri.conf.json`:
-
-1. `plugins.updater.pubkey` — paste the public key from
-   `pnpm --filter @vibe/desktop tauri signer generate -w ~/.tauri/vibe.key`
-   and put the private key + password into the GitHub secrets named in
-   `.github/workflows/desktop-build.yml`.
-2. `plugins.updater.endpoints` and the `url` the workflow writes into
-   `latest.json` — the appliance host serving `/desktop/latest.json`.
-3. `app.security.csp.connect-src` — the appliance host.
+`tauri.conf.json` → `plugins.updater.pubkey` already holds the firm's
+updater public key (generated 2026-08-22; private half kept off-repo in the
+appliance secrets store). The private key + its (empty) password must be set
+as the GitHub secrets named in `.github/workflows/desktop-build.yml` before
+the first CI build. Rotating the key means rebuilding + reinstalling every
+client, so keep the private key backed up. The workflow writes a *relative*
+download URL into `latest.json` (`/desktop/dl/<file>`), which the updater
+resolves against whichever appliance the shell is connected to.
 
 ## Icons
 
@@ -114,6 +130,7 @@ See `apps/web/src/lib/desktop.ts` for the typed facade. Summary:
 | `set_idle_threshold(seconds)`, `set_foreground_watch(enabled)` | watchers |
 | `notify(notification)`, `set_badge(count)`, `clear_toasts` | notifications |
 | `secret_get/set/delete(key)`, `device_info`, `app_version` | credential store |
+| `get_server_url`, `set_server_url(url)`, `clear_server_url` | which appliance |
 | `check_for_update`, `install_update`, `get_autostart`, `set_autostart` | rollout |
 | `download_and_open(url, filename)`, `open_external(url)`, `set_outbox_watch(enabled)`, `read_outbox_file(path)`, `delete_outbox_file(path)` | files |
 
