@@ -53,6 +53,7 @@ services:
       PORTAL_JWT_SECRET: ${PORTAL_JWT_SECRET:?PORTAL_JWT_SECRET required}
       KMS_KEY: ${KMS_KEY:?KMS_KEY required}
       APP_BASE_URL: ${APP_BASE_URL}
+      DESKTOP_RELEASES_DIR: /data/desktop-releases
       PORTAL_BASE_URL: ${PORTAL_BASE_URL}
       INTAKE_BASE_URL: ${INTAKE_BASE_URL:-}
       WEBAUTHN_RP_ID: ${WEBAUTHN_RP_ID:-}
@@ -104,6 +105,8 @@ services:
       - cloudflared-run:/run/cloudflared
       - ./esm-resolve-hook.mjs:/opt/hooks/esm-resolve-hook.mjs:ro
       - ${APPLIANCE_SECRETS_DIR:-.}:/secrets:ro
+      # Desktop shell release channel (latest.json + signed installers).
+      - ${DESKTOP_RELEASES_HOST_DIR:-./desktop-releases}:/data/desktop-releases:ro
     healthcheck:
       test: ['CMD-SHELL', 'curl -fsS http://localhost:3001/health || exit 1']
       interval: 15s
