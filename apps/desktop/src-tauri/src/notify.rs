@@ -25,6 +25,8 @@ pub struct NativeNotification {
     pub title: String,
     pub body: Option<String>,
     pub href: Option<String>,
+    /// Kept for parity with the web contract; muting is decided web-side.
+    #[allow(dead_code)]
     pub category: Option<String>,
 }
 

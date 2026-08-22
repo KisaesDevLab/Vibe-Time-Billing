@@ -64,8 +64,6 @@ jobs:
           New-Item -ItemType Directory -Force -Path release | Out-Null
           Get-ChildItem "$bundle/nsis" -Filter *.exe | Copy-Item -Destination release
           Get-ChildItem "$bundle/nsis" -Filter *.sig | Copy-Item -Destination release
-          Get-ChildItem "$bundle/msi"  -Filter *.msi | Copy-Item -Destination release -ErrorAction SilentlyContinue
-          Get-ChildItem "$bundle/msi"  -Filter *.sig | Copy-Item -Destination release -ErrorAction SilentlyContinue
           $version = (Get-Content apps/desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
           $exe = Get-ChildItem release -Filter *-setup.exe | Select-Object -First 1
           $sig = Get-Content "release/$($exe.Name).sig" -Raw

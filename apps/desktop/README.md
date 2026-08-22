@@ -69,7 +69,8 @@ CI never needs Rust:
 # separately with `pnpm --filter @vibe/web dev`) or any appliance URL.
 pnpm --filter @vibe/desktop tauri dev
 
-# Production bundle (NSIS + MSI + updater artefacts)
+# Production bundle (NSIS installer + updater artefacts; MSI dropped — WiX
+# chokes on the '&' in the product name and the updater only needs NSIS)
 pnpm --filter @vibe/desktop tauri build
 ```
 
