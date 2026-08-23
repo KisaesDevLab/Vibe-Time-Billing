@@ -1552,6 +1552,9 @@ export const persons = pgTable(
     doNotCall: boolean('do_not_call').notNull().default(false),
     // 0221 — excluded from firm bulk emails (staff- or self-managed).
     bulkEmailOptOut: boolean('bulk_email_opt_out').notNull().default(false),
+    // 0224 — excluded from automated texts (reminders, status notices,
+    // dunning, invoice texts). OTP/security codes still go through.
+    smsOptOut: boolean('sms_opt_out').notNull().default(false),
     status: entityStatus('status').notNull().default('ACTIVE'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

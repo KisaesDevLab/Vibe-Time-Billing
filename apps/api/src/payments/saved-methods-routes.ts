@@ -391,7 +391,12 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
 
       // Destination: an explicitly chosen contact (must belong to this
       // client and be active), else the billing/primary contact.
-      let dest: { fullName: string; email: string | null; phone: string | null } | null = null;
+      let dest: {
+        fullName: string;
+        email: string | null;
+        phone: string | null;
+        smsPhone: string | null;
+      } | null = null;
       if (parsed.data.contactId) {
         const [c] = await deps.db
           .select({
@@ -399,6 +404,7 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
             email: persons.email,
             phone: persons.phone,
             mobile: persons.mobile,
+            smsOptOut: persons.smsOptOut,
             status: clientContacts.status,
           })
           .from(clientContacts)
@@ -414,8 +420,14 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
           res.status(404).json({ error: 'contact_not_found' });
           return;
         }
-        // SMS prefers the mobile number when the person has both.
-        dest = { fullName: c.fullName, email: c.email, phone: c.mobile || c.phone };
+        // SMS prefers the mobile number when the person has both; 0224 — an
+        // SMS opt-out leaves no text destination.
+        dest = {
+          fullName: c.fullName,
+          email: c.email,
+          phone: c.mobile || c.phone,
+          smsPhone: c.smsOptOut ? null : c.mobile || c.phone,
+        };
       } else {
         dest = await getBillingContact(deps.db, pm.clientId);
       }
@@ -425,12 +437,12 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
         res.status(400).json({ error: 'no_email_destination' });
         return;
       }
-      if (parsed.data.channel === 'SMS' && (!deps.sendSms || !dest?.phone)) {
+      if (parsed.data.channel === 'SMS' && (!deps.sendSms || !dest?.smsPhone)) {
         res.status(400).json({ error: 'no_sms_destination' });
         return;
       }
       const emailDeliverable = wantEmail && !!deps.sendStaffMail && !!dest?.email;
-      const smsDeliverable = wantSms && !!deps.sendSms && !!dest?.phone;
+      const smsDeliverable = wantSms && !!deps.sendSms && !!dest?.smsPhone;
       if (!emailDeliverable && !smsDeliverable) {
         res.status(400).json({ error: 'no_destination' });
         return;
@@ -488,7 +500,7 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
       if (smsDeliverable) {
         try {
           await deps.sendSms!({
-            to: dest!.phone!,
+            to: dest!.smsPhone!,
             body:
               `${firmName}: please confirm the small test deposit(s) sent to your bank ` +
               `${pm.displayLabel} so we can process your ACH payment. No login needed: ${url}`,
@@ -523,7 +535,7 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
         ok: true,
         results,
         sentToEmail: results.email === 'sent' ? dest!.email : null,
-        sentToPhone: results.sms === 'sent' ? dest!.phone : null,
+        sentToPhone: results.sms === 'sent' ? dest!.smsPhone : null,
         expiresAt: link.expiresAt,
       });
     },

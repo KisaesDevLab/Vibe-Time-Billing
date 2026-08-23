@@ -625,11 +625,60 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       return;
     }
     const [person] = await deps.db
-      .select({ optOut: persons.bulkEmailOptOut })
+      .select({
+        optOut: persons.bulkEmailOptOut,
+        smsOptOut: persons.smsOptOut,
+        doNotCall: persons.doNotCall,
+      })
       .from(persons)
       .where(eq(persons.id, ident.personId))
       .limit(1);
-    res.json({ available: Boolean(person), optOut: person?.optOut ?? false });
+    res.json({
+      available: Boolean(person),
+      optOut: person?.optOut ?? false,
+      // 0224 — SMS + voice opt-outs, same self-service surface.
+      smsOptOut: person?.smsOptOut ?? false,
+      doNotCall: person?.doNotCall ?? false,
+    });
+  });
+
+  // 0224 — one PATCH for all three channel preferences.
+  router.patch('/contact-preferences', deps.requireAuth, async (req: Request, res: Response) => {
+    const session = req.portalSession!;
+    if (!deps.db) {
+      res.json({ ok: true });
+      return;
+    }
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const set: Partial<typeof persons.$inferInsert> = {};
+    if (typeof body['bulkEmailOptOut'] === 'boolean') set.bulkEmailOptOut = body['bulkEmailOptOut'];
+    if (typeof body['smsOptOut'] === 'boolean') set.smsOptOut = body['smsOptOut'];
+    if (typeof body['doNotCall'] === 'boolean') set.doNotCall = body['doNotCall'];
+    if (Object.keys(set).length === 0) {
+      res.status(400).json({ error: 'no_preferences' });
+      return;
+    }
+    const [ident] = await deps.db
+      .select({ personId: portalIdentity.personId })
+      .from(portalIdentity)
+      .where(eq(portalIdentity.id, session.portalIdentityId))
+      .limit(1);
+    if (!ident?.personId) {
+      res.status(404).json({ error: 'no_linked_person' });
+      return;
+    }
+    await deps.db
+      .update(persons)
+      .set({ ...set, updatedAt: new Date() })
+      .where(eq(persons.id, ident.personId));
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'person',
+      entityId: ident.personId,
+      actorPortalIdentityId: session.portalIdentityId,
+      after: { ...set, via: 'portal_preference' },
+    }).catch(() => undefined);
+    res.json({ ok: true, ...set });
   });
 
   router.patch('/bulk-email-preference', deps.requireAuth, async (req: Request, res: Response) => {

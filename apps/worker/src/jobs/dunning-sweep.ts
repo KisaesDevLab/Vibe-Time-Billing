@@ -5,7 +5,7 @@
 // already fired (recorded in a per-invoice ledger key on Redis or — in
 // future — a dunning_history table).
 
-import { and, eq, inArray, lte } from 'drizzle-orm';
+import { and, eq, inArray, lte, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -68,7 +68,10 @@ export async function runDunningSweep(
       // 0115 — name/email/phone are canonical on person; the isBilling
       // precedence stays on client_contact.
       billingContactEmail: persons.email,
-      billingContactPhone: persons.phone,
+      // 0224 — text the mobile first; an SMS opt-out removes the handle.
+      billingContactPhone: sql<
+        string | null
+      >`CASE WHEN ${persons.smsOptOut} THEN NULL ELSE COALESCE(${persons.mobile}, ${persons.phone}) END`,
       primaryEngagementId: invoices.primaryEngagementId,
       firmId: invoices.firmId,
     })
