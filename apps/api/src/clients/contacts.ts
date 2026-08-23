@@ -27,8 +27,19 @@ const ContactBaseSchema = z.object({
   fullName: z.string().min(1).max(200).optional(),
   roleId: z.string().uuid().nullable().optional(),
   email: z.string().email().max(254).nullable().optional(),
-  phone: z.string().max(40).nullable().optional(),
-  mobile: z.string().max(40).nullable().optional(),
+  // 0224 — blank → NULL so mobile→phone fallbacks never see ''.
+  phone: z
+    .string()
+    .max(40)
+    .nullable()
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v?.trim() || null)),
+  mobile: z
+    .string()
+    .max(40)
+    .nullable()
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v?.trim() || null)),
   isPrimary: z.boolean().optional(),
   isBilling: z.boolean().optional(),
   isPortalIdentity: z.boolean().optional(),

@@ -60,6 +60,7 @@ import { printNotificationChannel } from '../notifications/print-channel';
 
 import { loadInvoiceTemplateDef } from './template-loader';
 import { composeFirmMailingAddress } from '../firm/mailing-address';
+import { SMS_OPTED_OUT } from '../people/sms-gate';
 
 export interface InvoiceRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -2335,7 +2336,9 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         return;
       }
       if (parsed.data.channel === 'SMS' && (!deps.sendSms || !billingContact?.smsPhone)) {
-        res.status(409).json({ error: 'no_sms_destination' });
+        // 0224 — tell staff WHY: a number exists but the person opted out.
+        const optedOut = Boolean(billingContact?.phone) && !billingContact?.smsPhone;
+        res.status(409).json({ error: optedOut ? SMS_OPTED_OUT : 'no_sms_destination' });
         return;
       }
 
@@ -2368,7 +2371,11 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
           payUrl: null,
           results: {
             email: wantEmail ? 'no_destination' : 'skipped',
-            sms: wantSms ? 'no_destination' : 'skipped',
+            sms: wantSms
+              ? billingContact?.phone && !billingContact.smsPhone
+                ? 'opted_out'
+                : 'no_destination'
+              : 'skipped',
           },
         });
         return;
@@ -2464,7 +2471,8 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         // is a transactional payment request the staff member explicitly sent.
         // 0224 — smsPhone is null when the person opted out of texts.
         if (!deps.sendSms || !billingContact?.smsPhone) {
-          results.sms = 'no_destination';
+          results.sms =
+            billingContact?.phone && !billingContact.smsPhone ? 'opted_out' : 'no_destination';
         } else if (await onCooldown('SMS')) {
           results.sms = 'cooldown';
         } else {
@@ -3028,7 +3036,9 @@ async function sendInvoiceSms(
   const billingContact = await getBillingContact(deps.db, inv.clientId);
   // 0224 — null when the person opted out of texts.
   if (!billingContact?.smsPhone) {
-    return { ok: false, status: 404, error: 'no_billing_phone' };
+    return billingContact?.phone
+      ? { ok: false, status: 409, error: SMS_OPTED_OUT }
+      : { ok: false, status: 404, error: 'no_billing_phone' };
   }
   const portalBase = deps.portalBaseUrl ?? '';
   const link = portalBase ? `${portalBase}/invoices/${inv.id}` : '';

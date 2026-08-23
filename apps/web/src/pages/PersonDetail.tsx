@@ -376,9 +376,12 @@ function EditHeader({
       };
       if (person.kind === 'person') {
         body['mobile'] = mobile.trim() || null;
-        body['bulkEmailOptOut'] = blockBulk;
-        body['smsOptOut'] = blockSms;
-        body['doNotCall'] = blockCalls;
+        // 0224 — only send flags the staffer actually changed, so an
+        // unrelated save can never revert a client's own opt-out (e.g. a
+        // press-9 do-not-call recorded after the edit form opened).
+        if (blockBulk !== Boolean(person.bulkEmailOptOut)) body['bulkEmailOptOut'] = blockBulk;
+        if (blockSms !== Boolean(person.smsOptOut)) body['smsOptOut'] = blockSms;
+        if (blockCalls !== Boolean(person.doNotCall)) body['doNotCall'] = blockCalls;
       }
       await api(`/api/staff/people/${person.id}`, { method: 'PATCH', body: JSON.stringify(body) });
       setEditing(false);

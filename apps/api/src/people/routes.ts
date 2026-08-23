@@ -55,8 +55,20 @@ type Kind = 'person' | 'portal_identity';
 const PatchSchema = z.object({
   fullName: z.string().min(1).max(200).optional(),
   email: z.string().email().max(254).nullable().optional(),
-  phone: z.string().max(40).nullable().optional(),
-  mobile: z.string().max(40).nullable().optional(),
+  // 0224 — blank strings are stored as NULL so "mobile first, then phone"
+  // fallbacks never land on ''.
+  phone: z
+    .string()
+    .max(40)
+    .nullable()
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v?.trim() || null)),
+  mobile: z
+    .string()
+    .max(40)
+    .nullable()
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v?.trim() || null)),
   // 0221 — block/unblock this person from firm bulk emails.
   bulkEmailOptOut: z.boolean().optional(),
   // 0224 — automated texts / voice calls (do_not_call is the 0206 flag).
@@ -289,14 +301,12 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         emailFilter.includes(r.email && r.email.trim() !== '' ? 'not_blank' : 'blank'),
       );
     }
+    // 0224 — Phone filter matches the Phone column only; Mobile has its own.
     const phoneFilter = csv(req.query['phone']);
     if (phoneFilter.length > 0) {
-      filtered = filtered.filter((r) => {
-        const has = Boolean(
-          (r.phone && r.phone.trim() !== '') || (r.mobile && r.mobile.trim() !== ''),
-        );
-        return phoneFilter.includes(has ? 'not_blank' : 'blank');
-      });
+      filtered = filtered.filter((r) =>
+        phoneFilter.includes(r.phone && r.phone.trim() !== '' ? 'not_blank' : 'blank'),
+      );
     }
 
     // 0224 — mobile column gets its own presence filter.
@@ -747,12 +757,19 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
             .where(eq(persons.id, m.id));
         }
 
+        // 0224 — an opt-out on any merged record survives: a number whose
+        // owner said "no texts" must not become textable via the survivor.
+        const anyOpt = (k: 'bulkEmailOptOut' | 'smsOptOut' | 'doNotCall'): boolean =>
+          Boolean(survivor[k]) || mergeRows.some((m) => Boolean(m[k]));
         await tx
           .update(persons)
           .set({
             email: fillEmail,
             phone: fillPhone,
             mobile: fillMobile,
+            bulkEmailOptOut: anyOpt('bulkEmailOptOut'),
+            smsOptOut: anyOpt('smsOptOut'),
+            doNotCall: anyOpt('doNotCall'),
             updatedAt: new Date(),
           })
           .where(eq(persons.id, survivorId));
@@ -939,7 +956,12 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       const data = parsed.data;
 
       const [person] = await db
-        .select({ id: persons.id })
+        .select({
+          id: persons.id,
+          bulkEmailOptOut: persons.bulkEmailOptOut,
+          smsOptOut: persons.smsOptOut,
+          doNotCall: persons.doNotCall,
+        })
         .from(persons)
         .where(and(eq(persons.id, id), eq(persons.firmId, firmId)))
         .limit(1);
@@ -948,35 +970,45 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         if (data.bulkEmailOptOut !== undefined) flags.bulkEmailOptOut = data.bulkEmailOptOut;
         if (data.smsOptOut !== undefined) flags.smsOptOut = data.smsOptOut;
         if (data.doNotCall !== undefined) flags.doNotCall = data.doNotCall;
-        if (Object.keys(flags).length) {
-          await db
-            .update(persons)
-            .set({ ...flags, updatedAt: new Date() })
-            .where(eq(persons.id, person.id));
-        }
+        const {
+          bulkEmailOptOut: _skip,
+          smsOptOut: _skip2,
+          doNotCall: _skip3,
+          ...personFields
+        } = data;
+        void _skip;
+        void _skip2;
+        void _skip3;
+        // 0224 — flags + fields + audit in ONE transaction, so an
+        // email_in_use rejection cannot leave the flags half-applied and
+        // unaudited.
         try {
-          const {
-            bulkEmailOptOut: _skip,
-            smsOptOut: _skip2,
-            doNotCall: _skip3,
-            ...personFields
-          } = data;
-          void _skip;
-          void _skip2;
-          void _skip3;
-          await updatePerson(db, person.id, personFields);
+          await db.transaction(async (tx) => {
+            if (Object.keys(flags).length) {
+              await tx
+                .update(persons)
+                .set({ ...flags, updatedAt: new Date() })
+                .where(eq(persons.id, person.id));
+            }
+            await updatePerson(tx, person.id, personFields);
+            await emitAudit(tx as unknown as typeof db, {
+              action: 'UPDATE',
+              entityType: 'person',
+              entityId: person.id,
+              actorAppUserId: session.appUserId,
+              before: {
+                bulkEmailOptOut: person.bulkEmailOptOut,
+                smsOptOut: person.smsOptOut,
+                doNotCall: person.doNotCall,
+              },
+              after: data,
+            });
+          });
         } catch (err) {
           logger.warn({ err }, 'person update failed');
           res.status(409).json({ error: 'email_in_use' });
           return;
         }
-        await emitAudit(db, {
-          action: 'UPDATE',
-          entityType: 'person',
-          entityId: person.id,
-          actorAppUserId: session.appUserId,
-          after: data,
-        }).catch(() => undefined);
         res.json({ ok: true, kind: 'person' });
         return;
       }
