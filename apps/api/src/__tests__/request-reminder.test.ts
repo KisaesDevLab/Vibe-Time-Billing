@@ -8,7 +8,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { pino } from 'pino';
 import { eq, sql } from 'drizzle-orm';
 
-import { clientRequests } from '@vibe/db/schema';
+import { clientRequests, persons } from '@vibe/db/schema';
 import { runRequestReminderTick } from '../../../worker/src/jobs/request-reminder';
 import {
   buildPgliteHarness,
@@ -290,6 +290,45 @@ describe('runRequestReminderTick', () => {
     expect(texts).toHaveLength(1);
     expect(texts[0]!.to).toBe('+15555550123');
     expect(texts[0]!.body).toContain('drop off');
+  });
+
+  it('0224 — skips the SMS (but still emails) when the person opted out of texts', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const c = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Billing User',
+      email: 'bill@example.com',
+      mobile: '+15555550123',
+      isPrimary: true,
+      isBilling: true,
+    });
+    await harness.db.update(persons).set({ smsOptOut: true }).where(eq(persons.id, c.personId));
+    await insertRequest({
+      firmId: seed.firmId,
+      engagementId: seed.engagementId,
+      kind: 'DROP_OFF',
+      dueDate: '2026-06-03',
+      reminderDaysBefore: 3,
+    });
+    const emails: string[] = [];
+    const texts: string[] = [];
+    const r = await runRequestReminderTick(
+      harness.db,
+      silentLog,
+      {
+        sendEmail: async (msg) => {
+          emails.push(msg.to);
+        },
+        sendSms: async (msg) => {
+          texts.push(msg.to);
+        },
+      },
+      new Date('2026-06-01T08:00:00Z'),
+    );
+    expect(r.sent).toBe(1);
+    expect(emails).toEqual(['bill@example.com']);
+    expect(texts).toHaveLength(0);
   });
 
   it('DROP_OFF fires exactly once and does not re-fire the next day', async () => {

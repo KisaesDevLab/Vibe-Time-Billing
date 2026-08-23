@@ -159,7 +159,12 @@ export function NotificationPrefsPage(): JSX.Element {
   const [savedAt, setSavedAt] = useState<number | null>(null);
   // 0221 — self-managed bulk-email preference (lives on the linked
   // directory person; hidden for standalone third-party logins).
-  const [bulkEmail, setBulkEmail] = useState<{ available: boolean; optOut: boolean } | null>(null);
+  const [bulkEmail, setBulkEmail] = useState<{
+    available: boolean;
+    optOut: boolean;
+    smsOptOut?: boolean;
+    doNotCall?: boolean;
+  } | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   useEffect(() => {
@@ -181,9 +186,12 @@ export function NotificationPrefsPage(): JSX.Element {
         setError(err instanceof Error ? err.message : 'failed');
       }
       try {
-        const b = await api<{ available: boolean; optOut: boolean }>(
-          '/api/portal/profile/bulk-email-preference',
-        );
+        const b = await api<{
+          available: boolean;
+          optOut: boolean;
+          smsOptOut?: boolean;
+          doNotCall?: boolean;
+        }>('/api/portal/profile/bulk-email-preference');
         setBulkEmail(b);
       } catch {
         setBulkEmail(null);
@@ -199,6 +207,22 @@ export function NotificationPrefsPage(): JSX.Element {
         body: JSON.stringify({ optOut }),
       });
       setBulkEmail((prev) => (prev ? { ...prev, optOut } : prev));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  // 0224 — text / voice opt-outs, same self-service surface.
+  async function setChannelOptOut(key: 'smsOptOut' | 'doNotCall', value: boolean): Promise<void> {
+    setBulkBusy(true);
+    try {
+      await api('/api/portal/profile/contact-preferences', {
+        method: 'PATCH',
+        body: JSON.stringify({ [key]: value }),
+      });
+      setBulkEmail((prev) => (prev ? { ...prev, [key]: value } : prev));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
     } finally {
@@ -350,6 +374,33 @@ export function NotificationPrefsPage(): JSX.Element {
             Receive bulk emails from your firm (announcements, office updates). Transactional
             messages — invoices, payment receipts, reminders — are unaffected by this setting.
           </label>
+        </Card>
+      )}
+
+      {bulkEmail?.available && (
+        <Card title="Text messages and phone calls">
+          <div style={{ display: 'grid', gap: 10 }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={!bulkEmail.smsOptOut}
+                disabled={bulkBusy}
+                onChange={(e) => void setChannelOptOut('smsOptOut', !e.target.checked)}
+              />
+              Receive text messages from your firm (appointment reminders, status updates, payment
+              reminders). Sign-in codes are always sent.
+            </label>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={!bulkEmail.doNotCall}
+                disabled={bulkBusy}
+                onChange={(e) => void setChannelOptOut('doNotCall', !e.target.checked)}
+              />
+              Receive automated phone calls (appointment reminders). When off, you get the text
+              version instead.
+            </label>
+          </div>
         </Card>
       )}
     </div>

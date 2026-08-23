@@ -45,6 +45,9 @@ export interface RecipientSnapshot {
   name: string;
   email: string | null;
   phone: string | null;
+  /** 0224 — channel opt-outs captured at staging time. */
+  smsOptOut?: boolean;
+  doNotCall?: boolean;
 }
 
 export interface StageStatusNotificationArgs {
@@ -119,6 +122,8 @@ export async function stageStatusNotification(
       mobile: persons.mobile,
       isBilling: clientContacts.isBilling,
       receiveStatusNotifications: clientContacts.receiveStatusNotifications,
+      smsOptOut: persons.smsOptOut,
+      doNotCall: persons.doNotCall,
     })
     .from(clientContacts)
     .innerJoin(persons, eq(persons.id, clientContacts.personId))
@@ -134,6 +139,8 @@ export async function stageStatusNotification(
     name: c.name,
     email: c.email,
     phone: c.mobile ?? c.phone,
+    smsOptOut: c.smsOptOut,
+    doNotCall: c.doNotCall,
   }));
 
   // Render snapshot per channel: firm template (enabled) else default.

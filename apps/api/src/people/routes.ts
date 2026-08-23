@@ -59,6 +59,9 @@ const PatchSchema = z.object({
   mobile: z.string().max(40).nullable().optional(),
   // 0221 — block/unblock this person from firm bulk emails.
   bulkEmailOptOut: z.boolean().optional(),
+  // 0224 — automated texts / voice calls (do_not_call is the 0206 flag).
+  smsOptOut: z.boolean().optional(),
+  doNotCall: z.boolean().optional(),
 });
 
 export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
@@ -98,6 +101,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         mobile: persons.mobile,
         status: persons.status,
         bulkEmailOptOut: persons.bulkEmailOptOut,
+        smsOptOut: persons.smsOptOut,
+        doNotCall: persons.doNotCall,
       })
       .from(persons)
       // Archived people (e.g. merge losers) stay out of the directory.
@@ -194,6 +199,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       portalStatus: 'yes' | 'invited' | 'no';
       clientCount: number;
       bulkEmailOptOut: boolean;
+      smsOptOut: boolean;
+      doNotCall: boolean;
       onThisClient?: boolean;
       alsoOn?: { clientId: string; name: string }[];
     }
@@ -217,6 +224,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
             : 'no',
         clientCount: (contactsByPerson.get(p.id) ?? []).length,
         bulkEmailOptOut: p.bulkEmailOptOut,
+        smsOptOut: p.smsOptOut,
+        doNotCall: p.doNotCall,
       });
     }
     for (const i of identityRows) {
@@ -238,6 +247,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
             : 'no',
         clientCount: (clientsByIdentity.get(i.id) ?? new Set()).size,
         bulkEmailOptOut: false,
+        smsOptOut: false,
+        doNotCall: false,
       });
     }
 
@@ -288,6 +299,14 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       });
     }
 
+    // 0224 — mobile column gets its own presence filter.
+    const mobileFilter = csv(req.query['mobile']);
+    if (mobileFilter.length > 0) {
+      filtered = filtered.filter((r) =>
+        mobileFilter.includes(r.mobile && r.mobile.trim() !== '' ? 'not_blank' : 'blank'),
+      );
+    }
+
     const sortCol = String(req.query['sort'] ?? 'name');
     const sortDir = String(req.query['dir'] ?? 'asc') === 'desc' ? -1 : 1;
     const cmp = (a: Row, b: Row): number => {
@@ -296,6 +315,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
           return (a.email ?? '').localeCompare(b.email ?? '');
         case 'phone':
           return (a.phone ?? '').localeCompare(b.phone ?? '');
+        case 'mobile':
+          return (a.mobile ?? '').localeCompare(b.mobile ?? '');
         case 'clients':
           return a.clientCount - b.clientCount;
         default:
@@ -347,6 +368,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         mobile: persons.mobile,
         status: persons.status,
         bulkEmailOptOut: persons.bulkEmailOptOut,
+        smsOptOut: persons.smsOptOut,
+        doNotCall: persons.doNotCall,
       };
       let person =
         (
@@ -403,6 +426,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
             mobile: person.mobile,
             status: person.status,
             bulkEmailOptOut: person.bulkEmailOptOut,
+            smsOptOut: person.smsOptOut,
+            doNotCall: person.doNotCall,
           }
         : {
             id: identity!.id,
@@ -919,15 +944,26 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         .where(and(eq(persons.id, id), eq(persons.firmId, firmId)))
         .limit(1);
       if (person) {
-        if (data.bulkEmailOptOut !== undefined) {
+        const flags: Partial<typeof persons.$inferInsert> = {};
+        if (data.bulkEmailOptOut !== undefined) flags.bulkEmailOptOut = data.bulkEmailOptOut;
+        if (data.smsOptOut !== undefined) flags.smsOptOut = data.smsOptOut;
+        if (data.doNotCall !== undefined) flags.doNotCall = data.doNotCall;
+        if (Object.keys(flags).length) {
           await db
             .update(persons)
-            .set({ bulkEmailOptOut: data.bulkEmailOptOut, updatedAt: new Date() })
+            .set({ ...flags, updatedAt: new Date() })
             .where(eq(persons.id, person.id));
         }
         try {
-          const { bulkEmailOptOut: _skip, ...personFields } = data;
+          const {
+            bulkEmailOptOut: _skip,
+            smsOptOut: _skip2,
+            doNotCall: _skip3,
+            ...personFields
+          } = data;
           void _skip;
+          void _skip2;
+          void _skip3;
           await updatePerson(db, person.id, personFields);
         } catch (err) {
           logger.warn({ err }, 'person update failed');

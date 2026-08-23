@@ -155,6 +155,7 @@ export async function runRequestReminderTick(
           email: persons.email,
           phone: persons.mobile,
           altPhone: persons.phone,
+          smsOptOut: persons.smsOptOut,
           isBilling: clientContacts.isBilling,
           isPrimary: clientContacts.isPrimary,
         })
@@ -172,7 +173,8 @@ export async function runRequestReminderTick(
       if (c.isBilling) billingByClient.set(c.clientId, c.email);
       else if (c.isPrimary) primaryByClient.set(c.clientId, c.email);
     }
-    const phone = c.phone ?? c.altPhone;
+    // 0224 — a person who opted out of texts has no SMS handle.
+    const phone = c.smsOptOut ? null : (c.phone ?? c.altPhone);
     if (phone) {
       if (c.isBilling) billingPhoneByClient.set(c.clientId, phone);
       else if (c.isPrimary) primaryPhoneByClient.set(c.clientId, phone);

@@ -629,6 +629,7 @@ export async function runAppointmentReminderTick(
         name: persons.fullName,
         optIn: clientContacts.receiveAppointmentReminders,
         doNotCall: persons.doNotCall,
+        smsOptOut: persons.smsOptOut,
       })
       .from(appointmentParticipants)
       .innerJoin(clientContacts, eq(clientContacts.id, appointmentParticipants.clientContactId))
@@ -682,7 +683,8 @@ export async function runAppointmentReminderTick(
               icsFilename: 'appointment.ics',
             });
           } else if (channel === 'SMS') {
-            if (!deps.sendSms || !phone || !canSendQuiet) continue;
+            // 0224 — person opted out of automated texts.
+            if (!deps.sendSms || !phone || !canSendQuiet || p.smsOptOut) continue;
             await deps.sendSms({ to: phone, body, firmId: appt.firmId });
           } else {
             if (!phone || !canSendQuiet) continue;
@@ -700,8 +702,9 @@ export async function runAppointmentReminderTick(
             }).body;
             if (p.doNotCall) {
               // 0206 — opted out of automated calls: deliver the SMS version
-              // and record the step so it isn't retried.
-              if (!deps.sendSms) continue;
+              // and record the step so it isn't retried. 0224 — unless they
+              // opted out of texts too, in which case nothing goes out.
+              if (!deps.sendSms || p.smsOptOut) continue;
               await deps.sendSms({ to: phone, body: smsBody, firmId: appt.firmId });
             } else {
               if (!deps.placeCall) continue;
