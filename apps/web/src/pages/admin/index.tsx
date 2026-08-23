@@ -8,7 +8,7 @@
 import { useState } from 'react';
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 
-import { tokens } from '@vibe/ui';
+import { tokens, useIsNarrow } from '@vibe/ui';
 
 import { AiUsagePage } from './AiUsage';
 import { AiSettingsPage } from './AiSettings';
@@ -258,11 +258,13 @@ export function AdminLayout(): JSX.Element {
     saveCollapsed(next);
   }
 
+  const narrowShell = useIsNarrow();
   return (
     <div
       style={{
         display: 'grid',
-        gridTemplateColumns: '220px 1fr',
+        // Phones: the 220px sub-nav stacks above the content.
+        gridTemplateColumns: narrowShell ? '1fr' : '220px 1fr',
         gap: tokens.space.xl,
         // Top-align both columns. Without this the content column stretches to
         // the (tall) nav's height, and each page's root grid then distributes
