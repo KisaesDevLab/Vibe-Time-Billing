@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react';
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { AiModeCard, type AiModeConfig } from './AiModeCard';
 
 type ProviderId = 'anthropic' | 'openai_compatible' | 'ollama';
 
@@ -46,6 +47,8 @@ interface SettingsResp {
   budget: { monthlyBudgetCents: number; warnThresholdPct: number } | null;
   /** MIG-8: 'router' → all AI traffic goes through the Vibe AI Router */
   aiMode?: 'direct' | 'router';
+  /** 0222 — the switch itself. */
+  aiModeConfig?: AiModeConfig;
 }
 
 interface ProviderMeta {
@@ -278,6 +281,8 @@ export function AiSettingsPage(): JSX.Element {
           last 4 characters. Local-first routing applies: a local model is used when available.
         </p>
       </div>
+
+      {data.aiModeConfig && <AiModeCard config={data.aiModeConfig} onSaved={load} />}
 
       {/* MIG-8: provider credentials, egress, and budget are inert in router mode */}
       {data?.aiMode === 'router' && (

@@ -548,12 +548,23 @@ export const firmConfig = pgTable(
     // Vibe Shield; 'direct' lets the appliance call the provider API
     // directly (firm-owned key + budget cap + audit), no shield needed.
     aiEgressMode: text('ai_egress_mode').notNull().default('shield'),
-    // 0103 — document intake feature toggle (license-gated, per firm).
+    // 0103 — document intake feature toggle (per firm).
     intakeEnabled: boolean('intake_enabled').notNull().default(false),
+    // 0222 — AI routing mode from Admin → AI settings. 'env' = follow the
+    // VIBE_AI_MODE env var (appliance default); 'direct' / 'router' override
+    // it. The router token is MFK-wrapped like provider API keys.
+    aiMode: text('ai_mode').notNull().default('env'),
+    aiRouterUrl: text('ai_router_url'),
+    aiRouterTokenEncrypted: bytea('ai_router_token_encrypted'),
+    aiRouterTokenHint: text('ai_router_token_hint'),
+    aiRouterStatus: text('ai_router_status').notNull().default('UNTESTED'),
+    aiRouterLastError: text('ai_router_last_error'),
+    aiRouterLastTestedAt: timestamp('ai_router_last_tested_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
+    aiModeCk: check('firm_config_ai_mode_ck', sql`${t.aiMode} IN ('env', 'direct', 'router')`),
     unlockModeCk: check(
       'firm_config_unlock_mode_ck',
       sql`${t.unlockMode} IN ('sealed-on-disk', 'admin-passphrase')`,

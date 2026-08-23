@@ -29,7 +29,9 @@ import { getFirmKeyManager } from '../../crypto/manager';
 import { SHIELD_REACHABLE_KEY } from '../../ai/egress';
 import { invalidateFirmProviders } from '../../ai/resolve-providers';
 import { createAnthropicProvider } from '../../ai/anthropic';
-import { aiMode } from '../../ai/vibe-router';
+import { aiMode, timeBillingTaskClassDeclarations } from '../../ai/vibe-router';
+import { getAiRuntime, refreshAiRuntime } from '../../ai/ai-runtime';
+import { VibeAiClient } from '@kisaes/vibe-ai-client';
 import { createOllamaProvider } from '../../ai/ollama';
 import { createOpenAiCompatibleProvider } from '../../ai/openai-compatible';
 
@@ -119,6 +121,13 @@ export function createAiCredentialsRouter(deps: AiCredentialsRoutesDeps): Router
         aiEgressEnabled: firmConfig.aiEgressEnabled,
         aiEgressMode: firmConfig.aiEgressMode,
         vibeShieldEndpoint: firmConfig.vibeShieldEndpoint,
+        aiModeSetting: firmConfig.aiMode,
+        aiRouterUrl: firmConfig.aiRouterUrl,
+        aiRouterTokenHint: firmConfig.aiRouterTokenHint,
+        aiRouterHasToken: firmConfig.aiRouterTokenEncrypted,
+        aiRouterStatus: firmConfig.aiRouterStatus,
+        aiRouterLastError: firmConfig.aiRouterLastError,
+        aiRouterLastTestedAt: firmConfig.aiRouterLastTestedAt,
       })
       .from(firmConfig)
       .where(eq(firmConfig.firmId, firmId))
@@ -135,8 +144,24 @@ export function createAiCredentialsRouter(deps: AiCredentialsRoutesDeps): Router
       ? (await deps.redis.get(SHIELD_REACHABLE_KEY)) === '1'
       : false;
 
+    const rt = getAiRuntime();
     res.json({
       aiMode: aiMode(),
+      // 0222 — the switch itself (Admin → AI settings → AI routing).
+      aiModeConfig: {
+        setting: (cfg?.aiModeSetting ?? 'env') as 'env' | 'direct' | 'router',
+        effective: rt.mode,
+        source: rt.source,
+        problem: rt.problem,
+        envMode: process.env['VIBE_AI_MODE'] === 'router' ? 'router' : 'direct',
+        envRouterUrl: process.env['VIBE_AI_ROUTER_URL'] ?? null,
+        routerUrl: cfg?.aiRouterUrl ?? null,
+        hasToken: Boolean(cfg?.aiRouterHasToken),
+        tokenHint: cfg?.aiRouterTokenHint ?? null,
+        status: cfg?.aiRouterStatus ?? 'UNTESTED',
+        lastError: cfg?.aiRouterLastError ?? null,
+        lastTestedAt: cfg?.aiRouterLastTestedAt ?? null,
+      },
       providers: rows.map((r) => ({
         providerId: r.providerId,
         hasKey: Boolean(r.apiKeyEncrypted),
@@ -163,6 +188,154 @@ export function createAiCredentialsRouter(deps: AiCredentialsRoutesDeps): Router
           }
         : null,
     });
+  });
+
+  // -------------------------------------------------------------------
+  // 0222 — AI routing mode (direct / Vibe AI Router / appliance default).
+  // Mounted before /:providerId so the literal path wins.
+  // -------------------------------------------------------------------
+  const AiModeSchema = z.object({
+    mode: z.enum(['env', 'direct', 'router']),
+    routerUrl: z.string().url().max(500).optional(),
+    // Omit to keep the stored token; send '' to clear it.
+    token: z.string().max(4096).optional(),
+  });
+
+  async function probeRouter(
+    baseUrl: string,
+    token: string,
+  ): Promise<{ ok: true; registered: number } | { ok: false; error: string }> {
+    try {
+      const client = new VibeAiClient({ baseUrl, token });
+      const r = await client.registerTaskClasses(timeBillingTaskClassDeclarations());
+      return { ok: true, registered: r.registered.length };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  router.put('/ai-mode', requirePermission(deps, 'firm:settings:write'), async (req, res) => {
+    const firmId = req.staffSession?.firmId;
+    const session = req.staffSession!;
+    if (!firmId || !deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const parsed = AiModeSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_payload', issues: parsed.error.flatten() });
+      return;
+    }
+    const d = parsed.data;
+    const [existing] = await deps.db
+      .select({
+        aiMode: firmConfig.aiMode,
+        url: firmConfig.aiRouterUrl,
+        tokenEnc: firmConfig.aiRouterTokenEncrypted,
+      })
+      .from(firmConfig)
+      .where(eq(firmConfig.firmId, firmId))
+      .limit(1);
+    const patch: Partial<typeof firmConfig.$inferInsert> = {
+      aiMode: d.mode,
+      updatedAt: new Date(),
+    };
+    if (d.routerUrl !== undefined) patch.aiRouterUrl = d.routerUrl.replace(/\/+$/, '');
+    if (d.token !== undefined) {
+      if (d.token === '') {
+        patch.aiRouterTokenEncrypted = null;
+        patch.aiRouterTokenHint = null;
+      } else {
+        const lockState = getApplianceLockState();
+        if (lockState.kind !== 'unlocked') {
+          res.status(503).json({ error: 'appliance_locked', state: lockState.kind });
+          return;
+        }
+        patch.aiRouterTokenEncrypted = getFirmKeyManager(deps.db).wrapTDek(firmId, utf8(d.token));
+        patch.aiRouterTokenHint = hint(d.token);
+      }
+    }
+    if (d.mode === 'router') {
+      const url = patch.aiRouterUrl ?? existing?.url;
+      const hasToken =
+        patch.aiRouterTokenEncrypted !== undefined
+          ? patch.aiRouterTokenEncrypted !== null
+          : Boolean(existing?.tokenEnc);
+      if (!url || !hasToken) {
+        res.status(400).json({ error: 'router_requires_url_and_token' });
+        return;
+      }
+    }
+    // Saving resets the test status unless nothing router-related changed.
+    if (d.routerUrl !== undefined || d.token !== undefined) {
+      patch.aiRouterStatus = 'UNTESTED';
+      patch.aiRouterLastError = null;
+    }
+    if (existing) {
+      await deps.db.update(firmConfig).set(patch).where(eq(firmConfig.firmId, firmId));
+    } else {
+      await deps.db.insert(firmConfig).values({ firmId, ...patch });
+    }
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'firm_config',
+      entityId: firmId,
+      actorAppUserId: session.appUserId,
+      before: { aiMode: existing?.aiMode ?? 'env', aiRouterUrl: existing?.url ?? null },
+      after: {
+        aiMode: d.mode,
+        aiRouterUrl: patch.aiRouterUrl ?? existing?.url ?? null,
+        tokenChanged: d.token !== undefined,
+      },
+    });
+    invalidateFirmProviders(firmId);
+    const rt = await refreshAiRuntime(deps.db);
+    res.json({ ok: true, effective: rt.mode, source: rt.source, problem: rt.problem });
+  });
+
+  // POST /ai-mode/test — probe a router (body overrides stored values; the
+  // probe registers this app's task classes, which is idempotent).
+  router.post('/ai-mode/test', requirePermission(deps, 'firm:settings:write'), async (req, res) => {
+    const firmId = req.staffSession?.firmId;
+    if (!firmId || !deps.db) {
+      res.status(503).json({ error: 'db_unavailable' });
+      return;
+    }
+    const body = z
+      .object({ routerUrl: z.string().url().optional(), token: z.string().optional() })
+      .safeParse(req.body ?? {});
+    if (!body.success) {
+      res.status(400).json({ error: 'invalid_payload' });
+      return;
+    }
+    const [row] = await deps.db
+      .select({ url: firmConfig.aiRouterUrl, tokenEnc: firmConfig.aiRouterTokenEncrypted })
+      .from(firmConfig)
+      .where(eq(firmConfig.firmId, firmId))
+      .limit(1);
+    const url = (body.data.routerUrl ?? row?.url ?? '').replace(/\/+$/, '');
+    let token = body.data.token ?? '';
+    if (!token && row?.tokenEnc) {
+      if (getApplianceLockState().kind !== 'unlocked') {
+        res.status(503).json({ error: 'appliance_locked' });
+        return;
+      }
+      token = fromBytes(getFirmKeyManager(deps.db).unwrapTDek(firmId, row.tokenEnc));
+    }
+    if (!url || !token) {
+      res.status(400).json({ error: 'router_requires_url_and_token' });
+      return;
+    }
+    const result = await probeRouter(url, token);
+    await deps.db
+      .update(firmConfig)
+      .set({
+        aiRouterStatus: result.ok ? 'OK' : 'ERROR',
+        aiRouterLastError: result.ok ? null : result.error,
+        aiRouterLastTestedAt: new Date(),
+      })
+      .where(eq(firmConfig.firmId, firmId));
+    res.status(result.ok ? 200 : 502).json(result);
   });
 
   // -------------------------------------------------------------------
