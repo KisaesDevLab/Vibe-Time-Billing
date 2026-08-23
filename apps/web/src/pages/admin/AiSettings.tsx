@@ -283,6 +283,13 @@ export function AiSettingsPage(): JSX.Element {
       </div>
 
       {data.aiModeConfig && <AiModeCard config={data.aiModeConfig} onSaved={load} />}
+      {data.aiMode === 'router' && (
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+          Router mode unlocks <strong>AI file naming</strong> (auto-rename on upload + bulk AI
+          rename in a client&apos;s Files tab). Configure the naming pattern under{' '}
+          <a href="/admin/firm">Firm settings</a>.
+        </p>
+      )}
 
       {/* MIG-8: provider credentials, egress, and budget are inert in router mode */}
       {data?.aiMode === 'router' && (

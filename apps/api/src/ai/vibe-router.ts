@@ -23,7 +23,9 @@ import {
   VibeAiClient,
   VibeAiError,
   type ChatMessage,
+  type ImagePart,
   type TaskClassDeclaration,
+  type TextPart,
 } from '@kisaes/vibe-ai-client';
 import type { AiCompletionRequest, AiCompletionResult, AiProvider } from '@vibe/core/ai';
 
@@ -57,6 +59,9 @@ export const TIMEBILL_TASK_CLASSES = {
   PRACTICE_ANALYTICS: 'timebill_practice_analytics',
   /** KB-grounded support chat, staff + portal (NEW — starts local_only) */
   SUPPORT_CHAT: 'timebill_support_chat',
+  /** 0223 — filename fields from a document's first pages (vision +
+   *  structured output; NEW — starts local_only, operator widens) */
+  FILE_NAMING: 'timebill_file_naming',
 } as const;
 
 /**
@@ -79,6 +84,7 @@ export const FEATURE_TASK_CLASS: Record<string, string> = {
   'scope-creep-narrative': TIMEBILL_TASK_CLASSES.PRACTICE_ANALYTICS,
   'capacity-narrative': TIMEBILL_TASK_CLASSES.PRACTICE_ANALYTICS,
   'support-chat': TIMEBILL_TASK_CLASSES.SUPPORT_CHAT,
+  'file-naming': TIMEBILL_TASK_CLASSES.FILE_NAMING,
   // GET /status only checks provider availability — it never completes.
   'status-probe': TIMEBILL_TASK_CLASSES.PRACTICE_ANALYTICS,
 };
@@ -121,15 +127,31 @@ export function createVibeRouterProvider(opts: VibeRouterProviderOptions): AiPro
     async complete(req: AiCompletionRequest): Promise<AiCompletionResult> {
       const messages: ChatMessage[] = [];
       if (req.systemPrompt) messages.push({ role: 'system', content: req.systemPrompt });
-      messages.push({ role: 'user', content: req.userPrompt });
+      // 0223 — attachments become image parts after the text (vision classes).
+      if (req.attachments && req.attachments.length > 0) {
+        const parts: (TextPart | ImagePart)[] = [{ type: 'text', text: req.userPrompt }];
+        for (const a of req.attachments) {
+          parts.push({ type: 'image_url', image_url: { url: a.dataUrl } });
+        }
+        messages.push({ role: 'user', content: parts });
+      } else {
+        messages.push({ role: 'user', content: req.userPrompt });
+      }
+      const options = {
+        ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+        ...(req.userId ? { userId: req.userId } : {}),
+        ...(req.clientRef ? { clientRef: req.clientRef } : {}),
+        ...(req.engagementRef ? { engagementRef: req.engagementRef } : {}),
+      };
       try {
-        const result = await client.complete(opts.taskClass, messages, {
-          ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
-          ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-          ...(req.userId ? { userId: req.userId } : {}),
-          ...(req.clientRef ? { clientRef: req.clientRef } : {}),
-          ...(req.engagementRef ? { engagementRef: req.engagementRef } : {}),
-        });
+        // Structured output: the SDK parses the JSON; we hand it back
+        // serialised so AiCompletionResult keeps one shape.
+        const result = req.jsonSchema
+          ? await client
+              .completeJson<unknown>(opts.taskClass, messages, req.jsonSchema, options)
+              .then((r) => ({ ...r, content: JSON.stringify(r.data) }))
+          : await client.complete(opts.taskClass, messages, options);
         return {
           text: result.content,
           usage: {
@@ -214,6 +236,13 @@ export function taskClassDeclarations(): TaskClassDeclaration[] {
       description: 'KB-grounded support chat (staff and client portal)',
       requires: {},
       defaultMaxTokens: 1024,
+    },
+    {
+      key: TIMEBILL_TASK_CLASSES.FILE_NAMING,
+      description:
+        'Propose a filename for an uploaded client document from its first pages (text or page images) per the firm naming pattern',
+      requires: { vision: true, json_schema: true },
+      defaultMaxTokens: 300,
     },
   ];
 }

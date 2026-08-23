@@ -34,6 +34,7 @@ import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { logger } from '../logger';
 import { loadClientFolder, normalizeSubfolder } from './files';
+import { renameFile } from '../files/rename-file';
 
 export interface FileManageDeps extends RbacDeps {
   db: Database | null;
@@ -326,72 +327,23 @@ export function mountFileManageRoutes(router: Router, deps: FileManageDeps): voi
         res.status(503).json({ error: 'storage_unavailable' });
         return;
       }
-      const folder = await loadClientFolder(deps.db, session.firmId, req.params['id']!);
-      if (!folder) {
-        res.status(404).json({ error: 'client_folder_not_bound' });
+      // 0223 — shared primitive with the AI naming paths.
+      const result = await renameFile(deps.db, storage, {
+        firmId: session.firmId,
+        clientId: req.params['id']!,
+        fileId: req.params['fileId']!,
+        newFilename: parsed.data.newFilename,
+        actorAppUserId: session.appUserId,
+      });
+      if (!result.ok) {
+        res.status(result.status).json({ error: result.code });
         return;
       }
-      if (folder.status !== 'active') {
-        res.status(409).json({ error: 'folder_not_active', status: folder.status });
-        return;
-      }
-      const [file] = await deps.db
-        .select({
-          id: files.id,
-          subfolderPath: files.subfolderPath,
-          originalFilename: files.originalFilename,
-          storageKey: files.storageKey,
-          pendingUpload: files.pendingUpload,
-        })
-        .from(files)
-        .where(
-          and(
-            eq(files.id, req.params['fileId']!),
-            eq(files.clientFolderId, folder.clientFolderId),
-            eq(files.firmId, session.firmId),
-            isNull(files.deletedAt),
-          ),
-        )
-        .limit(1);
-      if (!file) {
-        res.status(404).json({ error: 'file_not_found' });
-        return;
-      }
-      if (file.pendingUpload) {
-        res.status(409).json({ error: 'file_pending_upload' });
-        return;
-      }
-      const safeName = sanitizeForWindows(parsed.data.newFilename);
-      if (safeName === file.originalFilename) {
+      if (result.unchanged) {
         res.json({ ok: true, unchanged: true });
         return;
       }
-      const desired = enforceKeyByteCap(joinPath(folder.storagePath, file.subfolderPath, safeName));
-      try {
-        const newKey = await resolveCollision(
-          desired,
-          async (k) => (await storage.head(k)) !== null,
-        );
-        const { etag } = await storage.copy(file.storageKey, newKey);
-        await storage.delete(file.storageKey);
-        await deps.db
-          .update(files)
-          .set({ originalFilename: safeName, storageKey: newKey, etag, modifiedAt: new Date() })
-          .where(eq(files.id, file.id));
-        await emitAudit(deps.db, {
-          action: 'UPDATE',
-          entityType: 'file',
-          entityId: file.id,
-          actorAppUserId: session.appUserId,
-          before: { originalFilename: file.originalFilename, storageKey: file.storageKey },
-          after: { originalFilename: safeName, storageKey: newKey },
-        }).catch(() => undefined);
-        res.json({ ok: true, originalFilename: safeName });
-      } catch (err) {
-        logger.error({ err, fileId: file.id }, 'file rename failed');
-        res.status(502).json({ error: 'storage_error' });
-        return;
-      }
+      res.json({ ok: true, originalFilename: result.originalFilename });
     },
   );
 

@@ -6,11 +6,26 @@
 
 export type AiProviderId = 'anthropic' | 'ollama' | 'openai_compatible' | 'vibe_router';
 
+/** 0223 — inline image handed to a vision-capable model (data: URL). */
+export interface AiAttachment {
+  kind: 'image';
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp';
+  dataUrl: string;
+}
+
 export interface AiCompletionRequest {
   systemPrompt?: string;
   userPrompt: string;
   maxTokens?: number;
   temperature?: number;
+  /**
+   * 0223 — router-only extras. `attachments` become image parts of the user
+   * message; `jsonSchema` requests structured output (the provider returns
+   * the JSON object serialised in `text`). Direct providers ignore both —
+   * features that need them are gated to router mode.
+   */
+  attachments?: AiAttachment[];
+  jsonSchema?: { name: string; schema: unknown; strict?: boolean };
   /**
    * Router-mode attribution (MIG-8/A1): ledger dimensions for the Vibe AI
    * Router. Direct providers ignore all three. These ride ONLY as request
