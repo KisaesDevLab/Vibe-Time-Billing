@@ -150,3 +150,24 @@ export function Folder(props: IconProps): JSX.Element {
     </Svg>
   );
 }
+
+/** Hamburger — opens the phone nav drawer (AppShell mobile app bar). */
+export function MenuIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <line x1="3" y1="6" x2="21" y2="6" />
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="18" x2="21" y2="18" />
+    </Svg>
+  );
+}
+
+/** X — close affordance for sheets / the phone drawer. */
+export function CloseIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </Svg>
+  );
+}

@@ -26,11 +26,15 @@ export function Tabs({ tabs, active, onChange }: TabsProps): JSX.Element {
     // per WAI-ARIA — using <nav> conflicts with the tab pattern.
     <div
       role="tablist"
+      className="vibe-tabs"
       style={{
         display: 'flex',
         gap: 0,
         borderBottom: `1px solid ${tokens.color.border}`,
         marginBottom: tokens.space.lg,
+        overflowX: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        maxWidth: '100%',
       }}
     >
       {tabs.map((t) => {
@@ -46,6 +50,8 @@ export function Tabs({ tabs, active, onChange }: TabsProps): JSX.Element {
               padding: '10px 16px',
               background: 'transparent',
               border: 'none',
+              flexShrink: 0,
+              whiteSpace: 'nowrap',
               borderBottom: `2px solid ${isActive ? tokens.color.accent : 'transparent'}`,
               color: isActive ? tokens.color.accent : tokens.color.text,
               fontSize: 14,

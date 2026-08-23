@@ -2,13 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- viewport-fit=cover so env(safe-area-inset-*) works on notched
+         phones (and in the installed PWA). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="theme-color" content="#0f6cbd" />
     <meta
       name="description"
       content="Vibe Practice Management — self-hosted CPA practice management: time tracking, billing, proposals, tax returns, and client portal."
     />
+    <!-- iOS add-to-home-screen support (no manifest install prompt on iOS). -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Vibe" />
     <title>Vibe Practice Management</title>
     <script>
       (function () {
@@ -28,20 +34,7 @@
     </script>
   </head>
   <body>
-    <script>
-      (function () {
-        try {
-          var raw = localStorage.getItem('vibe-font-scale');
-          var allowed = [0.9, 1, 1.15, 1.3];
-          var n = raw ? parseFloat(raw) : 1;
-          if (!isFinite(n) || allowed.indexOf(n) === -1) n = 1;
-          document.documentElement.style.setProperty('--vibe-font-scale', String(n));
-          document.body.style.zoom = String(n);
-        } catch (e) {
-          /* ignore */
-        }
-      })();
-    </script>
+    <!-- FONT_SCALE_BOOTSTRAP (injected from @vibe/ui tokens by vite.config) -->
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

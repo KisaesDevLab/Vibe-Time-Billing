@@ -12,6 +12,7 @@
 import { useCallback, useEffect, useState } from 'react';
 
 import {
+  BREAKPOINTS,
   DEFAULT_FONT_SCALE,
   FONT_SCALE_BASELINE,
   FONT_SCALE_STEPS,
@@ -35,12 +36,19 @@ function readInitialScale(): FontScale {
 
 function applyScale(scale: FontScale): void {
   if (typeof document === 'undefined') return;
+  // M0 — phones always render at native size: the preference only takes
+  // effect at or above the narrow breakpoint (matches the bootstrap
+  // script in tokens.ts). The stored preference is untouched, so a
+  // rotated tablet / resized window picks it back up.
+  const effective = window.innerWidth <= BREAKPOINTS.narrow ? 1 : scale;
   // `body { zoom: N }` is supported across Chrome / Safari / Firefox
   // (FF 126+). Cleaner than a transform scale because it preserves
   // layout boxes and event coordinates.
   // Cast to a tolerant type because TS's lib.dom doesn't model `zoom`.
-  (document.body.style as CSSStyleDeclaration & { zoom?: string }).zoom = String(scale);
-  document.documentElement.style.setProperty('--vibe-font-scale', String(scale));
+  (document.body.style as CSSStyleDeclaration & { zoom?: string }).zoom = String(effective);
+  document.documentElement.style.setProperty('--vibe-font-scale', String(effective));
+  // Layout consumers (useIsNarrow, AppShell) re-measure on this.
+  window.dispatchEvent(new Event('vibe:font-scale'));
 }
 
 export function useFontScale(): {
@@ -75,6 +83,18 @@ export function useFontScale(): {
     // Make sure the initial paint matches storage (the bootstrap script
     // already does this; we re-apply here for React-only callers).
     applyScale(scale);
+    // Re-clamp when the window crosses the narrow boundary in either
+    // direction (rotation, resize, window snap).
+    let wasNarrow = window.innerWidth <= BREAKPOINTS.narrow;
+    const onResize = (): void => {
+      const nowNarrow = window.innerWidth <= BREAKPOINTS.narrow;
+      if (nowNarrow !== wasNarrow) {
+        wasNarrow = nowNarrow;
+        // Re-read storage rather than closing over `scale` (deps are []).
+        applyScale(readInitialScale());
+      }
+    };
+    window.addEventListener('resize', onResize);
     function onStorage(e: StorageEvent): void {
       if (e.key !== FONT_SCALE_STORAGE_KEY) return;
       const next = e.newValue ? Number.parseFloat(e.newValue) : DEFAULT_FONT_SCALE;
@@ -85,7 +105,10 @@ export function useFontScale(): {
       applyScale(safe);
     }
     window.addEventListener('storage', onStorage);
-    return () => window.removeEventListener('storage', onStorage);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('resize', onResize);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
