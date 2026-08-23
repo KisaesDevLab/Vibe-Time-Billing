@@ -29,6 +29,7 @@ import { emitAudit } from '../auth/audit';
 import { loadClientFolder } from '../clients/files';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { maybeEnqueueAutoRename } from '../files/auto-rename-queue';
 import { pokeFirmStaffEvents } from '../notifications/staff-events-bus';
 import { notifyRequestClientReply } from '../requests/notify-reply';
 
@@ -503,6 +504,13 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       ip: req.ip ?? null,
       userAgent: req.get('user-agent') ?? null,
     }).catch(() => undefined);
+    // 0223 — client uploads are the prime candidates for auto-rename.
+    void maybeEnqueueAutoRename(deps.db, {
+      firmId: session.firmId,
+      fileId,
+      actorAppUserId: null,
+      source: 'app',
+    });
 
     res.status(201).json({ ok: true, fileId, itemId: item.id });
   });

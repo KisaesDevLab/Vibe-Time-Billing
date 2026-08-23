@@ -44,11 +44,15 @@ import { wrapSmsWithFirmConfig } from './messaging/sms-resolver';
 import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
 import { registerTimeBillingTaskClasses } from './ai/vibe-router';
+import { onAiRuntimeChange, refreshAiRuntime, startAiRuntimeRefresh } from './ai/ai-runtime';
+import { startAutoRenameConsumer } from './files/auto-rename-queue';
+import type { Worker } from 'bullmq';
 
 const config = loadConfig();
 const redis = getRedis();
 const { db } = createDb({ connectionString: config.DATABASE_URL });
 const sessionStore = createSessionStore(redis);
+let autoRenameWorker: Worker | null = null;
 
 // Stripe — firm-owned keys per Q7. Prefer the key the firm entered + tested
 // in Admin → Billing → Stripe Connect (encrypted at rest) over the appliance
@@ -477,10 +481,41 @@ const server = app.listen(config.PORT, () => {
     },
     'vibe-tb-api listening',
   );
-  // MIG-8: router mode only; non-blocking with retry — AI features fail
-  // closed at the router until registration lands, which is correct.
-  registerTimeBillingTaskClasses({
-    log: (level, msg) => logger[level]({}, `vibe-router: ${msg}`),
+  // 0222 — effective AI mode comes from firm_config with VIBE_AI_MODE as the
+  // default; load it (and keep it fresh) before deciding whether to register
+  // task classes. The unseal above is fire-and-forget, so a router token
+  // that is still sealed shows up as `problem: appliance_locked` on the
+  // first pass and resolves on the next refresh.
+  void refreshAiRuntime(db).then((rt) => {
+    logger.info(
+      { aiMode: rt.mode, source: rt.source, problem: rt.problem },
+      'ai-runtime: effective mode',
+    );
+    // MIG-8: router mode only; non-blocking with retry — AI features fail
+    // closed at the router until registration lands, which is correct.
+    registerTimeBillingTaskClasses({
+      log: (level, msg) => logger[level]({}, `vibe-router: ${msg}`),
+    });
+  });
+  startAiRuntimeRefresh(db);
+  // 0223 — auto-rename consumer (router-mode only at job time; gated on
+  // REDIS_URL / FILE_AUTO_RENAME_CONSUMER / NODE_ENV inside).
+  autoRenameWorker = startAutoRenameConsumer({
+    db,
+    redis,
+    cloudProvider: cloudAiProvider ?? null,
+    localProvider: localAiProvider ?? null,
+  });
+  onAiRuntimeChange((rt) => {
+    logger.info(
+      { aiMode: rt.mode, source: rt.source, problem: rt.problem },
+      'ai-runtime: mode changed',
+    );
+    if (rt.mode === 'router') {
+      registerTimeBillingTaskClasses({
+        log: (level, msg) => logger[level]({}, `vibe-router: ${msg}`),
+      });
+    }
   });
 });
 
@@ -560,6 +595,7 @@ process.on('uncaughtException', (err) => {
 // process. Without this the next tsx run wastes 5+ seconds in retries.
 function shutdownGracefully(signal: string): void {
   logger.info({ signal }, 'received shutdown signal — closing api server');
+  void autoRenameWorker?.close().catch(() => undefined);
   server.close((err) => {
     if (err) logger.warn({ err }, 'server.close errored, exiting anyway');
     process.exit(0);

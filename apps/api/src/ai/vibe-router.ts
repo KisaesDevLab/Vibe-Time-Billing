@@ -19,17 +19,35 @@
 // x-vibe-client / x-vibe-engagement carry internal client/engagement UUIDs
 // for the billing feed. Attribution never enters prompt text.
 
-import { VibeAiClient, VibeAiError, type ChatMessage } from '@kisaes/vibe-ai-client';
+import {
+  VibeAiClient,
+  VibeAiError,
+  type ChatMessage,
+  type ImagePart,
+  type TaskClassDeclaration,
+  type TextPart,
+} from '@kisaes/vibe-ai-client';
 import type { AiCompletionRequest, AiCompletionResult, AiProvider } from '@vibe/core/ai';
 
 import { appVersion } from '../version';
+import { getAiRuntime, onAiRuntimeChange } from './ai-runtime';
 
 // ── mode flag ────────────────────────────────────────────────────────────
 
 export type AiMode = 'direct' | 'router';
 
+/**
+ * Effective mode. 0222: resolved from firm_config (Admin → AI settings)
+ * with the VIBE_AI_MODE env var as the appliance default — see
+ * ai-runtime.ts. Synchronous because pickProvider() is.
+ */
 export function aiMode(): AiMode {
-  return process.env['VIBE_AI_MODE'] === 'router' ? 'router' : 'direct';
+  return getAiRuntime().mode;
+}
+
+function routerCreds(): { baseUrl: string; token: string } {
+  const rt = getAiRuntime();
+  return { baseUrl: rt.routerUrl ?? '', token: rt.routerToken ?? '' };
 }
 
 // ── task classes ─────────────────────────────────────────────────────────
@@ -41,6 +59,9 @@ export const TIMEBILL_TASK_CLASSES = {
   PRACTICE_ANALYTICS: 'timebill_practice_analytics',
   /** KB-grounded support chat, staff + portal (NEW — starts local_only) */
   SUPPORT_CHAT: 'timebill_support_chat',
+  /** 0223 — filename fields from a document's first pages (vision +
+   *  structured output; NEW — starts local_only, operator widens) */
+  FILE_NAMING: 'timebill_file_naming',
 } as const;
 
 /**
@@ -63,6 +84,7 @@ export const FEATURE_TASK_CLASS: Record<string, string> = {
   'scope-creep-narrative': TIMEBILL_TASK_CLASSES.PRACTICE_ANALYTICS,
   'capacity-narrative': TIMEBILL_TASK_CLASSES.PRACTICE_ANALYTICS,
   'support-chat': TIMEBILL_TASK_CLASSES.SUPPORT_CHAT,
+  'file-naming': TIMEBILL_TASK_CLASSES.FILE_NAMING,
   // GET /status only checks provider availability — it never completes.
   'status-probe': TIMEBILL_TASK_CLASSES.PRACTICE_ANALYTICS,
 };
@@ -105,15 +127,31 @@ export function createVibeRouterProvider(opts: VibeRouterProviderOptions): AiPro
     async complete(req: AiCompletionRequest): Promise<AiCompletionResult> {
       const messages: ChatMessage[] = [];
       if (req.systemPrompt) messages.push({ role: 'system', content: req.systemPrompt });
-      messages.push({ role: 'user', content: req.userPrompt });
+      // 0223 — attachments become image parts after the text (vision classes).
+      if (req.attachments && req.attachments.length > 0) {
+        const parts: (TextPart | ImagePart)[] = [{ type: 'text', text: req.userPrompt }];
+        for (const a of req.attachments) {
+          parts.push({ type: 'image_url', image_url: { url: a.dataUrl } });
+        }
+        messages.push({ role: 'user', content: parts });
+      } else {
+        messages.push({ role: 'user', content: req.userPrompt });
+      }
+      const options = {
+        ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+        ...(req.userId ? { userId: req.userId } : {}),
+        ...(req.clientRef ? { clientRef: req.clientRef } : {}),
+        ...(req.engagementRef ? { engagementRef: req.engagementRef } : {}),
+      };
       try {
-        const result = await client.complete(opts.taskClass, messages, {
-          ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
-          ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-          ...(req.userId ? { userId: req.userId } : {}),
-          ...(req.clientRef ? { clientRef: req.clientRef } : {}),
-          ...(req.engagementRef ? { engagementRef: req.engagementRef } : {}),
-        });
+        // Structured output: the SDK parses the JSON; we hand it back
+        // serialised so AiCompletionResult keeps one shape.
+        const result = req.jsonSchema
+          ? await client
+              .completeJson<unknown>(opts.taskClass, messages, req.jsonSchema, options)
+              .then((r) => ({ ...r, content: JSON.stringify(r.data) }))
+          : await client.complete(opts.taskClass, messages, options);
         return {
           text: result.content,
           usage: {
@@ -148,11 +186,7 @@ export function routerProviderForFeature(feature: string | undefined): AiProvide
   const taskClass = taskClassForFeature(feature);
   let p = cache.get(taskClass);
   if (!p) {
-    p = createVibeRouterProvider({
-      baseUrl: process.env['VIBE_AI_ROUTER_URL'] ?? '',
-      token: process.env['VIBE_AI_TOKEN'] ?? '',
-      taskClass,
-    });
+    p = createVibeRouterProvider({ ...routerCreds(), taskClass });
     cache.set(taskClass, p);
   }
   return p;
@@ -161,6 +195,56 @@ export function routerProviderForFeature(feature: string | undefined): AiProvide
 /** Test seam. */
 export function _clearRouterProviderCacheForTests(): void {
   cache.clear();
+}
+
+// Credentials changed (admin save / env refresh) → drop cached providers so
+// the next call uses the new URL/token.
+onAiRuntimeChange(() => cache.clear());
+
+/** The task-class declarations, exported so the admin "test connection"
+ *  can register them against a candidate router before saving. */
+export function timeBillingTaskClassDeclarations(): Parameters<
+  VibeAiClient['registerTaskClasses']
+>[0] {
+  return {
+    app: 'vibe-time-billing',
+    version: appVersion(),
+    classes: taskClassDeclarations(),
+  };
+}
+
+/** Task-class declarations (12.2). New classes start local_only until the
+ *  operator widens them in the router console. */
+export function taskClassDeclarations(): TaskClassDeclaration[] {
+  return [
+    // Pack class — declaration matches the reviewed pack entry.
+    {
+      key: TIMEBILL_TASK_CLASSES.INVOICE_NARRATIVE,
+      description: 'Invoice line narrative polish',
+      requires: {},
+      defaultMaxTokens: 1024,
+    },
+    {
+      key: TIMEBILL_TASK_CLASSES.PRACTICE_ANALYTICS,
+      description:
+        'Practice-metric narratives, NL query translation, and pricing suggestions over firm billing data',
+      requires: {},
+      defaultMaxTokens: 600,
+    },
+    {
+      key: TIMEBILL_TASK_CLASSES.SUPPORT_CHAT,
+      description: 'KB-grounded support chat (staff and client portal)',
+      requires: {},
+      defaultMaxTokens: 1024,
+    },
+    {
+      key: TIMEBILL_TASK_CLASSES.FILE_NAMING,
+      description:
+        'Propose a filename for an uploaded client document from its first pages (text or page images) per the firm naming pattern',
+      requires: { vision: true, json_schema: true },
+      defaultMaxTokens: 300,
+    },
+  ];
 }
 
 // ── boot registration ────────────────────────────────────────────────────
@@ -179,8 +263,7 @@ export function registerTimeBillingTaskClasses(o?: {
   const log =
     o?.log ?? ((level, msg) => console[level === 'info' ? 'log' : level](`[vibe-router] ${msg}`));
   const client = new VibeAiClient({
-    baseUrl: process.env['VIBE_AI_ROUTER_URL'] ?? '',
-    token: process.env['VIBE_AI_TOKEN'] ?? '',
+    ...routerCreds(),
     ...(o?.fetchImpl ? { fetch: o.fetchImpl } : {}),
   });
   const maxAttempts = o?.maxAttempts ?? 10;
@@ -189,35 +272,7 @@ export function registerTimeBillingTaskClasses(o?: {
   const tryRegister = async (): Promise<void> => {
     attempt++;
     try {
-      await client.registerTaskClasses({
-        app: 'vibe-time-billing',
-        // A8 — real version even under `node dist/...`, where
-        // npm_package_version is unset (see version.ts).
-        version: appVersion(),
-        classes: [
-          // Pack class — declaration matches the reviewed pack entry.
-          {
-            key: TIMEBILL_TASK_CLASSES.INVOICE_NARRATIVE,
-            description: 'Invoice line narrative polish',
-            requires: {},
-            defaultMaxTokens: 1024,
-          },
-          // New classes — start local_only until the operator widens them.
-          {
-            key: TIMEBILL_TASK_CLASSES.PRACTICE_ANALYTICS,
-            description:
-              'Practice-metric narratives, NL query translation, and pricing suggestions over firm billing data',
-            requires: {},
-            defaultMaxTokens: 600,
-          },
-          {
-            key: TIMEBILL_TASK_CLASSES.SUPPORT_CHAT,
-            description: 'KB-grounded support chat (staff and client portal)',
-            requires: {},
-            defaultMaxTokens: 1024,
-          },
-        ],
-      });
+      await client.registerTaskClasses(timeBillingTaskClassDeclarations());
       log('info', 'task classes registered');
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

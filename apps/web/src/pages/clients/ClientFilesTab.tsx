@@ -49,6 +49,8 @@ import { api } from '../../api-client';
 import { uploadOneClientFile } from '../../lib/client-files-upload';
 import { downloadAndOpen, isDesktop } from '../../lib/desktop';
 import { usePermission } from '../../auth-context';
+import { useAiStatus } from '../../hooks/useAiStatus';
+import { AiRenameDialog } from './AiRenameDialog';
 import { ShareFileDialog } from './ShareFileDialog';
 import { BulkShareDialog } from './BulkShareDialog';
 import { UnlinkedEmptyState } from './fmv2/UnlinkedEmptyState';
@@ -72,6 +74,11 @@ interface FileRow {
   pendingUpload: boolean;
   /** 0219 — a tax return references this file as its source (delete guard). */
   flaggedTaxReturn?: boolean;
+  /** 0223 — AI naming provenance. */
+  originalUploadFilename?: string | null;
+  aiRenamedAt?: string | null;
+  aiRenameConfidence?: number | null;
+  aiSuggestedFilename?: string | null;
 }
 
 interface TemplateFolder {
@@ -551,6 +558,33 @@ export function ClientFilesTab({
 }): JSX.Element {
   const canView = usePermission('storage:folder:view');
   const canEdit = usePermission('storage:folder:edit');
+  // 0223 — AI file naming exists only when the Vibe AI Router is the
+  // effective AI mode; the API 404s the routes otherwise.
+  const aiStatus = useAiStatus();
+  const aiNaming = aiStatus?.fileNaming?.available ? aiStatus.fileNaming : null;
+  const [aiRenameIds, setAiRenameIds] = useState<string[] | null>(null);
+  async function aiRevert(file: FileRow): Promise<void> {
+    try {
+      await api(`/api/staff/clients/${clientId}/files/${file.id}/ai-rename/revert`, {
+        method: 'POST',
+        body: '{}',
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'revert_failed');
+    }
+  }
+  async function aiApplySuggested(file: FileRow): Promise<void> {
+    try {
+      await api(`/api/staff/clients/${clientId}/files/${file.id}/ai-rename/apply-suggested`, {
+        method: 'POST',
+        body: '{}',
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'apply_failed');
+    }
+  }
   const canBind = usePermission('storage:folder:bind');
   const canReconcile = usePermission('storage:folder:reconcile');
   const canRename = usePermission('storage:folder:rename');
@@ -1327,6 +1361,21 @@ export function ClientFilesTab({
               >
                 Move to…
               </Button>
+              {aiNaming && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={busy || !canEdit}
+                  title={
+                    !canEdit
+                      ? 'Needs storage:folder:edit'
+                      : 'Propose names from each document’s contents (max 25)'
+                  }
+                  onClick={() => setAiRenameIds(Array.from(selectedIds).slice(0, 25))}
+                >
+                  ✦ AI rename{selectedIds.size > 25 ? ' (first 25)' : ''}
+                </Button>
+              )}
               <IconButton
                 label="Make client-visible (publish)"
                 tone="success"
@@ -1431,6 +1480,22 @@ export function ClientFilesTab({
                     {r.originalFilename}
                     {r.pendingUpload && <Pill tone="warning">pending</Pill>}
                     {r.flaggedTaxReturn && <Pill tone="accent">tax return</Pill>}
+                    {r.aiRenamedAt && r.originalUploadFilename && (
+                      <span
+                        title={`Renamed by AI · originally “${r.originalUploadFilename}”`}
+                        style={{ marginLeft: 4 }}
+                      >
+                        <Pill tone="accent">✦ AI</Pill>
+                      </span>
+                    )}
+                    {!r.aiRenamedAt && r.aiSuggestedFilename && aiNaming && (
+                      <span
+                        title={`AI suggestion: “${r.aiSuggestedFilename}”`}
+                        style={{ marginLeft: 4 }}
+                      >
+                        <Pill tone="neutral">✦ suggestion</Pill>
+                      </span>
+                    )}
                   </span>
                 ),
               },
@@ -1562,6 +1627,36 @@ export function ClientFilesTab({
                           disabled: r.pendingUpload || !canMove,
                           disabledReason: !canEdit ? 'Needs storage:folder:edit' : undefined,
                         },
+                        ...(aiNaming
+                          ? [
+                              {
+                                key: 'ai-rename',
+                                label: '✦ AI rename…',
+                                onSelect: () => setAiRenameIds([r.id]),
+                                disabled: r.pendingUpload || !canEdit,
+                              },
+                              ...(r.aiRenamedAt && r.originalUploadFilename
+                                ? [
+                                    {
+                                      key: 'ai-revert',
+                                      label: `Revert AI rename (→ ${r.originalUploadFilename})`,
+                                      onSelect: () => void aiRevert(r),
+                                      disabled: !canEdit,
+                                    },
+                                  ]
+                                : []),
+                              ...(!r.aiRenamedAt && r.aiSuggestedFilename
+                                ? [
+                                    {
+                                      key: 'ai-apply-suggested',
+                                      label: `Apply AI suggestion (${r.aiSuggestedFilename})`,
+                                      onSelect: () => void aiApplySuggested(r),
+                                      disabled: !canEdit,
+                                    },
+                                  ]
+                                : []),
+                            ]
+                          : []),
                         {
                           key: 'move',
                           label: 'Move to…',
@@ -1631,6 +1726,19 @@ export function ClientFilesTab({
       )}
 
       {activityFor && <ActivityDialog file={activityFor} onClose={() => setActivityFor(null)} />}
+
+      {aiRenameIds && aiNaming && (
+        <AiRenameDialog
+          clientId={clientId}
+          fileIds={aiRenameIds}
+          minConfidence={aiNaming.minConfidence}
+          onClose={() => setAiRenameIds(null)}
+          onApplied={() => {
+            setSelectedIds(new Set());
+            void load();
+          }}
+        />
+      )}
 
       {flagFor && (
         <FlagAsTaxReturnDialog

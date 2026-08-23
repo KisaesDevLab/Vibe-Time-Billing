@@ -34,6 +34,7 @@ import {
   jsonb,
   date,
   numeric,
+  real,
   index,
   uniqueIndex,
   unique,
@@ -375,6 +376,19 @@ export const firmSettings = pgTable('firm_settings', {
     .notNull()
     .default(10000),
   aiWarnThresholdPct: integer('ai_warn_threshold_pct').notNull().default(80),
+  // 0223 — AI file naming (router-mode only). Pattern slots are filled
+  // app-side from the model's structured fields; see
+  // packages/core/src/filer/naming-pattern.ts.
+  autoRenameUploads: boolean('auto_rename_uploads').notNull().default(false),
+  fileNamingPattern: text('file_naming_pattern')
+    .notNull()
+    .default('{year} {doc_type} - {issuer} - {client}'),
+  fileNamingExamples: text('file_naming_examples')
+    .notNull()
+    .default(
+      '2024 W-2 - Acme Corp - Smith John\n2023 Form 1040 - Smith John\n2024-Q3 Bank Statement - Chase - Smith Family Trust',
+    ),
+  fileNamingMinConfidence: real('file_naming_min_confidence').notNull().default(0.7),
   // 0202 — assumed labor share of a target fee. On recurring-engagement
   // rollforward, the spawned engagement's budgeted fee = prior cost of labor
   // ÷ (estimatedLaborPct / 100).
@@ -548,12 +562,23 @@ export const firmConfig = pgTable(
     // Vibe Shield; 'direct' lets the appliance call the provider API
     // directly (firm-owned key + budget cap + audit), no shield needed.
     aiEgressMode: text('ai_egress_mode').notNull().default('shield'),
-    // 0103 — document intake feature toggle (license-gated, per firm).
+    // 0103 — document intake feature toggle (per firm).
     intakeEnabled: boolean('intake_enabled').notNull().default(false),
+    // 0222 — AI routing mode from Admin → AI settings. 'env' = follow the
+    // VIBE_AI_MODE env var (appliance default); 'direct' / 'router' override
+    // it. The router token is MFK-wrapped like provider API keys.
+    aiMode: text('ai_mode').notNull().default('env'),
+    aiRouterUrl: text('ai_router_url'),
+    aiRouterTokenEncrypted: bytea('ai_router_token_encrypted'),
+    aiRouterTokenHint: text('ai_router_token_hint'),
+    aiRouterStatus: text('ai_router_status').notNull().default('UNTESTED'),
+    aiRouterLastError: text('ai_router_last_error'),
+    aiRouterLastTestedAt: timestamp('ai_router_last_tested_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
+    aiModeCk: check('firm_config_ai_mode_ck', sql`${t.aiMode} IN ('env', 'direct', 'router')`),
     unlockModeCk: check(
       'firm_config_unlock_mode_ck',
       sql`${t.unlockMode} IN ('sealed-on-disk', 'admin-passphrase')`,
@@ -1439,6 +1464,16 @@ export const files = pgTable(
     modifiedAt: timestamp('modified_at', { withTimezone: true }).notNull().defaultNow(),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     pendingUpload: boolean('pending_upload').notNull().default(false),
+    // 0223 — AI file naming provenance. original_upload_filename holds the
+    // (already sanitised) name the file arrived with; set once on the first
+    // AI rename, never overwritten. ai_suggested_filename keeps a
+    // low-confidence suggestion for one-click apply.
+    originalUploadFilename: text('original_upload_filename'),
+    aiRenameAttemptedAt: timestamp('ai_rename_attempted_at', { withTimezone: true }),
+    aiRenamedAt: timestamp('ai_renamed_at', { withTimezone: true }),
+    aiRenameConfidence: real('ai_rename_confidence'),
+    aiSuggestedFilename: text('ai_suggested_filename'),
+    aiRenameModel: text('ai_rename_model'),
     // 0060 — pay-to-unlock escrow zone. invoice_id is the gating
     // invoice; promoted_at is set when the file flips from 'escrow' →
     // 'client_visible' via payment.

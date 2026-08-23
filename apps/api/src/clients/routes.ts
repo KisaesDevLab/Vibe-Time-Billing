@@ -45,6 +45,7 @@ import { mountContactRoutes } from './contacts';
 import { mountPeopleRoutes } from './people';
 import { mountFileRoutes } from './files';
 import { mountFileManageRoutes } from './file-manage';
+import { mountAiNamingRoutes } from '../files/ai-naming-routes';
 import { mountClientImportRoutes } from './import';
 import { findOrCreatePerson } from './person-helpers';
 import { printClientMailing, type MailingKind } from './mailing-print';
@@ -1853,6 +1854,15 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
   // storage adapter that backs v1 attachments.
   mountFileRoutes(router, { ...deps });
   mountFileManageRoutes(router, { ...deps });
+  // 0223 — AI file naming (router-mode only; routes 404 otherwise).
+  mountAiNamingRoutes(router, {
+    db: deps.db,
+    // reason: AiRoutesDeps wants a Redis for the direct-mode egress gate;
+    // these routes only run in router mode, where pickProvider never
+    // touches it. Tests mount without Redis.
+    redis: deps.redis as Redis,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
   // Phase 9 of FILE_MANAGER_ADDENDUM.md — folder-rename + SSE progress.
   // Skipped when redis is missing (tests with no real Redis); the
   // routes 503 if the queue can't be built lazily either way.

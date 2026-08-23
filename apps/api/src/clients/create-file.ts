@@ -24,6 +24,7 @@ import {
   loadFirmVisibilityRules,
   type Category,
 } from './files';
+import { maybeEnqueueAutoRename } from '../files/auto-rename-queue';
 
 export interface CreateFileArgs {
   firmId: string;
@@ -114,6 +115,15 @@ export async function createFileInClientFolder(
       sizeBytes: args.body.byteLength,
     },
   }).catch(() => undefined);
+
+  // 0223 — auto-rename on arrival (router mode + firm toggle; generated
+  // sources are filtered inside). Fire-and-forget.
+  void maybeEnqueueAutoRename(db, {
+    firmId: args.firmId,
+    fileId: row!.id,
+    actorAppUserId: args.actorId,
+    source: args.source,
+  });
 
   return {
     ok: true,

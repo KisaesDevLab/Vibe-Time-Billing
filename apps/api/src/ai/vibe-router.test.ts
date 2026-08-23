@@ -176,7 +176,7 @@ describe('createVibeRouterProvider', () => {
 });
 
 describe('registerTimeBillingTaskClasses', () => {
-  it('declares the three classes in router mode only', async () => {
+  it('declares the four classes in router mode only', async () => {
     const { calls, fn } = captureFetch(
       () => new Response(JSON.stringify({ registered: [] }), { status: 200 }),
     );
@@ -191,6 +191,7 @@ describe('registerTimeBillingTaskClasses', () => {
     expect(body.version).not.toBe('unknown');
     expect(body.classes.map((c: { key: string }) => c.key).sort()).toEqual([
       'tb_invoice_narrative',
+      'timebill_file_naming',
       'timebill_practice_analytics',
       'timebill_support_chat',
     ]);
