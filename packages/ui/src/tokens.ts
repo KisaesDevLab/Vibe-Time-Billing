@@ -72,7 +72,10 @@ export const fontScaleBootstrapScript = `
     if (!isFinite(n) || allowed.indexOf(n) === -1) n = baseline;
     // Phones get the native size: the zoom preference applies only at or
     // above the narrow breakpoint (see BREAKPOINTS.narrow).
-    if (window.innerWidth <= ${BREAKPOINTS.narrow}) n = 1;
+    // documentElement.clientWidth, NOT innerWidth: on mobile the layout
+    // viewport (innerWidth) expands to fit overflowing content, which
+    // would un-clamp the zoom and feed back into wider content.
+    if (document.documentElement.clientWidth <= ${BREAKPOINTS.narrow}) n = 1;
     document.documentElement.style.setProperty('--vibe-font-scale', String(n));
     if (document.body) document.body.style.zoom = String(n);
   } catch (e) {

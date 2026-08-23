@@ -40,7 +40,9 @@ function applyScale(scale: FontScale): void {
   // effect at or above the narrow breakpoint (matches the bootstrap
   // script in tokens.ts). The stored preference is untouched, so a
   // rotated tablet / resized window picks it back up.
-  const effective = window.innerWidth <= BREAKPOINTS.narrow ? 1 : scale;
+  // clientWidth, not innerWidth — the mobile layout viewport expands with
+  // overflowing content and would report a desktop-like width.
+  const effective = document.documentElement.clientWidth <= BREAKPOINTS.narrow ? 1 : scale;
   // `body { zoom: N }` is supported across Chrome / Safari / Firefox
   // (FF 126+). Cleaner than a transform scale because it preserves
   // layout boxes and event coordinates.
@@ -85,9 +87,9 @@ export function useFontScale(): {
     applyScale(scale);
     // Re-clamp when the window crosses the narrow boundary in either
     // direction (rotation, resize, window snap).
-    let wasNarrow = window.innerWidth <= BREAKPOINTS.narrow;
+    let wasNarrow = document.documentElement.clientWidth <= BREAKPOINTS.narrow;
     const onResize = (): void => {
-      const nowNarrow = window.innerWidth <= BREAKPOINTS.narrow;
+      const nowNarrow = document.documentElement.clientWidth <= BREAKPOINTS.narrow;
       if (nowNarrow !== wasNarrow) {
         wasNarrow = nowNarrow;
         // Re-read storage rather than closing over `scale` (deps are []).

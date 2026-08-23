@@ -23,7 +23,13 @@ export function effectiveViewportWidth(): number {
   if (typeof window === 'undefined') return BREAKPOINTS.narrow + 1;
   const raw = getComputedStyle(document.documentElement).getPropertyValue('--vibe-font-scale');
   const zoom = parseFloat(raw) || 1;
-  return window.innerWidth / (zoom > 0 ? zoom : 1);
+  // documentElement.clientWidth, NOT window.innerWidth: on phones the
+  // layout viewport (innerWidth) expands to contain overflowing content
+  // (980/1560px were observed), which flipped the app back into desktop
+  // mode mid-session and fed back into even wider content. clientWidth
+  // stays pinned to the meta-viewport width. (html itself is not zoomed —
+  // zoom applies to <body> — so dividing by the zoom var stays correct.)
+  return document.documentElement.clientWidth / (zoom > 0 ? zoom : 1);
 }
 
 function isNarrowNow(breakpointPx: number): boolean {

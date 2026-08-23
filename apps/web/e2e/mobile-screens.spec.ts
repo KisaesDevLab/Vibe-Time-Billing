@@ -73,15 +73,17 @@ test.beforeEach(async ({ context, baseURL }) => {
 });
 
 test.describe('phone: no horizontal overflow + screenshots', () => {
-  test.skip(
-    ({ browserName }, testInfo) => !!browserName && testInfo.project.name !== 'iphone',
-    'iphone project only',
-  );
+  test.beforeEach(() => {
+    test.skip(test.info().project.name !== 'iphone', 'iphone project only');
+  });
 
   for (const [route, slug] of PAGES) {
     test(`${slug} fits 390px`, async ({ page }) => {
       await page.goto(route);
-      await page.waitForLoadState('networkidle');
+      // Not 'networkidle': the app polls (timers, unread counts), so that
+      // state never arrives. Load + a short settle is deterministic enough.
+      await page.waitForLoadState('load');
+      await page.waitForTimeout(2500);
       // Signed-out redirect means the cookie is stale — fail loudly.
       expect(page.url()).not.toContain('/auth/login');
       const overflow = await page.evaluate(() => {
@@ -102,22 +104,22 @@ test.describe('phone: no horizontal overflow + screenshots', () => {
 
   test('nav drawer opens from the hamburger', async ({ page }) => {
     await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('load');
     await page.getByRole('button', { name: 'Open navigation' }).click();
     await expect(page.getByRole('complementary', { name: 'Sidebar' })).toBeVisible();
   });
 });
 
 test.describe('desktop baseline (1440×900) — pixels must not move', () => {
-  test.skip(
-    ({ browserName }, testInfo) => !!browserName && testInfo.project.name !== 'desktop-baseline',
-    'desktop-baseline project only',
-  );
+  test.beforeEach(() => {
+    test.skip(test.info().project.name !== 'desktop-baseline', 'desktop-baseline project only');
+  });
 
   for (const [route, slug] of DESKTOP_BASELINE) {
     test(`${slug} desktop baseline`, async ({ page }) => {
       await page.goto(route);
-      await page.waitForLoadState('networkidle');
+      await page.waitForLoadState('load');
+      await page.waitForTimeout(2500);
       expect(page.url()).not.toContain('/auth/login');
       await expect(page).toHaveScreenshot(`${slug}-desktop.png`, {
         fullPage: false,
