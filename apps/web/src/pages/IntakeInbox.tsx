@@ -229,9 +229,17 @@ export function IntakeInboxPage(): JSX.Element {
         <div style={{ color: tokens.color.danger, fontSize: 13, marginTop: 8 }}>{error}</div>
       )}
 
-      <div style={{ display: 'flex', gap: 16, marginTop: 16, alignItems: 'flex-start' }}>
+      <div
+        style={{
+          display: 'flex',
+          gap: 16,
+          marginTop: 16,
+          alignItems: 'flex-start',
+          flexWrap: 'wrap',
+        }}
+      >
         {/* List */}
-        <div style={{ flex: '0 0 320px', display: 'grid', gap: 8 }}>
+        <div style={{ flex: '0 1 320px', maxWidth: '100%', display: 'grid', gap: 8 }}>
           {list.length === 0 && (
             <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No new submissions.</p>
           )}

@@ -1330,7 +1330,9 @@ function LogView({
           style={{
             display: 'grid',
             // Desktop: one row of six; phones: two per row.
-            gridTemplateColumns: narrow ? 'repeat(2, 1fr)' : 'repeat(6, 1fr)',
+            // minmax(0,1fr): <input type=date> has an intrinsic min width
+            // that otherwise forces the 2-up tracks past the viewport.
+            gridTemplateColumns: narrow ? 'repeat(2, minmax(0, 1fr))' : 'repeat(6, 1fr)',
             gap: 8,
             marginBottom: 12,
           }}
