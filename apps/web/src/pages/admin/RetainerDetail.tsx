@@ -111,7 +111,12 @@ export function RetainerDetailPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
       <header
-        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'flex-start',
+        }}
       >
         <div>
           <Link
@@ -391,6 +396,7 @@ export function RetainerDetailPage(): JSX.Element {
                 <div
                   style={{
                     display: 'flex',
+                    flexWrap: 'wrap',
                     justifyContent: 'space-between',
                     fontSize: 12,
                     color: tokens.color.textMuted,

@@ -10,8 +10,10 @@ import {
   Combobox,
   Input,
   Pill,
+  ScrollX,
   Table,
   tokens,
+  useIsNarrow,
   type ComboboxOption,
 } from '@vibe/ui';
 
@@ -358,6 +360,7 @@ function ViewTabs({
   return (
     <div
       role="tablist"
+      className="vibe-tabs"
       style={{
         display: 'inline-flex',
         gap: 2,
@@ -366,6 +369,9 @@ function ViewTabs({
         border: `1px solid ${tokens.color.border}`,
         borderRadius: tokens.radius.md,
         width: 'fit-content',
+        maxWidth: '100%',
+        overflowX: 'auto',
+        WebkitOverflowScrolling: 'touch',
       }}
     >
       {tabs.map((t) => {
@@ -386,6 +392,8 @@ function ViewTabs({
               fontSize: 13,
               fontWeight: 500,
               cursor: 'pointer',
+              flexShrink: 0,
+              whiteSpace: 'nowrap',
             }}
           >
             {t.label}
@@ -418,6 +426,7 @@ function LogView({
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const narrow = useIsNarrow();
 
   // v2 Sprint E — client-first workflow. The CPA picks a client, then
   // engagement is filtered to that client's ACTIVE engagements. If the
@@ -872,7 +881,8 @@ function LogView({
           onSubmit={submit}
           style={{
             display: 'grid',
-            gridTemplateColumns: '2fr 2fr 1fr 1fr',
+            // Desktop keeps the 2:2:1:1 shape; phones stack single-column.
+            gridTemplateColumns: narrow ? '1fr' : '2fr 2fr 1fr 1fr',
             gap: 12,
             alignItems: 'end',
           }}
@@ -1031,6 +1041,7 @@ function LogView({
                       key={t.id}
                       style={{
                         display: 'flex',
+                        flexWrap: 'wrap',
                         gap: 8,
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -1318,7 +1329,8 @@ function LogView({
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(6, 1fr)',
+            // Desktop: one row of six; phones: two per row.
+            gridTemplateColumns: narrow ? 'repeat(2, 1fr)' : 'repeat(6, 1fr)',
             gap: 8,
             marginBottom: 12,
           }}
@@ -1405,6 +1417,8 @@ function LogView({
             columns={[
               {
                 key: 'date',
+                mobile: 'meta',
+                mobileLabel: 'Date',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Date{' '}
@@ -1422,6 +1436,8 @@ function LogView({
               },
               {
                 key: 'client',
+                mobile: 'title',
+                mobileLabel: 'Client',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Client{' '}
@@ -1444,6 +1460,8 @@ function LogView({
               },
               {
                 key: 'engagement',
+                mobile: 'meta',
+                mobileLabel: 'Engagement',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Engagement{' '}
@@ -1466,6 +1484,8 @@ function LogView({
               },
               {
                 key: 'hours',
+                mobile: 'field',
+                mobileLabel: 'Hours',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Hours{' '}
@@ -1500,6 +1520,8 @@ function LogView({
               },
               {
                 key: 'amount',
+                mobile: 'field',
+                mobileLabel: 'Amount',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Amount{' '}
@@ -1518,6 +1540,8 @@ function LogView({
               },
               {
                 key: 'flags',
+                mobile: 'badge',
+                mobileLabel: 'Flags',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Flags{' '}
@@ -1576,6 +1600,8 @@ function LogView({
               },
               {
                 key: 'desc',
+                mobile: 'field',
+                mobileLabel: 'Description',
                 header: 'Description',
                 render: (e) => {
                   if (editingId === e.id && editDraft) {
@@ -1595,6 +1621,7 @@ function LogView({
               },
               {
                 key: 'actions',
+                mobile: 'actions',
                 header: '',
                 align: 'right',
                 render: (e) => {
@@ -1762,6 +1789,7 @@ function SummaryTiles({
 const entryRowStyle: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
+  flexWrap: 'wrap', // phones: hours/description/actions stack instead of clipping
   gap: 10,
   padding: '7px 2px',
   fontSize: 13,
@@ -2357,6 +2385,7 @@ function DayView({
                   display: 'flex',
                   justifyContent: 'space-between',
                   alignItems: 'baseline',
+                  flexWrap: 'wrap',
                   gap: 8,
                 }}
               >
@@ -2608,6 +2637,7 @@ function WeekView({
                         <span
                           style={{
                             display: 'flex',
+                            flexWrap: 'wrap',
                             alignItems: 'center',
                             gap: 4,
                             justifyContent: 'space-between',
@@ -2720,6 +2750,7 @@ function WeekView({
               <div
                 style={{
                   display: 'flex',
+                  flexWrap: 'wrap',
                   justifyContent: 'space-between',
                   alignItems: 'baseline',
                   gap: 8,
@@ -2852,29 +2883,34 @@ function MonthView(): JSX.Element {
         {loading ? (
           <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
         ) : (
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(31, 1fr)',
-              gap: 2,
-            }}
-          >
-            {heatmapDays.map((d) => {
-              const h = dayMap.get(d)?.hours ?? 0;
-              return (
-                <div
-                  key={d}
-                  title={`${d}: ${h.toFixed(2)}h`}
-                  style={{
-                    aspectRatio: '1 / 1',
-                    background: heatColor(h),
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: 2,
-                  }}
-                />
-              );
-            })}
-          </div>
+          <ScrollX>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(31, 1fr)',
+                gap: 2,
+                // Phones: keep cells tappable and let the strip scroll
+                // sideways inside ScrollX instead of crushing to ~10px.
+                minWidth: 620,
+              }}
+            >
+              {heatmapDays.map((d) => {
+                const h = dayMap.get(d)?.hours ?? 0;
+                return (
+                  <div
+                    key={d}
+                    title={`${d}: ${h.toFixed(2)}h`}
+                    style={{
+                      aspectRatio: '1 / 1',
+                      background: heatColor(h),
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: 2,
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </ScrollX>
         )}
       </Card>
 

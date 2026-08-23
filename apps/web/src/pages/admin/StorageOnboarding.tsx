@@ -189,7 +189,14 @@ export function StorageOnboardingPage(): JSX.Element {
       )}
 
       <Card title="Storage onboarding">
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
           <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
             Bucket area: <code>{scan.bucketArea || '/'}</code> · System prefix:{' '}
             <code>{scan.systemPrefix}</code> · {scan.boundFolders.length} bound ·{' '}

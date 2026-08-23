@@ -7,7 +7,7 @@
 // proposed name, and applies the ticked rows.
 
 import { useEffect, useState } from 'react';
-import { Button, Modal, Pill, tokens } from '@vibe/ui';
+import { Button, Modal, Pill, ScrollX, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -166,121 +166,134 @@ export function AiRenameDialog({
           )}
           {rows && (
             <div style={{ maxHeight: '55vh', overflowY: 'auto' }}>
-              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr>
-                    <th style={{ ...cell, width: 28 }}>
-                      <input
-                        type="checkbox"
-                        aria-label="Select all"
-                        checked={rows.length > 0 && rows.every((r) => r.checked || !r.proposed)}
-                        onChange={(e) =>
-                          setRows(
-                            rows.map((r) => ({ ...r, checked: !!r.proposed && e.target.checked })),
-                          )
-                        }
-                      />
-                    </th>
-                    <th style={{ ...cell, textAlign: 'left' }}>Current</th>
-                    <th style={{ ...cell, textAlign: 'left' }}>Proposed</th>
-                    <th style={{ ...cell, width: 110 }}>Confidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={r.fileId} style={{ opacity: r.proposed ? 1 : 0.65 }}>
-                      <td style={cell}>
+              <ScrollX>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      <th style={{ ...cell, width: 28 }}>
                         <input
                           type="checkbox"
-                          aria-label={`Rename ${r.current ?? ''}`}
-                          disabled={!r.proposed}
-                          checked={r.checked}
+                          aria-label="Select all"
+                          checked={rows.length > 0 && rows.every((r) => r.checked || !r.proposed)}
                           onChange={(e) =>
                             setRows(
-                              rows.map((x, j) =>
-                                j === i ? { ...x, checked: e.target.checked } : x,
-                              ),
+                              rows.map((r) => ({
+                                ...r,
+                                checked: !!r.proposed && e.target.checked,
+                              })),
                             )
                           }
                         />
-                      </td>
-                      <td
-                        style={{
-                          ...cell,
-                          fontFamily: tokens.font.mono,
-                          color: tokens.color.textMuted,
-                        }}
-                      >
-                        {r.current ?? '—'}
-                      </td>
-                      <td style={cell}>
-                        {r.proposed ? (
-                          <>
-                            <input
-                              value={r.edited}
-                              onChange={(e) =>
-                                setRows(
-                                  rows.map((x, j) =>
-                                    j === i ? { ...x, edited: e.target.value } : x,
-                                  ),
-                                )
-                              }
-                              style={{
-                                width: '100%',
-                                fontFamily: tokens.font.mono,
-                                fontSize: 12,
-                                padding: '4px 6px',
-                                border: `1px solid ${tokens.color.border}`,
-                                borderRadius: 4,
-                                background: tokens.color.surface,
-                                color: tokens.color.text,
-                              }}
-                            />
-                            {r.summary && (
-                              <div
-                                style={{
-                                  fontSize: 11,
-                                  color: tokens.color.textMuted,
-                                  marginTop: 2,
-                                }}
-                              >
-                                {r.summary}
-                              </div>
-                            )}
-                          </>
-                        ) : (
-                          <span style={{ color: tokens.color.textMuted }}>
-                            {SKIP_LABELS[r.skippedReason ?? ''] ?? r.skippedReason}
-                          </span>
-                        )}
-                      </td>
-                      <td style={{ ...cell, textAlign: 'center' }}>
-                        {r.confidence !== undefined && (
-                          <Pill
-                            tone={
-                              r.confidence >= minConfidence
-                                ? 'success'
-                                : r.confidence >= 0.4
-                                  ? 'warning'
-                                  : 'neutral'
-                            }
-                          >
-                            {Math.round(r.confidence * 100)}%
-                          </Pill>
-                        )}{' '}
-                        {r.strategy && (
-                          <span style={{ fontSize: 10, color: tokens.color.textMuted }}>
-                            {STRATEGY_LABELS[r.strategy]}
-                          </span>
-                        )}
-                      </td>
+                      </th>
+                      <th style={{ ...cell, textAlign: 'left' }}>Current</th>
+                      <th style={{ ...cell, textAlign: 'left' }}>Proposed</th>
+                      <th style={{ ...cell, width: 110 }}>Confidence</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {rows.map((r, i) => (
+                      <tr key={r.fileId} style={{ opacity: r.proposed ? 1 : 0.65 }}>
+                        <td style={cell}>
+                          <input
+                            type="checkbox"
+                            aria-label={`Rename ${r.current ?? ''}`}
+                            disabled={!r.proposed}
+                            checked={r.checked}
+                            onChange={(e) =>
+                              setRows(
+                                rows.map((x, j) =>
+                                  j === i ? { ...x, checked: e.target.checked } : x,
+                                ),
+                              )
+                            }
+                          />
+                        </td>
+                        <td
+                          style={{
+                            ...cell,
+                            fontFamily: tokens.font.mono,
+                            color: tokens.color.textMuted,
+                          }}
+                        >
+                          {r.current ?? '—'}
+                        </td>
+                        <td style={cell}>
+                          {r.proposed ? (
+                            <>
+                              <input
+                                value={r.edited}
+                                onChange={(e) =>
+                                  setRows(
+                                    rows.map((x, j) =>
+                                      j === i ? { ...x, edited: e.target.value } : x,
+                                    ),
+                                  )
+                                }
+                                style={{
+                                  width: '100%',
+                                  fontFamily: tokens.font.mono,
+                                  fontSize: 12,
+                                  padding: '4px 6px',
+                                  border: `1px solid ${tokens.color.border}`,
+                                  borderRadius: 4,
+                                  background: tokens.color.surface,
+                                  color: tokens.color.text,
+                                }}
+                              />
+                              {r.summary && (
+                                <div
+                                  style={{
+                                    fontSize: 11,
+                                    color: tokens.color.textMuted,
+                                    marginTop: 2,
+                                  }}
+                                >
+                                  {r.summary}
+                                </div>
+                              )}
+                            </>
+                          ) : (
+                            <span style={{ color: tokens.color.textMuted }}>
+                              {SKIP_LABELS[r.skippedReason ?? ''] ?? r.skippedReason}
+                            </span>
+                          )}
+                        </td>
+                        <td style={{ ...cell, textAlign: 'center' }}>
+                          {r.confidence !== undefined && (
+                            <Pill
+                              tone={
+                                r.confidence >= minConfidence
+                                  ? 'success'
+                                  : r.confidence >= 0.4
+                                    ? 'warning'
+                                    : 'neutral'
+                              }
+                            >
+                              {Math.round(r.confidence * 100)}%
+                            </Pill>
+                          )}{' '}
+                          {r.strategy && (
+                            <span style={{ fontSize: 10, color: tokens.color.textMuted }}>
+                              {STRATEGY_LABELS[r.strategy]}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </ScrollX>
             </div>
           )}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              gap: 8,
+              justifyContent: 'flex-end',
+              marginTop: 14,
+            }}
+          >
             <Button variant="secondary" onClick={onClose} disabled={busy}>
               Cancel
             </Button>

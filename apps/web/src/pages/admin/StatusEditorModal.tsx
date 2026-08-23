@@ -483,6 +483,7 @@ export function StatusEditorModal({ status, serviceLines, onClose, onSaved }: Pr
           <div
             style={{
               display: 'flex',
+              flexWrap: 'wrap',
               gap: 8,
               justifyContent: 'space-between',
               alignItems: 'center',

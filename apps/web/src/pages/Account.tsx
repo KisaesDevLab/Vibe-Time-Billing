@@ -505,7 +505,7 @@ function SignInSettingsCard(): JSX.Element {
                 borderRadius: tokens.radius.sm,
               }}
             >
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+              <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between' }}>
                 <div>
                   <strong style={{ fontSize: 13 }}>Text message (SMS)</strong>
                   <div style={{ fontSize: 11, color: tokens.color.textMuted }}>

@@ -294,6 +294,7 @@ export function AdminLayout(): JSX.Element {
                   padding: '6px 10px',
                   cursor: 'pointer',
                   display: 'flex',
+                  flexWrap: 'wrap',
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   fontWeight: hasActive ? 600 : 400,

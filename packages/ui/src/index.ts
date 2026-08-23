@@ -11,6 +11,7 @@ export {
   DEFAULT_FONT_SCALE,
   type FontScale,
   fontScaleBootstrapScript,
+  BREAKPOINTS,
 } from './tokens';
 export { Pill, type PillProps } from './Pill';
 export { Paperclip, type PaperclipProps } from './Paperclip';
@@ -26,9 +27,13 @@ export {
   Folder,
   Printer,
   Trash,
+  MenuIcon,
+  CloseIcon,
   type IconProps,
 } from './icons';
 export { ErrorBoundary } from './ErrorBoundary';
+export { ResponsiveGrid, type ResponsiveGridProps } from './ResponsiveGrid';
+export { ScrollX, type ScrollXProps } from './ScrollX';
 export { Button, type ButtonProps } from './Button';
 export { Input, type InputProps } from './Input';
 export { Card, type CardProps } from './Card';
@@ -36,7 +41,7 @@ export { Markdown } from './Markdown';
 export { Stat, type StatProps, type StatTone } from './Stat';
 export { SectionHeading, type SectionHeadingProps } from './SectionHeading';
 export { EmptyState, type EmptyStateProps } from './EmptyState';
-export { useIsNarrow } from './useIsNarrow';
+export { useIsNarrow, effectiveViewportWidth } from './useIsNarrow';
 export {
   Table,
   PaginationBar,

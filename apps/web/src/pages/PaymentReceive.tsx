@@ -981,7 +981,14 @@ function Inner({
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1200 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <h1 style={{ margin: 0, fontSize: 22 }}>Receive payment</h1>
       </div>
 
@@ -1669,7 +1676,7 @@ function Inner({
         </Card>
       )}
 
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
         {mode === 'TERMINAL' && terminalPending ? (
           <Button variant="danger" onClick={() => void cancelTerminal()}>
             Cancel charge
@@ -1742,7 +1749,7 @@ function Inner({
 
 function SummaryRow({ label, value }: { label: string; value: string }): JSX.Element {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between' }}>
       <span style={{ color: tokens.color.textMuted }}>{label}</span>
       <span style={{ fontVariantNumeric: 'tabular-nums' }}>{value}</span>
     </div>

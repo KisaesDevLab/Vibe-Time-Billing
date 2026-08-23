@@ -168,7 +168,7 @@ export function InvoicesPage(): JSX.Element {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))',
             gap: 8,
             marginBottom: 12,
           }}
@@ -208,6 +208,7 @@ export function InvoicesPage(): JSX.Element {
             columns={[
               {
                 key: 'num',
+                mobile: 'title',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Invoice{' '}
@@ -225,6 +226,8 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'client',
+                mobile: 'meta',
+                mobileLabel: 'Client',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Client{' '}
@@ -242,6 +245,8 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'type',
+                mobile: 'field',
+                mobileLabel: 'Type',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Type{' '}
@@ -258,6 +263,8 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'issue',
+                mobile: 'field',
+                mobileLabel: 'Issued',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Issued{' '}
@@ -275,6 +282,8 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'due',
+                mobile: 'field',
+                mobileLabel: 'Due',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Due{' '}
@@ -292,6 +301,8 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'total',
+                mobile: 'field',
+                mobileLabel: 'Total',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Total{' '}
@@ -310,6 +321,8 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'paid',
+                mobile: 'field',
+                mobileLabel: 'Paid',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Paid{' '}
@@ -328,6 +341,7 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'status',
+                mobile: 'badge',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Status{' '}
@@ -345,6 +359,8 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'viewed',
+                mobile: 'field',
+                mobileLabel: 'Viewed',
                 header: 'Viewed',
                 render: (i) =>
                   i.firstViewedAt ? (
@@ -357,6 +373,7 @@ export function InvoicesPage(): JSX.Element {
               },
               {
                 key: 'actions',
+                mobile: 'actions',
                 header: '',
                 render: (i) => {
                   const hours = hoursSince(i.lastReminderAt);

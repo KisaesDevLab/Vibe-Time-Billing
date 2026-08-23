@@ -207,7 +207,14 @@ export function IntakeInboxPage(): JSX.Element {
 
   return (
     <div style={{ padding: 20 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <h1 style={{ fontSize: 20, margin: 0 }}>Document Intake</h1>
         <div style={{ display: 'flex', gap: 8 }}>
           {ocrAvailable && (

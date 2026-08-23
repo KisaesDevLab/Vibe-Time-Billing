@@ -352,7 +352,14 @@ export function CloudflareTunnelPage(): JSX.Element {
       {/* ---------- Status panel ---------- */}
       {!inWizard && config && (
         <Card>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div
+            style={{
+              display: 'flex',
+              flexWrap: 'wrap',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+            }}
+          >
             <div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 <strong style={{ fontSize: 14 }}>Tunnel {config.tunnelName}</strong>

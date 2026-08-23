@@ -314,6 +314,7 @@ function BatchListPage(): JSX.Element {
                 color: tokens.color.textMuted,
                 marginBottom: 4,
                 display: 'flex',
+                flexWrap: 'wrap',
                 justifyContent: 'space-between',
                 alignItems: 'center',
               }}
@@ -1183,6 +1184,7 @@ function BatchDetailPage(): JSX.Element {
               <div
                 style={{
                   display: 'flex',
+                  flexWrap: 'wrap',
                   justifyContent: 'space-between',
                   alignItems: 'center',
                   marginBottom: 6,

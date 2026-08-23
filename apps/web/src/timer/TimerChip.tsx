@@ -17,7 +17,15 @@ import { formatClock, useTimers, useTimerTick } from '../timer-context';
 import { TimerPopover, type PopoverAnchor } from './TimerPopover';
 import { OPEN_TIMER_PANEL_EVENT } from './DesktopTimerBridge';
 
-export function TimerChip({ collapsed = false }: { collapsed?: boolean }): JSX.Element | null {
+export function TimerChip({
+  collapsed = false,
+  bar = false,
+}: {
+  collapsed?: boolean;
+  /** Compact app-bar variant (phone top bar) — bordered pill instead of a
+   *  full-width nav row. */
+  bar?: boolean;
+}): JSX.Element | null {
   const { canUse, loaded, timers, running, elapsedSeconds, staleTimer } = useTimers();
   const [open, setOpen] = useState(false);
   const [anchor, setAnchor] = useState<PopoverAnchor | null>(null);
@@ -81,24 +89,52 @@ export function TimerChip({ collapsed = false }: { collapsed?: boolean }): JSX.E
         onClick={() => (open ? setOpen(false) : openPanel())}
         title={title}
         aria-label="Timers"
-        style={{
-          // Mirror the AppShell nav-item row so it reads as part of the menu.
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          justifyContent: collapsed ? 'center' : 'flex-start',
-          width: '100%',
-          padding: collapsed ? '8px 0' : '8px 12px',
-          fontSize: 13,
-          border: 'none',
-          cursor: 'pointer',
-          textAlign: 'left',
-          borderRadius: tokens.radius.sm,
-          background: running ? tokens.color.accentMuted : 'transparent',
-          color: stale ? tokens.color.warning : running ? tokens.color.accent : tokens.color.text,
-          whiteSpace: 'nowrap',
-          overflow: 'hidden',
-        }}
+        style={
+          bar
+            ? {
+                // Phone app-bar pill: compact, bordered, self-sized.
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '0 10px',
+                minHeight: 38,
+                fontSize: 13,
+                border: `1px solid ${tokens.color.border}`,
+                cursor: 'pointer',
+                borderRadius: tokens.radius.pill,
+                background: running ? tokens.color.accentMuted : tokens.color.surface,
+                color: stale
+                  ? tokens.color.warning
+                  : running
+                    ? tokens.color.accent
+                    : tokens.color.text,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                maxWidth: 160,
+              }
+            : {
+                // Mirror the AppShell nav-item row so it reads as part of the menu.
+                display: 'flex',
+                alignItems: 'center',
+                gap: 10,
+                justifyContent: collapsed ? 'center' : 'flex-start',
+                width: '100%',
+                padding: collapsed ? '8px 0' : '8px 12px',
+                fontSize: 13,
+                border: 'none',
+                cursor: 'pointer',
+                textAlign: 'left',
+                borderRadius: tokens.radius.sm,
+                background: running ? tokens.color.accentMuted : 'transparent',
+                color: stale
+                  ? tokens.color.warning
+                  : running
+                    ? tokens.color.accent
+                    : tokens.color.text,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+              }
+        }
       >
         <span
           aria-hidden
@@ -106,8 +142,8 @@ export function TimerChip({ collapsed = false }: { collapsed?: boolean }): JSX.E
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
-            width: 24,
-            minWidth: 24,
+            width: bar ? 16 : 24,
+            minWidth: bar ? 16 : 24,
             fontSize: 13,
             fontWeight: running ? 600 : 500,
             color: stale

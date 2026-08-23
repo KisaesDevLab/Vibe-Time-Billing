@@ -1152,6 +1152,7 @@ export function ClientFilesTab({
         <div
           style={{
             display: 'flex',
+            flexWrap: 'wrap',
             justifyContent: 'space-between',
             alignItems: 'center',
             gap: 16,
@@ -1578,7 +1579,14 @@ export function ClientFilesTab({
                 header: '',
                 align: 'right',
                 render: (r) => (
-                  <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 6,
+                      justifyContent: 'flex-end',
+                    }}
+                  >
                     {isPdfFile(r) && (
                       <IconButton
                         label="Preview this PDF in the browser"
@@ -1995,7 +2003,7 @@ function UploadDialog({
         {phase !== 'idle' && (
           <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>Uploading…</p>
         )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={phase !== 'idle'}>
             Cancel
           </Button>
@@ -2109,7 +2117,7 @@ function RenameDialog({ clientId, currentPath, onClose, onDone }: RenameDialogPr
             )}
           </div>
         )}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={running}>
             Cancel
           </Button>
@@ -2330,7 +2338,7 @@ function FlagAsTaxReturnDialog({
                 {error}
               </p>
             )}
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
               <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>
@@ -2446,7 +2454,7 @@ function MoveDialog({
         <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
           Files keep their names; a name already taken in the destination gets a numeric suffix.
         </p>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={busy}>
             Cancel
           </Button>
@@ -2541,7 +2549,7 @@ function NewFolderDialog({
           placeholder="e.g. 2026"
         />
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={busy}>
             Cancel
           </Button>
@@ -2603,7 +2611,7 @@ function RenameFileDialog({
           disabled={busy}
         />
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={busy}>
             Cancel
           </Button>
@@ -2999,7 +3007,7 @@ function CreateDocumentRequestDialog({
           </div>
         </div>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={busy}>
             Cancel
           </Button>

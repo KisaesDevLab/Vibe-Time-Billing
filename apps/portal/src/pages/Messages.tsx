@@ -7,7 +7,15 @@
 
 import { useEffect, useRef, useState } from 'react';
 
-import { Button, Card, Paperclip, Pill, tokens, useIsNarrow } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  Paperclip,
+  Pill,
+  effectiveViewportWidth,
+  tokens,
+  useIsNarrow,
+} from '@vibe/ui';
 
 import { api, getCsrfToken } from '../api-client';
 
@@ -116,7 +124,7 @@ export function MessagesPage(): JSX.Element {
       // conversation with the inbox hidden. (Checked live, not via the
       // narrow state: this closure is created before hydration flips it.)
       const phone =
-        typeof window !== 'undefined' && window.matchMedia?.('(max-width: 720px)').matches;
+        typeof window !== 'undefined' && effectiveViewportWidth() <= tokens.breakpoint.narrow;
       if (!phone && !activeThreadId && r.items?.[0]) setActiveThreadId(r.items[0].threadId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');

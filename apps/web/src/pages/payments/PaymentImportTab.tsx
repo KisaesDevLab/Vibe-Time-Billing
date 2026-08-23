@@ -9,7 +9,7 @@
 // engagement/time exists. Every CSV line is logged for dedupe + audit.
 
 import { useEffect, useMemo, useState } from 'react';
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Pill, ScrollX, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -627,30 +627,32 @@ export function PaymentImportTab(): JSX.Element {
                         ))}
                     </div>
                   </div>
-                  <table style={{ width: '100%', fontSize: 12, marginTop: 8 }}>
-                    <tbody>
-                      {g.rows.map((r) => (
-                        <tr
-                          key={r.line}
-                          style={{
-                            color: r.duplicate ? tokens.color.textMuted : tokens.color.text,
-                            textDecoration: r.duplicate ? 'line-through' : 'none',
-                          }}
-                        >
-                          <td style={{ padding: '2px 8px 2px 0', whiteSpace: 'nowrap' }}>
-                            {r.chargeDate}
-                          </td>
-                          <td style={{ padding: '2px 8px' }}>{r.description}</td>
-                          <td
-                            style={{ padding: '2px 0', textAlign: 'right', whiteSpace: 'nowrap' }}
+                  <ScrollX>
+                    <table style={{ width: '100%', fontSize: 12, marginTop: 8 }}>
+                      <tbody>
+                        {g.rows.map((r) => (
+                          <tr
+                            key={r.line}
+                            style={{
+                              color: r.duplicate ? tokens.color.textMuted : tokens.color.text,
+                              textDecoration: r.duplicate ? 'line-through' : 'none',
+                            }}
                           >
-                            {usd(r.amountCents)}
-                            {r.duplicate ? ' (imported)' : ''}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                            <td style={{ padding: '2px 8px 2px 0', whiteSpace: 'nowrap' }}>
+                              {r.chargeDate}
+                            </td>
+                            <td style={{ padding: '2px 8px' }}>{r.description}</td>
+                            <td
+                              style={{ padding: '2px 0', textAlign: 'right', whiteSpace: 'nowrap' }}
+                            >
+                              {usd(r.amountCents)}
+                              {r.duplicate ? ' (imported)' : ''}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </ScrollX>
                 </div>
               );
             })}

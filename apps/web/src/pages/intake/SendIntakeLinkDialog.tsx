@@ -194,7 +194,7 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
             >
               {result.url}
             </code>
-            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between' }}>
               <Button
                 variant="ghost"
                 onClick={() => void navigator.clipboard?.writeText(result.url)}
@@ -323,7 +323,7 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
               </select>
             </div>
             {error && <div style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</div>}
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>

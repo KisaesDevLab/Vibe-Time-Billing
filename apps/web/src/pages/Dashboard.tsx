@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, Card, Combobox, Pill, Table, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, ResponsiveGrid, Table, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
@@ -238,13 +238,7 @@ export function DashboardPage(): JSX.Element {
       <TimeSuggestionBanner />
       {summary && (
         <Card title="Firm at a glance">
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(5, 1fr)',
-              gap: 16,
-            }}
-          >
+          <ResponsiveGrid min={160}>
             <Stat label="Active clients" value={summary.activeClients.toLocaleString()} />
             <Stat label="Active engagements" value={summary.activeEngagements.toLocaleString()} />
             <Stat label="WIP" value={formatCents(summary.wipAmountCents)} />
@@ -253,7 +247,7 @@ export function DashboardPage(): JSX.Element {
               label="Collections (30d)"
               value={formatCents(summary.collectionsLast30DaysCents)}
             />
-          </div>
+          </ResponsiveGrid>
         </Card>
       )}
 
@@ -425,14 +419,7 @@ export function DashboardPage(): JSX.Element {
       >
         {/* 0051 — per-column filter row. Each picker re-filters the
             already-loaded set; no server roundtrip per click. */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
-            gap: 8,
-            marginBottom: 12,
-          }}
-        >
+        <ResponsiveGrid min={170} gap={8} style={{ marginBottom: 12 }}>
           <Combobox
             ariaLabel="Filter client"
             clearable
@@ -474,7 +461,7 @@ export function DashboardPage(): JSX.Element {
             placeholder="Any priority"
             size="sm"
           />
-        </div>
+        </ResponsiveGrid>
         {pageRows.length === 0 ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
             {myEngagements.length === 0
@@ -491,6 +478,7 @@ export function DashboardPage(): JSX.Element {
                     Engagement{sortIcon('name')}
                   </button>
                 ) as unknown as string,
+                mobile: 'title',
                 render: (r) => <a href={`/engagements/${r.id}`}>{r.name}</a>,
               },
               {
@@ -500,6 +488,7 @@ export function DashboardPage(): JSX.Element {
                     Client{sortIcon('client')}
                   </button>
                 ) as unknown as string,
+                mobile: 'meta',
                 render: (r) => <a href={`/clients/${r.clientId}`}>{r.clientName}</a>,
               },
               {
@@ -513,6 +502,7 @@ export function DashboardPage(): JSX.Element {
                     Status{sortIcon('workflowState')}
                   </button>
                 ) as unknown as string,
+                mobile: 'badge',
                 render: (r) => <Pill>{r.workflowState}</Pill>,
               },
               {
@@ -522,6 +512,7 @@ export function DashboardPage(): JSX.Element {
                     Priority{sortIcon('priority')}
                   </button>
                 ) as unknown as string,
+                mobile: 'badge',
                 render: (r) => <Pill>{r.priority}</Pill>,
               },
               {
@@ -531,6 +522,8 @@ export function DashboardPage(): JSX.Element {
                     Due{sortIcon('dueDate')}
                   </button>
                 ) as unknown as string,
+                mobile: 'field',
+                mobileLabel: 'Due',
                 render: (r) => {
                   if (!r.dueDate) return <span style={{ color: tokens.color.textMuted }}>—</span>;
                   const days = daysFromToday(r.dueDate);
@@ -562,6 +555,7 @@ export function DashboardPage(): JSX.Element {
                 key: 'actions',
                 header: '',
                 align: 'right',
+                mobile: 'actions',
                 render: (r) => (
                   <span style={{ display: 'inline-flex', gap: 6 }}>
                     <Button
@@ -640,7 +634,7 @@ function InboxCard(): JSX.Element {
 
   return (
     <Card title="Needs attention">
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 16 }}>
+      <ResponsiveGrid min={120}>
         {items.map((it) => {
           const value = counts ? counts[it.key] : 0;
           const has = value > 0;
@@ -684,7 +678,7 @@ function InboxCard(): JSX.Element {
             </button>
           );
         })}
-      </div>
+      </ResponsiveGrid>
     </Card>
   );
 }
@@ -788,12 +782,23 @@ function UpcomingBookingsPanel(): JSX.Element {
       ) : (
         <Table<UpcomingAppt>
           columns={[
-            { key: 'when', header: 'When', render: (r) => new Date(r.startsAt).toLocaleString() },
-            { key: 'client', header: 'Client', render: (r) => r.clientName ?? '—' },
-            { key: 'type', header: 'Type', render: (r) => r.typeName ?? r.title },
+            {
+              key: 'when',
+              header: 'When',
+              mobile: 'meta',
+              render: (r) => new Date(r.startsAt).toLocaleString(),
+            },
+            {
+              key: 'client',
+              header: 'Client',
+              mobile: 'title',
+              render: (r) => r.clientName ?? '—',
+            },
+            { key: 'type', header: 'Type', mobile: 'field', render: (r) => r.typeName ?? r.title },
             {
               key: 'location',
               header: 'Location',
+              mobile: 'field',
               render: (r) => r.locationDetail || r.location || '—',
             },
           ]}

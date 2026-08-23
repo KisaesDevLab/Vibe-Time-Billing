@@ -665,7 +665,14 @@ export function RequestsPage(): JSX.Element {
         </div>
       </Card>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <div style={{ display: 'flex', gap: tokens.space.sm, alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Sort by</span>
           <Combobox options={SORT_OPTIONS} value={sort} onChange={(v) => setSort(v)} width={160} />
@@ -720,7 +727,7 @@ export function RequestsPage(): JSX.Element {
                 <div
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '1fr 1fr',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))',
                     gap: tokens.space.sm,
                   }}
                 >
@@ -894,6 +901,7 @@ export function RequestsPage(): JSX.Element {
                     fontSize: 12,
                     marginBottom: 4,
                     display: 'flex',
+                    flexWrap: 'wrap',
                     justifyContent: 'space-between',
                     alignItems: 'center',
                   }}
@@ -918,7 +926,8 @@ export function RequestsPage(): JSX.Element {
                         key={idx}
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: 'minmax(0, 1fr) 140px auto auto auto',
+                          gridTemplateColumns:
+                            'minmax(min(140px, 100%), 1fr) minmax(110px, 140px) auto auto auto',
                           gap: 6,
                           alignItems: 'center',
                         }}
@@ -1003,6 +1012,7 @@ export function RequestsPage(): JSX.Element {
             {
               key: 'title',
               header: 'Title',
+              mobile: 'title',
               render: (r) => (
                 <div
                   onClick={() => navigate(`/requests/${r.id}`)}
@@ -1042,6 +1052,7 @@ export function RequestsPage(): JSX.Element {
             {
               key: 'client',
               header: 'Client',
+              mobile: 'meta',
               render: (r) => (
                 <span style={{ fontSize: 13 }}>
                   {clientNameByEngagement.get(r.engagementId) ?? '—'}
@@ -1051,6 +1062,7 @@ export function RequestsPage(): JSX.Element {
             {
               key: 'assigned',
               header: 'Assigned',
+              mobile: 'field',
               render: (r) => (
                 <span style={{ fontSize: 13, color: tokens.color.textMuted }}>
                   {r.assignedAppUserId ? (userNameById.get(r.assignedAppUserId) ?? '—') : '—'}
@@ -1060,22 +1072,26 @@ export function RequestsPage(): JSX.Element {
             {
               key: 'priority',
               header: 'Priority',
+              mobile: 'badge',
               render: (r) => <Pill tone={priorityTone(r.priority)}>{r.priority}</Pill>,
             },
             {
               key: 'status',
               header: 'Status',
+              mobile: 'badge',
               render: (r) => <Pill tone={statusTone(r.status)}>{r.status}</Pill>,
             },
-            { key: 'due', header: 'Due', render: (r) => r.dueDate ?? '—' },
+            { key: 'due', header: 'Due', mobile: 'field', render: (r) => r.dueDate ?? '—' },
             {
               key: 'created',
               header: 'Created',
+              mobile: 'field',
               render: (r) => new Date(r.createdAt).toLocaleDateString(),
             },
             {
               key: 'open',
               header: '',
+              mobile: 'actions',
               render: (r) => (
                 <Button size="sm" variant="ghost" onClick={() => navigate(`/requests/${r.id}`)}>
                   Open
@@ -1088,6 +1104,7 @@ export function RequestsPage(): JSX.Element {
         <div
           style={{
             display: 'flex',
+            flexWrap: 'wrap',
             justifyContent: 'space-between',
             alignItems: 'center',
             marginTop: tokens.space.sm,

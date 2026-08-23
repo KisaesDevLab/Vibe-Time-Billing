@@ -6,7 +6,14 @@
 // Per-firm branding (logo + colors) overrides these at runtime via
 // Phase 20 admin config.
 
+/** Layout breakpoints (effective CSS px — i.e. after dividing out the
+ *  body zoom). Below `narrow` the app switches to its phone chrome:
+ *  drawer nav + hamburger bar, card tables, sheet modals. One source of
+ *  truth — do not restate 720 anywhere. */
+export const BREAKPOINTS = { narrow: 720 } as const;
+
 export const tokens = {
+  breakpoint: BREAKPOINTS,
   color: {
     bg: 'var(--vibe-color-bg)',
     surface: 'var(--vibe-color-surface)',
@@ -63,6 +70,9 @@ export const fontScaleBootstrapScript = `
     var baseline = ${FONT_SCALE_BASELINE};
     var n = raw ? parseFloat(raw) : baseline;
     if (!isFinite(n) || allowed.indexOf(n) === -1) n = baseline;
+    // Phones get the native size: the zoom preference applies only at or
+    // above the narrow breakpoint (see BREAKPOINTS.narrow).
+    if (window.innerWidth <= ${BREAKPOINTS.narrow}) n = 1;
     document.documentElement.style.setProperty('--vibe-font-scale', String(n));
     if (document.body) document.body.style.zoom = String(n);
   } catch (e) {

@@ -611,7 +611,12 @@ export function CreateClientWizard({
               }}
             >
               <div
-                style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                }}
               >
                 <strong style={{ fontSize: 13 }}>Contact {i + 1}</strong>
                 {contacts.length > 1 && (

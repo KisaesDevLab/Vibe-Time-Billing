@@ -647,7 +647,14 @@ export function PaymentsPage(): JSX.Element {
                     key: 'actions',
                     header: '',
                     render: (r) => (
-                      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: 6,
+                          justifyContent: 'flex-end',
+                        }}
+                      >
                         {r.receiptId && (
                           <Button
                             size="sm"
@@ -795,6 +802,7 @@ export function PaymentsPage(): JSX.Element {
                   <div
                     style={{
                       display: 'flex',
+                      flexWrap: 'wrap',
                       justifyContent: 'space-between',
                       fontSize: 13,
                       fontWeight: 700,
@@ -860,6 +868,7 @@ function Drawer({
         <div
           style={{
             display: 'flex',
+            flexWrap: 'wrap',
             justifyContent: 'space-between',
             alignItems: 'center',
             marginBottom: 12,
@@ -999,7 +1008,7 @@ function AllocTotals({
 
 function Row({ label, value }: { label: string; value: string }): JSX.Element {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+    <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between' }}>
       <span style={{ color: tokens.color.textMuted }}>{label}</span>
       <span style={{ fontWeight: 600 }}>{value}</span>
     </div>

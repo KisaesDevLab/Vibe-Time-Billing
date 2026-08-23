@@ -625,7 +625,7 @@ function BulkEmailPeopleDialog({
           People without an email or who opted out of bulk email are skipped automatically.
         </p>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={busy}>
             Cancel
           </Button>
@@ -750,7 +750,7 @@ function MergePeopleDialog({
           from pickers.
         </p>
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, margin: 0 }}>{error}</p>}
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
           <Button onClick={onClose} disabled={busy}>
             Cancel
           </Button>
