@@ -245,7 +245,7 @@ export function ArPage(): JSX.Element {
         </a>
       </div>
       <Card title={`AR aging as of ${data.asOf}`} action={<Pill tone="accent">live</Pill>}>
-        <div style={{ display: 'flex', gap: 32, fontSize: 13 }}>
+        <div style={{ display: 'flex', gap: '8px 32px', fontSize: 13, flexWrap: 'wrap' }}>
           {buckets.map((b) => (
             <div key={b}>
               <div

@@ -910,7 +910,7 @@ export function EngagementsPage(): JSX.Element {
           </span>
         }
         action={
-          <span style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <input
               type="search"
               value={nameQuery}
