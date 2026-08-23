@@ -12,6 +12,9 @@ export interface AiStatus {
   optedIn: boolean;
   providerWired: boolean;
   providerId: string | null;
+  /** 0223 — effective routing mode + AI file naming availability. */
+  aiMode?: 'direct' | 'router';
+  fileNaming?: { available: boolean; autoRename: boolean; minConfidence: number };
 }
 
 // Cache across the React tree so we hit /ai/status once per session.
