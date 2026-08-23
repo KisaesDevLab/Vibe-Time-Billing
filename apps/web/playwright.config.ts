@@ -15,5 +15,15 @@ export default defineConfig({
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
   },
-  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    // M0 — phone project for the mobile-responsive sweep. Chromium build
+    // of the iPhone 12 profile (390×844, DPR 3, touch, mobile UA).
+    { name: 'iphone', use: { ...devices['iPhone 12'], browserName: 'chromium' } },
+    // Desktop-regression baseline viewport for toHaveScreenshot diffs.
+    {
+      name: 'desktop-baseline',
+      use: { ...devices['Desktop Chrome'], viewport: { width: 1440, height: 900 } },
+    },
+  ],
 });

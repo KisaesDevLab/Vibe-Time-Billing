@@ -14,6 +14,7 @@ import type { ReactNode } from 'react';
 
 import { Button } from './Button';
 import { tokens } from './tokens';
+import { useIsNarrow } from './useIsNarrow';
 
 export interface WizardStep {
   key: string;
@@ -46,6 +47,9 @@ export function Wizard({
   headerExtras,
   width = 1100,
 }: WizardProps): JSX.Element | null {
+  // M0 — phones: full-screen, steps as a horizontal strip, CTAs in a
+  // sticky bottom bar (thumb reach). `width` is a desktop bound only.
+  const narrow = useIsNarrow();
   if (!open) return null;
 
   return (
@@ -60,7 +64,7 @@ export function Wizard({
         display: 'flex',
         alignItems: 'flex-start',
         justifyContent: 'center',
-        padding: '5vh 16px',
+        padding: narrow ? 0 : '5vh 16px',
         background: 'rgba(0, 0, 0, 0.55)',
       }}
     >
@@ -82,13 +86,15 @@ export function Wizard({
           background: tokens.color.surface,
           color: tokens.color.text,
           width: '100%',
-          maxWidth: width,
-          borderRadius: tokens.radius.lg,
-          border: `1px solid ${tokens.color.border}`,
+          maxWidth: narrow ? '100dvw' : width,
+          borderRadius: narrow ? 0 : tokens.radius.lg,
+          border: narrow ? 'none' : `1px solid ${tokens.color.border}`,
           boxShadow: '0 24px 60px rgba(0,0,0,0.35)',
           display: 'flex',
           flexDirection: 'column',
-          maxHeight: '90vh',
+          height: narrow ? '100dvh' : undefined,
+          maxHeight: narrow ? '100dvh' : '90vh',
+          paddingTop: narrow ? 'env(safe-area-inset-top, 0px)' : undefined,
         }}
       >
         <header
@@ -103,7 +109,7 @@ export function Wizard({
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 600 }}>{title}</h2>
           <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
             {headerExtras}
-            {secondaryAction && (
+            {!narrow && secondaryAction && (
               <Button
                 variant="secondary"
                 onClick={secondaryAction.onClick}
@@ -112,9 +118,11 @@ export function Wizard({
                 {secondaryAction.label}
               </Button>
             )}
-            <Button onClick={primaryAction.onClick} disabled={primaryAction.disabled}>
-              {primaryAction.label}
-            </Button>
+            {!narrow && (
+              <Button onClick={primaryAction.onClick} disabled={primaryAction.disabled}>
+                {primaryAction.label}
+              </Button>
+            )}
             <button
               type="button"
               aria-label="Close wizard"
@@ -140,7 +148,8 @@ export function Wizard({
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: '200px 1fr',
+            gridTemplateColumns: narrow ? '1fr' : '200px 1fr',
+            gridTemplateRows: narrow ? 'auto 1fr' : undefined,
             gap: 0,
             flex: 1,
             minHeight: 0,
@@ -148,14 +157,26 @@ export function Wizard({
         >
           <nav
             aria-label="Wizard steps"
-            style={{
-              borderRight: `1px solid ${tokens.color.border}`,
-              padding: tokens.space.md,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4,
-              overflowY: 'auto',
-            }}
+            style={
+              narrow
+                ? {
+                    borderBottom: `1px solid ${tokens.color.border}`,
+                    padding: `${tokens.space.sm}px ${tokens.space.md}px`,
+                    display: 'flex',
+                    flexDirection: 'row',
+                    gap: 4,
+                    overflowX: 'auto',
+                    WebkitOverflowScrolling: 'touch',
+                  }
+                : {
+                    borderRight: `1px solid ${tokens.color.border}`,
+                    padding: tokens.space.md,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 4,
+                    overflowY: 'auto',
+                  }
+            }
           >
             {steps.map((step) => {
               const active = step.key === currentStepKey;
@@ -175,6 +196,8 @@ export function Wizard({
                     border: 'none',
                     cursor: 'pointer',
                     fontWeight: active ? 600 : 400,
+                    flexShrink: narrow ? 0 : undefined,
+                    whiteSpace: narrow ? 'nowrap' : undefined,
                   }}
                 >
                   {step.label}
@@ -184,13 +207,50 @@ export function Wizard({
           </nav>
           <section
             style={{
-              padding: tokens.space.xl,
+              padding: narrow ? tokens.space.md : tokens.space.xl,
               overflowY: 'auto',
+              WebkitOverflowScrolling: 'touch',
             }}
           >
             {steps.find((s) => s.key === currentStepKey)?.content ?? null}
           </section>
         </div>
+
+        {narrow && (
+          <footer
+            style={{
+              display: 'flex',
+              gap: tokens.space.sm,
+              padding: tokens.space.md,
+              paddingBottom: `calc(${tokens.space.md}px + env(safe-area-inset-bottom, 0px))`,
+              borderTop: `1px solid ${tokens.color.border}`,
+              flexShrink: 0,
+              background: tokens.color.surface,
+            }}
+          >
+            {secondaryAction && (
+              <div style={{ flex: 1, display: 'flex' }}>
+                <Button
+                  variant="secondary"
+                  onClick={secondaryAction.onClick}
+                  disabled={secondaryAction.disabled}
+                  style={{ width: '100%', justifyContent: 'center' }}
+                >
+                  {secondaryAction.label}
+                </Button>
+              </div>
+            )}
+            <div style={{ flex: 1, display: 'flex' }}>
+              <Button
+                onClick={primaryAction.onClick}
+                disabled={primaryAction.disabled}
+                style={{ width: '100%', justifyContent: 'center' }}
+              >
+                {primaryAction.label}
+              </Button>
+            </div>
+          </footer>
+        )}
       </div>
     </div>
   );

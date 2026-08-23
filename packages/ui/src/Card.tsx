@@ -32,6 +32,8 @@ export function Card({ title, action, children, style, id }: CardProps): JSX.Ele
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            rowGap: 4,
             marginBottom: tokens.space.md,
           }}
         >

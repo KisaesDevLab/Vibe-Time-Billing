@@ -125,3 +125,30 @@ h3 {
     padding-bottom: env(safe-area-inset-bottom);
   }
 }
+
+/* ---- M0 · narrow-viewport (phone) rules -------------------------------
+   `html[data-narrow="1"]` is mirrored by useIsNarrow at the effective
+   breakpoint (720px ÷ zoom), so these rules agree exactly with the JS
+   layout branches — a plain media query would not (body zoom). */
+
+/* Tab strips scroll horizontally; hide the scrollbar (the right-edge
+   fade below signals more content). */
+.vibe-tabs {
+  scrollbar-width: none; /* Firefox */
+}
+.vibe-tabs::-webkit-scrollbar {
+  display: none; /* WebKit */
+}
+html[data-narrow='1'] .vibe-tabs {
+  /* Fade the right edge as an affordance that the strip scrolls. */
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+}
+
+/* Media never forces sideways page scroll on phones. */
+html[data-narrow='1'] img,
+html[data-narrow='1'] video,
+html[data-narrow='1'] canvas {
+  max-width: 100%;
+  height: auto;
+}

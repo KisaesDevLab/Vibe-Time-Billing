@@ -1,11 +1,29 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+
+import { fontScaleBootstrapScript } from '../../packages/ui/src/tokens';
+
+// M0 — inject the canonical pre-paint font-scale bootstrap from the design
+// system. index.html previously duplicated (and drifted from) the allowed
+// steps, causing a visible zoom jump once React applied the real value.
+function fontScaleBootstrap(): Plugin {
+  return {
+    name: 'vibe-font-scale-bootstrap',
+    transformIndexHtml(html: string): string {
+      return html.replace(
+        /[ \t]*<!-- FONT_SCALE_BOOTSTRAP[^>]*-->/,
+        `    <script>${fontScaleBootstrapScript}</script>`,
+      );
+    },
+  };
+}
 
 export default defineConfig({
   plugins: [
     react(),
+    fontScaleBootstrap(),
     // Installable PWA. injectManifest mode: we ship a hand-written service
     // worker (src/sw.ts) and the plugin only injects the precache manifest
     // (self.__WB_MANIFEST) of hashed build assets. We serve our own
