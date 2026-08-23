@@ -220,6 +220,11 @@ export function mountFileRoutes(router: Router, deps: FileRoutesDeps): void {
           uploadedAt: files.uploadedAt,
           modifiedAt: files.modifiedAt,
           pendingUpload: files.pendingUpload,
+          // 0223 — AI naming provenance.
+          originalUploadFilename: files.originalUploadFilename,
+          aiRenamedAt: files.aiRenamedAt,
+          aiRenameConfidence: files.aiRenameConfidence,
+          aiSuggestedFilename: files.aiSuggestedFilename,
         })
         .from(files)
         .where(and(eq(files.clientFolderId, folder.clientFolderId), isNull(files.deletedAt)))

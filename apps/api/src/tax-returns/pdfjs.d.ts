@@ -9,8 +9,16 @@ declare module 'pdfjs-dist/legacy/build/pdf.mjs' {
   export interface TextItem {
     str?: string;
   }
+  export interface PageViewport {
+    width: number;
+    height: number;
+  }
   export interface PDFPageProxy {
     getTextContent(): Promise<{ items: TextItem[] }>;
+    // 0223 — page rasterisation for AI file naming. `canvasContext` is a
+    // node-canvas 2D context at runtime; typed loosely here on purpose.
+    getViewport(params: { scale: number }): PageViewport;
+    render(params: { canvasContext: unknown; viewport: PageViewport }): { promise: Promise<void> };
   }
   export interface OutlineItem {
     title: string;
@@ -30,6 +38,7 @@ declare module 'pdfjs-dist/legacy/build/pdf.mjs' {
     isEvalSupported?: boolean;
     useSystemFonts?: boolean;
     disableFontFace?: boolean;
+    standardFontDataUrl?: string;
   }
   export function getDocument(src: GetDocumentParams): { promise: Promise<PDFDocumentProxy> };
 }

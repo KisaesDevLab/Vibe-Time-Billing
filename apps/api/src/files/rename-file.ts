@@ -7,6 +7,7 @@
 // the (firm_id, storage_key) unique index honest).
 
 import { and, eq, isNull } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 
 import type { Database } from '@vibe/db';
 import { files } from '@vibe/db/schema';
@@ -30,7 +31,7 @@ export interface RenameFileInput {
   newFilename: string;
   actorAppUserId: string | null;
   /** Extra columns to set in the same update (AI provenance). */
-  extraSet?: Partial<typeof files.$inferInsert>;
+  extraSet?: PgUpdateSetSource<typeof files>;
   /** Extra keys merged into the audit `after` payload. */
   extraAudit?: Record<string, unknown>;
 }
