@@ -88,7 +88,9 @@ export function PendingAchTab(): JSX.Element {
             header: '',
             align: 'right',
             render: (r) => (
-              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+              <div
+                style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}
+              >
                 <InlineVerify row={r} onVerified={load} onError={setErr} />
                 <SendLinkPicker
                   row={r}

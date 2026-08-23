@@ -180,7 +180,14 @@ export function CaptureClientInfo({ open, onClose, onApply }: Props): JSX.Elemen
   return (
     <div style={overlay} role="dialog" aria-modal="true" aria-label="Capture client info">
       <div style={panel}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
           <strong style={{ fontSize: 16 }}>Capture client info</strong>
           <button
             type="button"
@@ -253,7 +260,14 @@ export function CaptureClientInfo({ open, onClose, onApply }: Props): JSX.Elemen
                     </p>
                   )}
                 </div>
-                <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    gap: 8,
+                    justifyContent: 'space-between',
+                  }}
+                >
                   <Button variant="ghost" onClick={() => void refreshWindows()} disabled={busy}>
                     Refresh
                   </Button>
@@ -312,7 +326,9 @@ export function CaptureClientInfo({ open, onClose, onApply }: Props): JSX.Elemen
                 borderRadius: tokens.radius.md,
               }}
             />
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+            <div
+              style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between' }}
+            >
               <Button variant="ghost" onClick={() => setPhase('pick')} disabled={busy}>
                 Back
               </Button>
@@ -398,7 +414,7 @@ function ReviewSummary({
           <span style={{ color: tokens.color.textMuted }}>No fields were extracted.</span>
         )}
       </div>
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'space-between' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'space-between' }}>
         <Button variant="ghost" onClick={onBack}>
           Back
         </Button>

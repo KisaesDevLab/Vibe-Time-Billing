@@ -242,7 +242,7 @@ export function TaxPaymentsTab(): JSX.Element {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(5, minmax(0, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(min(140px, 100%), 1fr))',
           gap: 8,
           marginBottom: 10,
           fontSize: 12,
@@ -555,7 +555,9 @@ function ReminderDialog({
                   {error}
                 </p>
               )}
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <div
+                style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}
+              >
                 <Button variant="ghost" onClick={onClose} disabled={busy}>
                   Cancel
                 </Button>

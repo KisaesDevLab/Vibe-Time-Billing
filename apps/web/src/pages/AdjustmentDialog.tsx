@@ -590,7 +590,7 @@ export function AdjustmentDialog({
 
         <Card title="Submit">
           {submitError && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{submitError}</p>}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
             <Button variant="secondary" onClick={onClose}>
               Cancel
             </Button>

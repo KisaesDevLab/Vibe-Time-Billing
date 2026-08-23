@@ -158,7 +158,12 @@ export function PaymentPlanCard({
                 }}
               >
                 <div
-                  style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
                 >
                   <span style={{ fontSize: 13, fontWeight: 600 }}>
                     {fmtCents(p.installmentCents)} · {p.frequency.toLowerCase()}

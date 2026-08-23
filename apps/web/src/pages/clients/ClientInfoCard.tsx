@@ -527,7 +527,14 @@ function RestrictionPanel({
         borderTop: `1px solid ${tokens.color.border}`,
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
         <div
           style={{
             fontSize: 11,

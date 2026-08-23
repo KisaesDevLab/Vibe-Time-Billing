@@ -665,7 +665,14 @@ export function RequestsPage(): JSX.Element {
         </div>
       </Card>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <div style={{ display: 'flex', gap: tokens.space.sm, alignItems: 'center' }}>
           <span style={{ fontSize: 12, color: tokens.color.textMuted }}>Sort by</span>
           <Combobox options={SORT_OPTIONS} value={sort} onChange={(v) => setSort(v)} width={160} />
@@ -894,6 +901,7 @@ export function RequestsPage(): JSX.Element {
                     fontSize: 12,
                     marginBottom: 4,
                     display: 'flex',
+                    flexWrap: 'wrap',
                     justifyContent: 'space-between',
                     alignItems: 'center',
                   }}
@@ -1096,6 +1104,7 @@ export function RequestsPage(): JSX.Element {
         <div
           style={{
             display: 'flex',
+            flexWrap: 'wrap',
             justifyContent: 'space-between',
             alignItems: 'center',
             marginTop: tokens.space.sm,

@@ -376,7 +376,14 @@ export function UserDetailPage(): JSX.Element {
 
       {/* Header: title + tabs grouped tightly so the first card sits near the top. */}
       <div style={{ display: 'grid', gap: 8 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
           <h1 style={{ margin: 0, fontSize: 20, display: 'flex', gap: 8, alignItems: 'center' }}>
             <span>{user.fullName}</span>
             <Pill tone={user.status === 'ACTIVE' ? 'success' : 'warning'}>{user.status}</Pill>
@@ -537,6 +544,7 @@ export function UserDetailPage(): JSX.Element {
             <div
               style={{
                 display: 'flex',
+                flexWrap: 'wrap',
                 justifyContent: 'space-between',
                 alignItems: 'center',
                 gap: 12,
@@ -1174,7 +1182,15 @@ function RatesTab({
               rowKey={(c) => c.id}
               empty="No rate codes."
             />
-            <div style={{ display: 'flex', gap: 8, marginTop: 12, justifyContent: 'flex-end' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                marginTop: 12,
+                justifyContent: 'flex-end',
+              }}
+            >
               <Button variant="ghost" onClick={cancelNew} disabled={busy}>
                 Cancel
               </Button>

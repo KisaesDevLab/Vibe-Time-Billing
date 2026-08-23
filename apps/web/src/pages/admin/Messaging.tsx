@@ -8,7 +8,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Combobox, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Combobox, Pill, ScrollX, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -899,54 +899,56 @@ export function MessagingPage(): JSX.Element {
         {recentCalls.length === 0 ? (
           <p style={{ fontSize: 13, color: tokens.color.textMuted }}>No automated calls yet.</p>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-            <thead>
-              <tr>
-                {['When', 'Client', 'Kind', 'To', 'Outcome', ''].map((h) => (
-                  <th
-                    key={h}
-                    style={{
-                      textAlign: 'left',
-                      padding: '6px 8px',
-                      color: tokens.color.textMuted,
-                      fontSize: 11,
-                      borderBottom: `1px solid ${tokens.color.border}`,
-                    }}
-                  >
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {recentCalls.map((c) => (
-                <tr key={c.id}>
-                  <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
-                    {new Date(c.createdAt).toLocaleString()}
-                  </td>
-                  <td style={{ padding: '6px 8px' }}>{c.clientName ?? '—'}</td>
-                  <td style={{ padding: '6px 8px' }}>
-                    {c.kind === 'appointment_reminder'
-                      ? 'Appt reminder'
-                      : c.kind.startsWith('engagement_status:')
-                        ? `Status: ${c.kind.slice('engagement_status:'.length)}`
-                        : c.kind}
-                  </td>
-                  <td style={{ padding: '6px 8px', fontFamily: tokens.font.mono, fontSize: 12 }}>
-                    {c.toNumber}
-                  </td>
-                  <td style={{ padding: '6px 8px' }} title={c.error ?? undefined}>
-                    <Pill tone={CALL_STATUS_TONE[c.status] ?? 'neutral'}>
-                      {c.status.replace('_', ' ')}
-                    </Pill>
-                  </td>
-                  <td style={{ padding: '6px 8px', fontSize: 11, color: tokens.color.textMuted }}>
-                    {c.fallbackSmsSent ? 'fell back to SMS' : ''}
-                  </td>
+          <ScrollX>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+              <thead>
+                <tr>
+                  {['When', 'Client', 'Kind', 'To', 'Outcome', ''].map((h) => (
+                    <th
+                      key={h}
+                      style={{
+                        textAlign: 'left',
+                        padding: '6px 8px',
+                        color: tokens.color.textMuted,
+                        fontSize: 11,
+                        borderBottom: `1px solid ${tokens.color.border}`,
+                      }}
+                    >
+                      {h}
+                    </th>
+                  ))}
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {recentCalls.map((c) => (
+                  <tr key={c.id}>
+                    <td style={{ padding: '6px 8px', whiteSpace: 'nowrap' }}>
+                      {new Date(c.createdAt).toLocaleString()}
+                    </td>
+                    <td style={{ padding: '6px 8px' }}>{c.clientName ?? '—'}</td>
+                    <td style={{ padding: '6px 8px' }}>
+                      {c.kind === 'appointment_reminder'
+                        ? 'Appt reminder'
+                        : c.kind.startsWith('engagement_status:')
+                          ? `Status: ${c.kind.slice('engagement_status:'.length)}`
+                          : c.kind}
+                    </td>
+                    <td style={{ padding: '6px 8px', fontFamily: tokens.font.mono, fontSize: 12 }}>
+                      {c.toNumber}
+                    </td>
+                    <td style={{ padding: '6px 8px' }} title={c.error ?? undefined}>
+                      <Pill tone={CALL_STATUS_TONE[c.status] ?? 'neutral'}>
+                        {c.status.replace('_', ' ')}
+                      </Pill>
+                    </td>
+                    <td style={{ padding: '6px 8px', fontSize: 11, color: tokens.color.textMuted }}>
+                      {c.fallbackSmsSent ? 'fell back to SMS' : ''}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </ScrollX>
         )}
       </Card>
     </div>

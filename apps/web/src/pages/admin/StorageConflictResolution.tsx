@@ -227,7 +227,14 @@ function ClientComparisonCard({
 }): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: 6 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <strong>{client.client_name}</strong>
         <Pill tone={kind === 'current' ? 'accent' : 'warning'}>
           {kind === 'current' ? 'Currently bound' : 'Challenger'}

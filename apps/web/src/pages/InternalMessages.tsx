@@ -128,6 +128,7 @@ export function TeamMessagesPanel(): JSX.Element {
                       <div
                         style={{
                           display: 'flex',
+                          flexWrap: 'wrap',
                           justifyContent: 'space-between',
                           alignItems: 'center',
                           gap: 8,

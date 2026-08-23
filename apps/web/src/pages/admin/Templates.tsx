@@ -2397,6 +2397,7 @@ function RequestTab(): JSX.Element {
             fontSize: 12,
             marginBottom: 4,
             display: 'flex',
+            flexWrap: 'wrap',
             justifyContent: 'space-between',
             alignItems: 'center',
           }}

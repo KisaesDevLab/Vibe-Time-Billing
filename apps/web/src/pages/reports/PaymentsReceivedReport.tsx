@@ -9,7 +9,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { Button, Card, Pill, Stat, Table, type TableColumn, tokens } from '@vibe/ui';
+import { Button, Card, Pill, ScrollX, Stat, Table, tokens, type TableColumn } from '@vibe/ui';
 import { useClientPage } from '../../lib/use-paged-list';
 
 import { api } from '../../api-client';
@@ -465,29 +465,35 @@ function BreakdownTable({
       {rows.length === 0 ? (
         <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>—</p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.name} style={{ borderBottom: `1px solid ${tokens.color.border}` }}>
-                <td style={{ padding: '4px 6px' }}>{r.name}</td>
-                <td
-                  style={{ padding: '4px 6px', textAlign: 'right', color: tokens.color.textMuted }}
-                >
-                  {r.count}
-                </td>
-                <td
-                  style={{
-                    padding: '4px 6px',
-                    textAlign: 'right',
-                    fontVariantNumeric: 'tabular-nums',
-                  }}
-                >
-                  {formatCents(r.total)}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <ScrollX>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.name} style={{ borderBottom: `1px solid ${tokens.color.border}` }}>
+                  <td style={{ padding: '4px 6px' }}>{r.name}</td>
+                  <td
+                    style={{
+                      padding: '4px 6px',
+                      textAlign: 'right',
+                      color: tokens.color.textMuted,
+                    }}
+                  >
+                    {r.count}
+                  </td>
+                  <td
+                    style={{
+                      padding: '4px 6px',
+                      textAlign: 'right',
+                      fontVariantNumeric: 'tabular-nums',
+                    }}
+                  >
+                    {formatCents(r.total)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </ScrollX>
       )}
     </Card>
   );

@@ -6,7 +6,7 @@
 
 import { useState } from 'react';
 
-import { Button, Pill, tokens } from '@vibe/ui';
+import { Button, Pill, ScrollX, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -185,68 +185,70 @@ export function PricingSuggestionPanel({ engagementId }: { engagementId: string 
       </div>
 
       {/* Editable cost build by tier */}
-      <table style={{ borderCollapse: 'collapse', width: '100%' }}>
-        <thead>
-          <tr style={{ textAlign: 'left', color: tokens.color.textMuted, fontSize: 11 }}>
-            <th style={cell}>Tier</th>
-            <th style={cell}>Expected hrs</th>
-            <th style={cell}>Burdened $/h</th>
-            <th style={cell}>Cost</th>
-            <th style={cell}>This client (actual hrs)</th>
-          </tr>
-        </thead>
-        <tbody>
-          {p.breakdownByTier.map((t) => (
-            <tr key={t.tier}>
-              <td style={cell}>{t.tier}</td>
-              <td style={cell}>
-                <input
-                  style={num}
-                  type="number"
-                  step="0.25"
-                  defaultValue={form.tiers[t.tier]?.hours ?? t.expectedHours}
-                  onBlur={(e) =>
-                    recompute({
-                      ...form,
-                      tiers: {
-                        ...form.tiers,
-                        [t.tier]: {
-                          hours: Number(e.target.value),
-                          rateCents: form.tiers[t.tier]?.rateCents ?? t.burdenedCostRateCents,
-                        },
-                      },
-                    })
-                  }
-                />
-              </td>
-              <td style={cell}>
-                <input
-                  style={num}
-                  type="number"
-                  step="1"
-                  defaultValue={(form.tiers[t.tier]?.rateCents ?? t.burdenedCostRateCents) / 100}
-                  onBlur={(e) =>
-                    recompute({
-                      ...form,
-                      tiers: {
-                        ...form.tiers,
-                        [t.tier]: {
-                          hours: form.tiers[t.tier]?.hours ?? t.expectedHours,
-                          rateCents: Math.round(Number(e.target.value) * 100),
-                        },
-                      },
-                    })
-                  }
-                />
-              </td>
-              <td style={cell}>{money(t.costCents)}</td>
-              <td style={{ ...cell, color: tokens.color.textMuted }}>
-                {(data.ownActualHoursByTier[t.tier] ?? 0).toFixed(2)}
-              </td>
+      <ScrollX>
+        <table style={{ borderCollapse: 'collapse', width: '100%' }}>
+          <thead>
+            <tr style={{ textAlign: 'left', color: tokens.color.textMuted, fontSize: 11 }}>
+              <th style={cell}>Tier</th>
+              <th style={cell}>Expected hrs</th>
+              <th style={cell}>Burdened $/h</th>
+              <th style={cell}>Cost</th>
+              <th style={cell}>This client (actual hrs)</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {p.breakdownByTier.map((t) => (
+              <tr key={t.tier}>
+                <td style={cell}>{t.tier}</td>
+                <td style={cell}>
+                  <input
+                    style={num}
+                    type="number"
+                    step="0.25"
+                    defaultValue={form.tiers[t.tier]?.hours ?? t.expectedHours}
+                    onBlur={(e) =>
+                      recompute({
+                        ...form,
+                        tiers: {
+                          ...form.tiers,
+                          [t.tier]: {
+                            hours: Number(e.target.value),
+                            rateCents: form.tiers[t.tier]?.rateCents ?? t.burdenedCostRateCents,
+                          },
+                        },
+                      })
+                    }
+                  />
+                </td>
+                <td style={cell}>
+                  <input
+                    style={num}
+                    type="number"
+                    step="1"
+                    defaultValue={(form.tiers[t.tier]?.rateCents ?? t.burdenedCostRateCents) / 100}
+                    onBlur={(e) =>
+                      recompute({
+                        ...form,
+                        tiers: {
+                          ...form.tiers,
+                          [t.tier]: {
+                            hours: form.tiers[t.tier]?.hours ?? t.expectedHours,
+                            rateCents: Math.round(Number(e.target.value) * 100),
+                          },
+                        },
+                      })
+                    }
+                  />
+                </td>
+                <td style={cell}>{money(t.costCents)}</td>
+                <td style={{ ...cell, color: tokens.color.textMuted }}>
+                  {(data.ownActualHoursByTier[t.tier] ?? 0).toFixed(2)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ScrollX>
 
       {/* Margin + economic drivers */}
       <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', fontSize: 13 }}>

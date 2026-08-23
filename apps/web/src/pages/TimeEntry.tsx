@@ -1041,6 +1041,7 @@ function LogView({
                       key={t.id}
                       style={{
                         display: 'flex',
+                        flexWrap: 'wrap',
                         gap: 8,
                         alignItems: 'center',
                         justifyContent: 'space-between',
@@ -2636,6 +2637,7 @@ function WeekView({
                         <span
                           style={{
                             display: 'flex',
+                            flexWrap: 'wrap',
                             alignItems: 'center',
                             gap: 4,
                             justifyContent: 'space-between',
@@ -2748,6 +2750,7 @@ function WeekView({
               <div
                 style={{
                   display: 'flex',
+                  flexWrap: 'wrap',
                   justifyContent: 'space-between',
                   alignItems: 'baseline',
                   gap: 8,

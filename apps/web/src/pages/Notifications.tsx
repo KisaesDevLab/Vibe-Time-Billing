@@ -56,7 +56,14 @@ export function NotificationsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 760 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <h1 style={{ margin: 0, fontSize: 22 }}>Notifications</h1>
         {unread > 0 && (
           <Button size="sm" variant="secondary" onClick={() => void readAll()}>

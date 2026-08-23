@@ -440,6 +440,7 @@ export function SignatureDetailPage(): JSX.Element {
                 <div
                   style={{
                     display: 'flex',
+                    flexWrap: 'wrap',
                     justifyContent: 'space-between',
                     marginTop: tokens.space.md,
                   }}

@@ -757,7 +757,7 @@ function CreateSignatureDialog({
 
             {error && <div style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</div>}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>

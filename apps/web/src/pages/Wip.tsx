@@ -182,7 +182,13 @@ export function WipDashboardPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1300 }}>
       <Card title={`Firm-wide WIP · ${asOf || 'loading'}`}>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 16 }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(220px, 100%), 1fr))',
+            gap: 16,
+          }}
+        >
           <Stat label="Engagements with WIP" value={String(rows.length)} />
           <Stat label="Unbilled hours" value={totalHours.toFixed(2)} />
           <Stat label="Unbilled value" value={formatCents(totalCents)} />

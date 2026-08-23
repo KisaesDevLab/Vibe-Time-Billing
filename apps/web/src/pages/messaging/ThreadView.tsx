@@ -219,6 +219,7 @@ export function ThreadView({
                     color: tokens.color.textMuted,
                     marginBottom: 4,
                     display: 'flex',
+                    flexWrap: 'wrap',
                     justifyContent: 'space-between',
                     gap: 12,
                   }}
@@ -593,7 +594,7 @@ function FileToFolderDialog({
           </p>
         )}
 
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>

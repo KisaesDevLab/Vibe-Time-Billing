@@ -326,7 +326,9 @@ export function MailMergeDialog({
                   </li>
                 ))}
               </ul>
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <div
+                style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}
+              >
                 <Button onClick={onDone}>Done</Button>
               </div>
             </div>

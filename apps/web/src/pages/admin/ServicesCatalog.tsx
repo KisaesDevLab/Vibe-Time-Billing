@@ -413,7 +413,14 @@ export function ServicesCatalogPage(): JSX.Element {
                 header: '',
                 align: 'right',
                 render: (r) => (
-                  <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 4,
+                      justifyContent: 'flex-end',
+                    }}
+                  >
                     <Button size="sm" variant="ghost" onClick={() => startEdit(r)}>
                       Edit
                     </Button>
@@ -860,7 +867,15 @@ function ServiceEditor({
           {error}
         </p>
       )}
-      <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 8,
+          marginTop: 16,
+          justifyContent: 'flex-end',
+        }}
+      >
         <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>
@@ -945,7 +960,15 @@ function BulkPriceDialog({
       <p style={{ fontSize: 11, color: tokens.color.textMuted, marginTop: 12 }}>
         Prices are floored at $0 — they cannot go negative.
       </p>
-      <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          gap: 8,
+          marginTop: 16,
+          justifyContent: 'flex-end',
+        }}
+      >
         <Button variant="ghost" onClick={onCancel}>
           Cancel
         </Button>

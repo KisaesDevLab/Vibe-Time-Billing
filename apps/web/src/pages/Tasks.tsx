@@ -1351,7 +1351,15 @@ function TaskDialog({
               </p>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 4 }}>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                justifyContent: 'flex-end',
+                gap: 8,
+                marginTop: 4,
+              }}
+            >
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>

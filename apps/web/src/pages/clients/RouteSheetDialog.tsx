@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { Button, Card, tokens } from '@vibe/ui';
+import { Button, Card, ScrollX, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { PrintButton } from '../../components/PrintButton';
@@ -164,54 +164,56 @@ export function RouteSheetDialog({
                     hand).
                   </p>
                 ) : (
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead>
-                      <tr style={{ background: tokens.color.surface }}>
-                        <th style={th('center')}>{''}</th>
-                        <th style={th()}>Engagement</th>
-                        <th style={th()}>Period</th>
-                        <th style={th()}>Status → set to</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {engagements.map((e) => (
-                        <tr key={e.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
-                          <td style={{ ...td(), textAlign: 'center' }}>
-                            <input
-                              type="checkbox"
-                              aria-label={`Include ${e.name}`}
-                              checked={selected.has(e.id)}
-                              onChange={() => toggle(e.id)}
-                            />
-                          </td>
-                          <td style={td()}>{e.name}</td>
-                          <td style={{ ...td(), color: tokens.color.textMuted }}>
-                            {e.period ?? '—'}
-                          </td>
-                          <td style={td()}>
-                            <select
-                              aria-label={`Status for ${e.name}`}
-                              value={stateById[e.id] ?? e.workflowState}
-                              onChange={(ev) =>
-                                setStateById((prev) => ({ ...prev, [e.id]: ev.target.value }))
-                              }
-                              style={selectStyle}
-                            >
-                              {filterStatuses(
-                                statusOptions,
-                                e.serviceLineId,
-                                stateById[e.id] ?? e.workflowState,
-                              ).map((s) => (
-                                <option key={s.workflowState} value={s.workflowState}>
-                                  {s.label}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
+                  <ScrollX>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead>
+                        <tr style={{ background: tokens.color.surface }}>
+                          <th style={th('center')}>{''}</th>
+                          <th style={th()}>Engagement</th>
+                          <th style={th()}>Period</th>
+                          <th style={th()}>Status → set to</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {engagements.map((e) => (
+                          <tr key={e.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                            <td style={{ ...td(), textAlign: 'center' }}>
+                              <input
+                                type="checkbox"
+                                aria-label={`Include ${e.name}`}
+                                checked={selected.has(e.id)}
+                                onChange={() => toggle(e.id)}
+                              />
+                            </td>
+                            <td style={td()}>{e.name}</td>
+                            <td style={{ ...td(), color: tokens.color.textMuted }}>
+                              {e.period ?? '—'}
+                            </td>
+                            <td style={td()}>
+                              <select
+                                aria-label={`Status for ${e.name}`}
+                                value={stateById[e.id] ?? e.workflowState}
+                                onChange={(ev) =>
+                                  setStateById((prev) => ({ ...prev, [e.id]: ev.target.value }))
+                                }
+                                style={selectStyle}
+                              >
+                                {filterStatuses(
+                                  statusOptions,
+                                  e.serviceLineId,
+                                  stateById[e.id] ?? e.workflowState,
+                                ).map((s) => (
+                                  <option key={s.workflowState} value={s.workflowState}>
+                                    {s.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </ScrollX>
                 )}
               </div>
 
@@ -242,7 +244,9 @@ export function RouteSheetDialog({
                 />
               </div>
 
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <div
+                style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}
+              >
                 <Button variant="ghost" onClick={onClose} disabled={busy}>
                   Close
                 </Button>
@@ -274,6 +278,7 @@ export function RouteSheetDialog({
                         key={h.id}
                         style={{
                           display: 'flex',
+                          flexWrap: 'wrap',
                           gap: 8,
                           alignItems: 'center',
                           justifyContent: 'space-between',

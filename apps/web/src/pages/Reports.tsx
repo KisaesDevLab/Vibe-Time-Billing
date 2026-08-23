@@ -931,7 +931,13 @@ function RevenueOpsCard(): JSX.Element {
       {!dso && !mrr ? (
         <p style={{ color: tokens.color.textMuted, fontSize: 13 }}>Loading…</p>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))',
+            gap: 16,
+          }}
+        >
           {dso && (
             <>
               <Stat

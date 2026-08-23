@@ -486,6 +486,7 @@ function HistoryModal({
         <div
           style={{
             display: 'flex',
+            flexWrap: 'wrap',
             justifyContent: 'space-between',
             alignItems: 'center',
             marginBottom: 16,

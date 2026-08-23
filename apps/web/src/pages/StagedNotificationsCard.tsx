@@ -323,7 +323,9 @@ export function StagedNotificationsCard(): JSX.Element {
               align: 'right',
               mobile: 'field',
               render: (r) => (
-                <span style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                <span
+                  style={{ display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end' }}
+                >
                   <Button
                     size="sm"
                     variant="ghost"
@@ -494,7 +496,7 @@ export function StagedNotificationsCard(): JSX.Element {
                 }}
               />
             </label>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
               <Button variant="secondary" disabled={busy} onClick={() => setScheduleIds([])}>
                 Cancel
               </Button>

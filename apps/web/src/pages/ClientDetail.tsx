@@ -324,7 +324,7 @@ export function ClientDetailPage(): JSX.Element {
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(5, 1fr)',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))',
                   gap: 16,
                 }}
               >
@@ -890,7 +890,7 @@ function MergeDialog({
               </div>
             )}
             {error && <p style={{ color: tokens.color.danger, fontSize: 12 }}>{error}</p>}
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
               <Button variant="secondary" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>
