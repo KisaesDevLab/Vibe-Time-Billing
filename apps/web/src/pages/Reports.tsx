@@ -268,7 +268,7 @@ function RealizationCard({
     <Card
       title={`Realization${drillUser || drillEng || drillClient || drillServiceLine ? ' (drilled)' : ''}`}
       action={
-        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
           {(['firm', 'timekeeper', 'engagement', 'client', 'service_line'] as const).map((d) => (
             <Button
               key={d}

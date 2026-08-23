@@ -257,7 +257,7 @@ export function DashboardPage(): JSX.Element {
       <Card
         title={realizMode === 'service_line' ? 'Realization by service line' : 'My realization'}
         action={
-          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+          <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             <span
               style={{
                 display: 'inline-flex',

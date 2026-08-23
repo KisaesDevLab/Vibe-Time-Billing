@@ -145,6 +145,17 @@ html[data-narrow='1'] .vibe-tabs {
   mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
 }
 
+/* Grid/flex items default to min-width:auto, which lets a Card grow to
+   its content's min-content width (a kanban board, a wide toolbar) and
+   drag the whole page wider than the viewport. On phones, zero that out —
+   inline `minWidth` styles still win where a component needs one, and
+   overflow then stays inside the ScrollX / overflow-x containers. */
+html[data-narrow='1'] #main-content div,
+html[data-narrow='1'] #main-content section,
+html[data-narrow='1'] #main-content form {
+  min-width: 0;
+}
+
 /* Media never forces sideways page scroll on phones. */
 html[data-narrow='1'] img,
 html[data-narrow='1'] video,

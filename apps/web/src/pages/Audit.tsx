@@ -94,7 +94,7 @@ export function AuditPage(): JSX.Element {
           onSubmit={submit}
           style={{
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr 1fr 1fr auto',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))',
             gap: 8,
             alignItems: 'end',
           }}
@@ -126,7 +126,7 @@ export function AuditPage(): JSX.Element {
       </Card>
 
       <Card title="Full-text search">
-        <div style={{ display: 'flex', gap: 8, alignItems: 'end' }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'end', flexWrap: 'wrap' }}>
           <Input
             label="Search audit text"
             placeholder="entity id, action, IP, user-agent…"
