@@ -229,7 +229,6 @@ describe('cloudflare-tunnel router', () => {
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -245,7 +244,6 @@ describe('cloudflare-tunnel router', () => {
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -262,12 +260,11 @@ describe('cloudflare-tunnel router', () => {
     expect(log.getZone).toEqual([ZONE_ID]);
   });
 
-  it('POST /provision (licensed) creates tunnel + DNS for both staff and portal', async () => {
+  it('POST /provision creates tunnel + DNS for both staff and portal', async () => {
     const { factory, log } = buildMockClient();
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -314,46 +311,11 @@ describe('cloudflare-tunnel router', () => {
     expect(row!.apiTokenHint).toBe(VALID_TOKEN.slice(-4));
   });
 
-  it('POST /provision (unlicensed) omits portal ingress but still saves portalHostname', async () => {
-    const { factory, log } = buildMockClient();
-    const router = createCloudflareTunnelRouter({
-      db: harness.db,
-      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: false,
-      tokenFilePath: tokenFile,
-      createClient: factory,
-    });
-    await invoke(router, 'post', '/provision', {
-      ...makeReq({
-        firmId: seed.firmId,
-        appUserId: seed.appUserId,
-        body: {
-          apiToken: VALID_TOKEN,
-          accountId: ACCOUNT_ID,
-          zoneId: ZONE_ID,
-          staffHostname: 'app.firm.example',
-          portalHostname: 'portal.firm.example',
-        },
-      }),
-    });
-    expect(log.setTunnelIngress[0]!.hosts).toEqual(['app.firm.example']);
-    expect(log.setTunnelIngress[0]!.ingressLen).toBe(2); // staff + 404 catch-all
-    expect(log.upsertCnameRecord.map((c) => c.hostname)).toEqual(['app.firm.example']);
-
-    // portalHostname still recorded so re-license picks it up on next provision.
-    const [row] = await harness.db
-      .select()
-      .from(cloudflareTunnelConfigs)
-      .where(eq(cloudflareTunnelConfigs.firmId, seed.firmId));
-    expect(row!.portalHostname).toBe('portal.firm.example');
-  });
-
   it('POST /deprovision deletes the tunnel + DNS, clears tokens, removes token file', async () => {
     const { factory, log } = buildMockClient();
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -404,7 +366,6 @@ describe('cloudflare-tunnel router', () => {
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -428,7 +389,6 @@ describe('cloudflare-tunnel router', () => {
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -447,7 +407,6 @@ describe('cloudflare-tunnel router', () => {
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -474,7 +433,6 @@ describe('cloudflare-tunnel router', () => {
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -526,7 +484,6 @@ describe('cloudflare-tunnel router', () => {
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -562,12 +519,11 @@ describe('cloudflare-tunnel router', () => {
     ]);
   });
 
-  it('POST /provision (licensed) rewrites an INTAKE hostname to intake.<zone>', async () => {
+  it('POST /provision rewrites an INTAKE hostname to intake.<zone>', async () => {
     const { factory, log } = buildMockClient();
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });
@@ -600,51 +556,11 @@ describe('cloudflare-tunnel router', () => {
     ]);
   });
 
-  it('POST /provision (unlicensed) omits INTAKE ingress + DNS but records it', async () => {
-    const { factory, log } = buildMockClient();
-    const router = createCloudflareTunnelRouter({
-      db: harness.db,
-      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: false,
-      tokenFilePath: tokenFile,
-      createClient: factory,
-    });
-    await invoke(router, 'post', '/provision', {
-      ...makeReq({
-        firmId: seed.firmId,
-        appUserId: seed.appUserId,
-        body: {
-          apiToken: VALID_TOKEN,
-          accountId: ACCOUNT_ID,
-          zoneId: ZONE_ID,
-          hostnames: [
-            { hostname: 'app.firm.example', realm: 'STAFF' },
-            { hostname: 'intake.firm.example', realm: 'INTAKE' },
-          ],
-        },
-      }),
-    });
-    // Only staff + catch-all; INTAKE ingress + CNAME skipped while unlicensed.
-    expect(log.setTunnelIngress[0]!.hosts).toEqual(['app.firm.example']);
-    expect(log.setTunnelIngress[0]!.ingressLen).toBe(2);
-    expect(log.upsertCnameRecord.map((c) => c.hostname)).toEqual(['app.firm.example']);
-
-    // But the INTAKE hostname is still persisted so a re-license picks it up.
-    const g = await invoke(router, 'get', '/', {
-      ...makeReq({ firmId: seed.firmId, appUserId: seed.appUserId }),
-    });
-    const cfg = (
-      g.jsonBody as { config: { hostnames: Array<{ hostname: string; realm: string }> } }
-    ).config;
-    expect(cfg.hostnames.find((h) => h.hostname === 'intake.firm.example')!.realm).toBe('INTAKE');
-  });
-
   it('POST /update reconciles hostnames without recreating the tunnel', async () => {
     const { factory, log } = buildMockClient();
     const router = createCloudflareTunnelRouter({
       db: harness.db,
       fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
-      commercialLicenseActive: true,
       tokenFilePath: tokenFile,
       createClient: factory,
     });

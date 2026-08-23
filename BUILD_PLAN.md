@@ -2,7 +2,7 @@
 
 **Repository (planned):** `KisaesDevLab/Vibe-Time-Billing`
 **Brand:** Vibe Time & Billing
-**License:** PolyForm Small Business License 1.0.0 (commercial license required for client-portal access)
+**License:** PolyForm Small Business License 1.0.0 (client portal included)
 **Created:** May 19, 2026
 **Total phases:** 26
 **Total items:** ~513
@@ -46,7 +46,7 @@ Self-hosted Docker appliance for CPA practice time tracking, recurring billing, 
 5. **`adjustment_allocation` at per-timekeeper grain** — the realization attribution wedge
 6. **Immutable audit log** — edits create versioned records, never overwrite
 7. **Local AI sees firm data; cloud AI sees nothing without explicit toggle**
-8. **PolyForm Small Business License 1.0.0** licensing, commercial license for client-portal features
+8. **PolyForm Small Business License 1.0.0** licensing (client portal included; the commercial-token gate was removed 2026-08-22)
 9. **Separate auth realms** — staff and client portal users have distinct session stores and trust models
 10. **Identity-based portal model** — `portal_identity` is the person; `client_portal_access` is the join to clients. Email and phone are contact methods on the identity, not the identity itself. One person who is responsible for three entities at the same firm gets one login and switches entities via the UI.
 

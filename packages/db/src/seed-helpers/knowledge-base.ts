@@ -1354,7 +1354,7 @@ Dunning is the automated past-due follow-up that runs in the background. An hour
     category: 'client-portal',
     title: 'Client portal overview',
     summary: 'What clients can do and how access works.',
-    tags: ['portal', 'clients', 'license'],
+    tags: ['portal', 'clients'],
     sortOrder: 10,
     body: md(`
 # Client portal overview
@@ -1362,8 +1362,7 @@ Dunning is the automated past-due follow-up that runs in the background. An hour
 The client portal is a separate, branded web app (served from your firm's \`portal.\` subdomain) where your clients sign in to view and pay invoices, exchange messages and files, respond to requests, and review engagements, statements, and tax items. It runs as its own application — distinct from the staff app — with its own login and its own session.
 
 ## What you'll see
-- The portal is **commercial-license-gated**. If the appliance has no commercial license token configured, the portal shows a full-page **Portal unavailable** message reading "This appliance does not have a commercial license token configured." Clients cannot even reach the login form.
-- The portal can also be turned off per-firm. When a firm disables it, the same **Portal unavailable** page instead reads "Your firm has disabled the client portal." Both states point the client to "Contact your firm administrator for help."
+- The portal is included with every appliance — no license token. It can be turned off per-firm (Admin → Firm settings); when disabled, clients see a full-page **Portal unavailable** message reading "Your firm has disabled the client portal." and are pointed to "Contact your firm administrator for help."
 - The portal header shows your firm's branding (logo + display name) when configured; otherwise it falls back to **Client Portal**. A green \`portal\` realm badge sits in the header.
 - The left navigation a signed-in client sees is grouped: at the top **Overview**, **Messages**, and **Updates** (an in-app notices inbox that shows an unread count badge); then **Billing & payments** (**Invoices**, **Statement**, **Payment methods**, **Tax payments**); **Documents** (**Requests**, **Files**, **Letters**); **Your work** (**Engagements**, **Appointments**, **Tax returns**); and a footer (**Profile**, **Notifications**, **Activity**, **Help**, **Switch client**).
 - On **Invoices**, clients see "Open invoices" and "Paid" cards, can open an invoice to see line items and payments, **View as PDF**, **Download receipt**, and pay an open balance with a \`Pay $<amount>\` button.
@@ -2552,7 +2551,6 @@ Vibe Practice Management runs as a self-hosted Docker appliance: an API containe
 - \`APP_BASE_URL\` / \`PORTAL_BASE_URL\` — staff and portal base URLs used in links/emails (local defaults \`http://localhost:5195\` / \`:5196\`).
 - \`STAFF_JWT_SECRET\` / \`PORTAL_JWT_SECRET\` — distinct signing secrets per realm; required.
 - \`KMS_KEY\` — 32-byte base64 envelope-encryption master key; required (API exits at boot if missing).
-- \`COMMERCIAL_LICENSE_TOKEN\` — enables the client portal; absent means portal disabled.
 
 ## What you'll see
 - Staff requests get \`X-Vibe-Realm: app\`; portal requests get \`X-Vibe-Realm: portal\`. The API uses this plus distinct cookies to keep realms isolated.
@@ -2597,7 +2595,6 @@ For public access without opening firewall ports, the appliance ships a bundled 
 - On failure the row goes to \`ERROR\` and a **Last error** box shows the Cloudflare message; the wizard re-opens as **Re-provision**.
 
 ## Tips
-- Portal hostnames are saved but get no ingress/DNS until a commercial license token is active — re-provision picks them up once licensed.
 - The tunnel ingress rewrites the origin Host header to \`app.<zone>\` / \`portal.<zone>\` so Caddy routes correctly regardless of the public label — no Caddyfile edits.
 - **Disable** deletes the tunnel and its DNS records, clears the stored tokens, removes the token file, and sets status \`INACTIVE\` — traffic stops until you re-provision.
 - On the local compose, the sidecar reads \`TUNNEL_TOKEN\` and only runs once a token file exists.
@@ -2879,7 +2876,6 @@ The Cloudflare Tunnel exposes the appliance on your own domain (\`app.<zone>\`, 
 2. **Caddy isn't serving the tunnel origin on \`:80\`.** The tunnel ingress forwards to \`http://caddy:80\` and rewrites the Host header to \`app.<zone>\` / \`portal.<zone>\` (TLS is terminated at Cloudflare's edge, so plain HTTP here is fine). If Caddy isn't listening on \`:80\`, the tunnel is "up" but origin requests fail. Fix (operator): confirm Caddy handles \`:80\` (the local Caddyfile's \`:80\` block; prod maps \`80:80\`).
 3. **\`provision_failed\` — orphan tunnel of the same name.** A prior failed provision can leave a Cloudflare tunnel whose id never reached the DB, so a fresh create fails ("tunnel with this name already exists", code 1013). Provisioning tries to delete the orphan first, but a permissions gap can block cleanup. Fix: ensure the API token can list/delete tunnels, then re-provision; the status row is stamped \`ERROR\` with the Cloudflare message.
 4. **\`provision_failed\` — bad token, account, or zone.** Any Cloudflare API rejection surfaces as \`provision_failed\` with the underlying message. Fix: verify the API token scopes (account tunnels + zone DNS edit), the account id, and the zone id; read the **Last error** box for the exact message.
-5. **Portal hostname has no DNS yet.** Portal ingress and DNS are only created when a commercial license is active; PORTAL hostnames are recorded but get no CNAME until licensed. Fix: confirm the license, then re-provision.
 
 ## Tips
 - Each ingress rule uses \`connectTimeout: 30\` (seconds) and \`noTLSVerify: true\` against the in-network Caddy origin — these are expected, not errors.

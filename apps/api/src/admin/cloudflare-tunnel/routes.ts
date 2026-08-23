@@ -30,9 +30,8 @@
 // required for any realm.
 //
 // All secrets at rest are MFK-wrapped (via the firm key manager).
-// Plaintext never lives in the DB. PORTAL hostnames are always saved but
-// their ingress + DNS are skipped unless the appliance has a commercial
-// license token (re-license picks them up on the next provision/update).
+// Plaintext never lives in the DB. Every realm's hostname gets ingress +
+// DNS (the portal licence gate was removed 2026-08-22).
 
 import { writeFile, mkdir, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -62,9 +61,6 @@ export interface CloudflareTunnelRoutesDeps extends RbacDeps {
   db: Database | null;
   /** Path to the token file the cloudflared sidecar reads. */
   tokenFilePath?: string;
-  /** Whether the appliance has a valid commercial license. Controls
-   *  whether PORTAL hostnames are registered as ingress rules + DNS. */
-  commercialLicenseActive: boolean;
   /** Origin URL the tunnel forwards traffic to (the caddy service inside
    *  the appliance docker network). Defaults to http://caddy:80. */
   originService?: string;
@@ -155,20 +151,16 @@ function normalizeHostnames(d: {
 
 // Build the tunnel ingress from a hostname list. Each rule rewrites the
 // origin Host header to a realm-canonical value so Caddy routes it into
-// the right realm. PORTAL rules are omitted unless licensed. A trailing
-// catch-all 404 is always appended (Cloudflare requires it).
+// the right realm. A trailing catch-all 404 is always appended (Cloudflare
+// requires it).
 function buildIngress(
   hostnames: HostnameSpec[],
   zoneName: string,
-  licensed: boolean,
   originService: string,
   esignOriginService: string,
 ): IngressRule[] {
   const ingress: IngressRule[] = [];
   for (const h of hostnames) {
-    // PORTAL + INTAKE are commercial-licensed surfaces — skip their ingress
-    // (and DNS) on an unlicensed appliance.
-    if ((h.realm === 'PORTAL' || h.realm === 'INTAKE') && !licensed) continue;
     // ESIGN routes to the OpenSign sidecar with NO Host-header rewrite —
     // its Caddy serves a host-agnostic plain-HTTP site on :4001.
     if (h.realm === 'ESIGN') {
@@ -448,24 +440,13 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         const tunnel = await cf.createTunnel(d.accountId, tunnelName);
         const runToken = await cf.getTunnelToken(d.accountId, tunnel.id);
 
-        const ingress = buildIngress(
-          hostnames,
-          zone.name,
-          deps.commercialLicenseActive,
-          originService,
-          esignOriginService,
-        );
+        const ingress = buildIngress(hostnames, zone.name, originService, esignOriginService);
         await cf.setTunnelIngress(d.accountId, tunnel.id, { ingress });
 
-        // DNS CNAMEs → <tunnel>.cfargotunnel.com. PORTAL + INTAKE hostnames
-        // are recorded but get no DNS until licensed.
+        // DNS CNAMEs → <tunnel>.cfargotunnel.com.
         const cnameTarget = `${tunnel.id}.cfargotunnel.com`;
         const persisted: Array<HostnameSpec & { dnsRecordId: string | null }> = [];
         for (const h of hostnames) {
-          if ((h.realm === 'PORTAL' || h.realm === 'INTAKE') && !deps.commercialLicenseActive) {
-            persisted.push({ ...h, dnsRecordId: null });
-            continue;
-          }
           const rec = await cf.upsertCnameRecord(d.zoneId, h.hostname, cnameTarget);
           persisted.push({ hostname: h.hostname, realm: h.realm, dnsRecordId: rec.id });
         }
@@ -596,13 +577,7 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         const cnameTarget = `${row.tunnelId}.cfargotunnel.com`;
 
         // Rebuild ingress first (single API call; authoritative).
-        const ingress = buildIngress(
-          next,
-          zoneName,
-          deps.commercialLicenseActive,
-          originService,
-          esignOriginService,
-        );
+        const ingress = buildIngress(next, zoneName, originService, esignOriginService);
         await cf.setTunnelIngress(row.accountId ?? '', row.tunnelId, { ingress });
 
         // Delete DNS for removed hostnames.
@@ -620,10 +595,6 @@ export function createCloudflareTunnelRouter(deps: CloudflareTunnelRoutesDeps): 
         // Upsert DNS for the new list; carry forward existing record ids.
         const persisted: Array<HostnameSpec & { dnsRecordId: string | null }> = [];
         for (const h of next) {
-          if ((h.realm === 'PORTAL' || h.realm === 'INTAKE') && !deps.commercialLicenseActive) {
-            persisted.push({ ...h, dnsRecordId: null });
-            continue;
-          }
           const rec = await cf.upsertCnameRecord(zoneId, h.hostname, cnameTarget);
           persisted.push({ hostname: h.hostname, realm: h.realm, dnsRecordId: rec.id });
         }

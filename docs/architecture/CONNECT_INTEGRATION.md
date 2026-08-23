@@ -23,27 +23,27 @@ All of these compile into the single `vibe-time-billing:local` Docker image. The
 
 ## What we did NOT inherit from the addendum
 
-| Addendum item                                             | Why dropped                                                                                                                  |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `vibeconnect` Postgres schema                             | We use a single `vibetb` schema (migration 0057). Operators don't have to worry about cross-schema coordination.             |
-| `@vibe/*` shared packages at runtime                      | Code was inlined into the TB monorepo rather than published to GHCR. Faster to ship; no version-skew between Connect and TB. |
-| License entitlement gate (`license.entitlements.connect`) | TB has a single `COMMERCIAL_LICENSE_TOKEN` env var that gates portal access only. There is no separate Connect SKU.          |
-| Peer discovery / appliance manifest                       | No second appliance exists; nothing to discover.                                                                             |
-| Connect's standalone staff app                            | TB's `apps/web` is the only staff app.                                                                                       |
-| Per-user Argon2id passphrases (E2EE)                      | Replaced by firm-managed envelope encryption at rest (Q34). See `docs/architecture/CRYPTO.md`.                               |
+| Addendum item                                             | Why dropped                                                                                                                                                               |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `vibeconnect` Postgres schema                             | We use a single `vibetb` schema (migration 0057). Operators don't have to worry about cross-schema coordination.                                                          |
+| `@vibe/*` shared packages at runtime                      | Code was inlined into the TB monorepo rather than published to GHCR. Faster to ship; no version-skew between Connect and TB.                                              |
+| License entitlement gate (`license.entitlements.connect`) | TB has no license gate (removed 2026-08-22); the portal and every Connect feature ship under PolyForm Small Business. Only the firm-level `portal_enabled` switch exists. |
+| Peer discovery / appliance manifest                       | No second appliance exists; nothing to discover.                                                                                                                          |
+| Connect's standalone staff app                            | TB's `apps/web` is the only staff app.                                                                                                                                    |
+| Per-user Argon2id passphrases (E2EE)                      | Replaced by firm-managed envelope encryption at rest (Q34). See `docs/architecture/CRYPTO.md`.                                                                            |
 
 The original addendum file is preserved at the repo root for traceability — it's the source spec, not a runtime concern.
 
 ## License gate
 
-TB's portal is gated by a single env var: `COMMERCIAL_LICENSE_TOKEN`. When it's empty, `/api/portal/*` routes return 503 `{error: 'portal_disabled', reason: 'no_commercial_license'}` and the portal SPA renders a "portal unavailable" screen. The gate sits in `apps/api/src/auth/portal-middleware.ts:portalAuthDeps`.
+TB's portal has no license gate. The only switch is `firm_settings.portal_enabled`: when false, `/api/portal/*` routes return 503 `{error: 'portal_disabled', reason: 'firm_disabled'}` and the portal SPA renders a "portal unavailable" screen. The check sits in `apps/api/src/auth/portal-middleware.ts:portalAuthDeps`.
 
-Messaging, escrow, and request features ride on portal access — when the portal is licensed, all four tabs are visible. There is no separate flag to disable them individually. (A firm can disable specific surfaces per-client via existing visibility rules in Files v2.)
+Messaging, escrow, and request features ride on portal access — when the portal is enabled, all four tabs are visible. There is no separate flag to disable them individually. (A firm can disable specific surfaces per-client via existing visibility rules in Files v2.)
 
 ## How to enable / disable the integration
 
-- **Enable everything:** set `COMMERCIAL_LICENSE_TOKEN` in `.env` (any non-empty string for dev; a real signed token for prod).
-- **Disable portal entirely:** unset `COMMERCIAL_LICENSE_TOKEN` OR set `firm_settings.portal_enabled = false` in the DB.
+- **Enable everything:** nothing to do — the portal is on by default.
+- **Disable portal entirely:** set `firm_settings.portal_enabled = false` (Admin → Firm settings).
 - **Disable AI egress:** `firm_config.ai_egress_enabled = false` (default). When true, all AI calls route through Vibe Shield (see `docs/architecture/AI_EGRESS_POLICY.md`).
 - **Switch unlock mode:** `firm_config.unlock_mode = 'admin-passphrase'` (default `'sealed-on-disk'`). One-way switch via the admin UI (Stage P3 of the polish plan).
 

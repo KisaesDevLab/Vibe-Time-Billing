@@ -725,7 +725,7 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
   // ---------------------------------------------------------------
   // Public branding (no auth — used by the portal shell to render
   // logo + accent color before the login screen). Looks up the firm
-  // by host header / commercial license token at boot.
+  // by host header.
   // ---------------------------------------------------------------
   router.get('/branding', async (_req: Request, res: Response) => {
     if (!deps.db) {

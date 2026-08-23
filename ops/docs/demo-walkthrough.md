@@ -251,7 +251,7 @@ Flip the bools as you set environment variables. Surface this in your production
 - **Magic-link doesn't arrive**: check MailHog at `http://localhost:8025`. The dev `sendMagicLink` no-ops if no SMTP is configured; check API stdout for the link URL.
 - **TOTP says invalid**: ensure your device clock is in sync. The validation window is ±30 seconds.
 - **Adjustment 403 step_up_required**: re-verify TOTP under Account → Two-factor; valid for 30 minutes per Q4.
-- **Portal says 503 portal_disabled**: set `COMMERCIAL_LICENSE_TOKEN` in `.env` (any non-empty string). The license gate (CLAUDE.md non-negotiable #6) requires it.
+- **Portal says 503 portal_disabled**: the firm-level portal switch is off — enable it in Admin → Firm settings → Client portal.
 - **Reports show no data**: the seed plants the Vance scenario; if you skipped seed, log time → create batch → cascade adjustment manually to populate.
 
 ## Where things live

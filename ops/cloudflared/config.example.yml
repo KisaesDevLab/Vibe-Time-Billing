@@ -19,7 +19,7 @@
 #
 # Two ingress services per Q10:
 #   app.firm.com    → staff app
-#   portal.firm.com → client portal (only when commercial license enabled)
+#   portal.firm.com → client portal
 
 tunnel: REPLACE_WITH_TUNNEL_UUID
 credentials-file: /etc/cloudflared/creds/credentials.json
@@ -39,9 +39,8 @@ ingress:
     originRequest:
       httpHostHeader: app.firm.com
 
-  # Client portal — gate this rule on whether the commercial license is
-  # active in firm settings. If the license token is absent the portal
-  # responds 503 by design.
+  # Client portal — if the firm has disabled the portal in Admin → Firm
+  # settings it responds 503 by design.
   - hostname: portal.firm.com
     service: http://caddy:80
     originRequest:

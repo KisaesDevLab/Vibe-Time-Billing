@@ -13,10 +13,9 @@ describe('GET /health', () => {
     expect(res.body.service).toBe('vibe-time-billing-api');
   });
 
-  it('reports portalEnabled flag based on commercial license token', async () => {
-    delete process.env['COMMERCIAL_LICENSE_TOKEN'];
+  it('reports the portal as enabled (no license token since the PSBL relicense)', async () => {
     const { app } = await buildTestApp();
     const res = await request(app).get('/health');
-    expect(res.body.portalEnabled).toBe(false);
+    expect(res.body.portalEnabled).toBe(true);
   });
 });
