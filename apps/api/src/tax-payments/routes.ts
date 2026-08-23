@@ -38,6 +38,7 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard, uuidQueryParam } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { smsOptedOutSet } from '../people/sms-gate';
 
 export interface TaxPaymentRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -548,7 +549,7 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
       // Resolve portal contacts per client (ACTIVE access only).
       const contactsByClient = new Map<
         string,
-        Array<{ email: string | null; phone: string | null; name: string }>
+        Array<{ email: string | null; phone: string | null; name: string; smsOptOut?: boolean }>
       >();
       if (byClient.size > 0) {
         const clientIds = Array.from(byClient.keys());
@@ -558,6 +559,7 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
             email: portalIdentity.primaryEmail,
             phone: portalIdentity.primaryPhone,
             name: portalIdentity.fullName,
+            personId: portalIdentity.personId,
           })
           .from(clientPortalAccess)
           .innerJoin(portalIdentity, eq(portalIdentity.id, clientPortalAccess.portalIdentityId))
@@ -567,9 +569,20 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
               eq(clientPortalAccess.status, 'ACTIVE'),
             ),
           );
+        // 0224 — portal logins linked to a directory person honour that
+        // person's SMS opt-out.
+        const optedOut = await smsOptedOutSet(
+          deps.db,
+          contactRows.map((c) => c.personId),
+        );
         for (const c of contactRows) {
           const list = contactsByClient.get(c.clientId) ?? [];
-          list.push({ email: c.email, phone: c.phone, name: c.name });
+          list.push({
+            email: c.email,
+            phone: c.phone,
+            name: c.name,
+            smsOptOut: Boolean(c.personId && optedOut.has(c.personId)),
+          });
           contactsByClient.set(c.clientId, list);
         }
       }
@@ -670,7 +683,9 @@ export function createTaxPaymentRouter(deps: TaxPaymentRoutesDeps): Router {
             }
           }
           if (wantsSms) {
-            if (!c.phone) {
+            if (c.smsOptOut) {
+              skipped.push(`${c.name}: sms_opted_out`);
+            } else if (!c.phone) {
               skipped.push(`${c.name}: no_phone`);
             } else {
               try {

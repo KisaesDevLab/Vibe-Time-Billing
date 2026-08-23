@@ -19,7 +19,7 @@
 // client. SMS consent: client_contact phones follow the dunning
 // precedent (billing-contact SMS sends without portal-level consent).
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -30,6 +30,7 @@ import {
   engagements,
   firms,
   notificationLog,
+  persons,
   notificationTemplates,
   portalNotifications,
   stagedNotifications,
@@ -82,9 +83,28 @@ interface RecipientSnapshot {
   name: string;
   email: string | null;
   phone: string | null;
-  /** 0224 — channel opt-outs captured when the notification was staged. */
+  /** 0224 — SMS opt-out captured when the notification was staged. Send
+   *  paths re-check the live person row (liveSmsOptOuts) because a client
+   *  can opt out between staging and approval. */
   smsOptOut?: boolean;
-  doNotCall?: boolean;
+}
+
+/** Live SMS opt-outs for the snapshot's people (the snapshot may be stale
+ *  or pre-date 0224). */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+async function liveSmsOptOuts(db: Database, recipients: RecipientSnapshot[]): Promise<Set<string>> {
+  const ids = [...new Set(recipients.map((r) => r.personId).filter((x) => UUID_RE.test(x)))];
+  if (ids.length === 0) return new Set();
+  try {
+    const rows = await db
+      .select({ id: persons.id, smsOptOut: persons.smsOptOut })
+      .from(persons)
+      .where(inArray(persons.id, ids));
+    return new Set(rows.filter((r) => r.smsOptOut).map((r) => r.id));
+  } catch {
+    // Fail open to the snapshot flag rather than blocking the whole channel.
+    return new Set();
+  }
 }
 
 type Rendered = Record<string, { subject: string | null; body: string } | undefined>;
@@ -349,8 +369,10 @@ async function sendSmsChannel(
 ): Promise<ChannelResult> {
   if (!deps.sendSms) return { ok: false, sentTo: [], error: 'sms_not_configured' };
   if (!content) return { ok: false, sentTo: [], error: 'no_rendered_content' };
-  // 0224 — people who opted out of texts are not recipients for this channel.
-  const targets = recipients.filter((r) => r.phone && !r.smsOptOut);
+  // 0224 — people who opted out of texts are not recipients for this
+  // channel; checked live, not from the staging-time snapshot.
+  const optedOut = await liveSmsOptOuts(db, recipients);
+  const targets = recipients.filter((r) => r.phone && !r.smsOptOut && !optedOut.has(r.personId));
   if (targets.length === 0) return { ok: false, sentTo: [], error: 'no_recipient_handle' };
   const sentTo: string[] = [];
   let lastError: string | undefined;
@@ -388,6 +410,8 @@ async function sendCallChannel(
   if (!content) return { ok: false, sentTo: [], error: 'no_rendered_content' };
   const targets = recipients.filter((r) => r.phone);
   if (targets.length === 0) return { ok: false, sentTo: [], error: 'no_recipient_handle' };
+  // 0224 — live SMS opt-outs decide whether a failed call may fall back to a text.
+  const smsOptedOut = await liveSmsOptOuts(db, recipients);
   // Per-template voice override, if the firm customized the CALL template.
   const [tpl] = await db
     .select({ voice: notificationTemplates.voice })
@@ -410,7 +434,8 @@ async function sendCallChannel(
         kind: row.templateKind,
         to: r.phone!,
         script: content.body,
-        fallbackSmsBody: fallbackBody,
+        // 0224 — no provider-side SMS fallback for an opted-out person.
+        fallbackSmsBody: r.smsOptOut || smsOptedOut.has(r.personId) ? undefined : fallbackBody,
         voice: tpl?.voice ?? null,
         personId: r.personId,
         clientId: row.clientId,
@@ -429,7 +454,7 @@ async function sendCallChannel(
       if (result.code === 'do_not_call') {
         // Opted out of calls → deliver the SMS version instead (0224: unless
         // they opted out of texts as well — then nothing goes out).
-        if (deps.sendSms && !r.smsOptOut) {
+        if (deps.sendSms && !r.smsOptOut && !smsOptedOut.has(r.personId)) {
           await deps.sendSms({ to: r.phone!, body: fallbackBody });
           sentTo.push(r.phone!);
           await logSend(db, log, row, 'sms', r.phone!, null, null);

@@ -28,6 +28,7 @@ import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 import { decryptSmsConfig, decryptVoiceConfig } from '../messaging/config';
 import { loadFirmSmsProvider } from '../messaging/sms-resolver';
+import { isSmsOptedOut } from '../people/sms-gate';
 
 /** Decrypt every firm's stored SMS + VOICE configs and collect Twilio auth
  *  tokens, for inbound-webhook signature verification (both are configured
@@ -456,6 +457,13 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
         !row.fallbackSmsSent &&
         Boolean(row.fallbackSmsBody);
       if (shouldFallback) {
+        // 0224 — the person may have opted out of texts (or done so since
+        // the call was placed); check live, not the stored snapshot.
+        if (await isSmsOptedOut(db, row.personId)) {
+          await db.update(voiceCalls).set({ fallbackSmsSent: true }).where(eq(voiceCalls.id, vc));
+          logger.info({ vc }, 'voice fallback SMS skipped: person opted out of texts');
+          return;
+        }
         const provider = await loadFirmSmsProvider(db, row.firmId, logger);
         if (provider) {
           await provider.send({ to: row.toNumber, body: row.fallbackSmsBody! });

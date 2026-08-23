@@ -32,6 +32,7 @@ import {
 } from './saved-methods';
 import { createManualAchMethod, verifyMicrodeposits } from './manual-ach';
 import { createAchVerifyLink } from './ach-verify-link';
+import { SMS_OPTED_OUT, pickSmsPhone } from '../people/sms-gate';
 
 export interface SavedMethodsDeps extends RbacDeps {
   db: Database | null;
@@ -426,7 +427,7 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
           fullName: c.fullName,
           email: c.email,
           phone: c.mobile || c.phone,
-          smsPhone: c.smsOptOut ? null : c.mobile || c.phone,
+          smsPhone: pickSmsPhone(c),
         };
       } else {
         dest = await getBillingContact(deps.db, pm.clientId);
@@ -438,7 +439,10 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
         return;
       }
       if (parsed.data.channel === 'SMS' && (!deps.sendSms || !dest?.smsPhone)) {
-        res.status(400).json({ error: 'no_sms_destination' });
+        // 0224 — distinguish "opted out" from "no number".
+        res.status(400).json({
+          error: dest?.phone && !dest.smsPhone ? SMS_OPTED_OUT : 'no_sms_destination',
+        });
         return;
       }
       const emailDeliverable = wantEmail && !!deps.sendStaffMail && !!dest?.email;
@@ -511,7 +515,7 @@ export function createSavedMethodsRouter(deps: SavedMethodsDeps): Router {
           results.sms = 'failed';
         }
       } else if (wantSms) {
-        results.sms = 'no_destination';
+        results.sms = dest?.phone && !dest.smsPhone ? 'opted_out' : 'no_destination';
       }
 
       if (results.email !== 'sent' && results.sms !== 'sent') {

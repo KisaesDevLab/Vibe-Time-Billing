@@ -285,6 +285,38 @@ describe('voice status callback', () => {
     });
   });
 
+  it('0224 — no_answer for an SMS-opted-out person marks the fallback as handled without texting', async () => {
+    const c = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Opted Out',
+      mobile: '+15551236666',
+    });
+    await harness.db.update(persons).set({ smsOptOut: true }).where(eq(persons.id, c.personId));
+    const [vc] = await harness.db
+      .insert(voiceCalls)
+      .values({
+        firmId: seed.firmId,
+        kind: 'appointment_reminder',
+        toNumber: '+15551236666',
+        personId: c.personId,
+        script: 'Hi.',
+        fallbackSmsBody: 'Reminder text.',
+        status: 'placed',
+      })
+      .returning({ id: voiceCalls.id });
+    await postStatus(vc!.id, { CallStatus: 'no-answer' });
+    await vi.waitFor(async () => {
+      const [row] = await harness.db
+        .select({ status: voiceCalls.status, fb: voiceCalls.fallbackSmsSent })
+        .from(voiceCalls)
+        .where(eq(voiceCalls.id, vc!.id));
+      expect(row!.status).toBe('no_answer');
+      // Marked handled so it is never retried, but nothing was sent.
+      expect(row!.fb).toBe(true);
+    });
+  });
+
   it('maps busy to busy (fallback SMS skipped without a provider, flag stays false)', async () => {
     const vcId = await seedCall();
     await postStatus(vcId, { CallStatus: 'busy' });

@@ -395,6 +395,10 @@ export function PeopleDirectoryPage(): JSX.Element {
                     {p.phone && p.doNotCall && (
                       <Blocked kind="call" title="Do not call (automated calls blocked)" />
                     )}
+                    {/* Texts go to the landline when there is no mobile. */}
+                    {p.phone && !p.mobile && p.smsOptOut && (
+                      <Blocked kind="sms" title="Text messages blocked" />
+                    )}
                   </span>
                 ),
               },

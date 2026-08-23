@@ -185,6 +185,7 @@ function SendLinkPicker({
       const misses: string[] = [];
       if (r.results.email === 'no_destination') misses.push('no email on file');
       if (r.results.sms === 'no_destination') misses.push('no phone on file');
+      if (r.results.sms === 'opted_out') misses.push('opted out of texts');
       if (r.results.email === 'failed') misses.push('email failed');
       if (r.results.sms === 'failed') misses.push('text failed');
       onSent(
@@ -198,9 +199,11 @@ function SendLinkPicker({
           ? 'That contact has no email on file.'
           : msg === 'no_sms_destination'
             ? 'That contact has no phone on file (or SMS is not configured).'
-            : msg === 'no_destination'
-              ? 'That contact has no email or phone on file.'
-              : `Could not send the reminder (${msg}).`,
+            : msg === 'sms_opted_out'
+              ? 'That contact has opted out of text messages.'
+              : msg === 'no_destination'
+                ? 'That contact has no email or phone on file.'
+                : `Could not send the reminder (${msg}).`,
       );
     } finally {
       setBusy(false);

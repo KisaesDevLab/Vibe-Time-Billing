@@ -14,6 +14,8 @@ import {
   type PgliteHarness,
 } from './_pglite-harness';
 import type { Database } from '@vibe/db';
+import { persons } from '@vibe/db/schema';
+import { eq } from 'drizzle-orm';
 
 import { createPeopleRouter } from '../people/routes';
 
@@ -148,6 +150,91 @@ describe('0221 — people bulk email + opt-out', () => {
 });
 
 describe('0221 — people merge', () => {
+  it('0224 — merge keeps any opt-out from the merged records', async () => {
+    const a = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Survivor',
+      isPrimary: true,
+    });
+    const b = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Dupe',
+      mobile: '+15555550199',
+    });
+    await harness.db
+      .update(persons)
+      .set({ smsOptOut: true, doNotCall: true })
+      .where(eq(persons.id, b.personId));
+    const router = createPeopleRouter({
+      db: harness.db as Database,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const res = await invoke(
+      router,
+      'post',
+      '/merge',
+      staffReq({ body: { survivorId: a.personId, mergeIds: [b.personId] } }),
+    );
+    expect(res.statusCode).toBe(200);
+    const [surv] = await harness.db.select().from(persons).where(eq(persons.id, a.personId));
+    expect(surv!.mobile).toBe('+15555550199');
+    expect(surv!.smsOptOut).toBe(true);
+    expect(surv!.doNotCall).toBe(true);
+  });
+
+  it('0224 — PATCH rolls the flags back when the email collides', async () => {
+    const a = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'A',
+      email: 'a@x.example',
+    });
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'B',
+      email: 'b@x.example',
+    });
+    const router = createPeopleRouter({
+      db: harness.db as Database,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const res = await invoke(
+      router,
+      'patch',
+      '/:id',
+      staffReq({ params: { id: a.personId }, body: { email: 'b@x.example', smsOptOut: true } }),
+    );
+    expect(res.statusCode).toBe(409);
+    const [row] = await harness.db.select().from(persons).where(eq(persons.id, a.personId));
+    expect(row!.smsOptOut).toBe(false);
+    expect(row!.email).toBe('a@x.example');
+  });
+
+  it('0224 — PATCH stores blank phone/mobile as NULL', async () => {
+    const a = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'A',
+      mobile: '+15555550100',
+    });
+    const router = createPeopleRouter({
+      db: harness.db as Database,
+      fakeUserRoles: new Map([[seed.appUserId, ['partner']]]),
+    });
+    const res = await invoke(
+      router,
+      'patch',
+      '/:id',
+      staffReq({ params: { id: a.personId }, body: { mobile: '  ' } }),
+    );
+    expect(res.statusCode).toBe(200);
+    const [row] = await harness.db.select().from(persons).where(eq(persons.id, a.personId));
+    expect(row!.mobile).toBeNull();
+  });
+
   it('repoints contacts, merges flags, archives the duplicate person', async () => {
     const a = await seedContact(harness.db, {
       firmId: seed.firmId,
