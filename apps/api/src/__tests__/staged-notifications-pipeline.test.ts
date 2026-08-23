@@ -16,6 +16,7 @@ import {
   engagementStatusConfig,
   notificationTemplates,
   stagedNotifications,
+  persons,
 } from '@vibe/db/schema';
 
 import {
@@ -116,6 +117,33 @@ describe('stageStatusNotification', () => {
     expect(rendered['EMAIL']!.subject).toBe('Update on Test Engagement');
     expect(rendered['EMAIL']!.body).toContain('"Waiting on you"');
     expect(rendered['SMS']!.body).toContain('Test Client Co');
+  });
+
+  it('0224 — carries SMS / do-not-call opt-outs into the recipient snapshot', async () => {
+    await configureStatus({
+      workflowState: 'WITH_CLIENT',
+      notifyChannels: ['EMAIL', 'SMS'],
+      clientLabel: 'Waiting on you',
+    });
+    const c = await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Lisa Vance',
+      email: 'lisa@example.com',
+      phone: '+15555550100',
+      isBilling: true,
+    });
+    await harness.db
+      .update(persons)
+      .set({ smsOptOut: true, doNotCall: true })
+      .where(eq(persons.id, c.personId));
+    const { stagedNotificationId } = await stage('WITH_CLIENT');
+    const [row] = await harness.db
+      .select()
+      .from(stagedNotifications)
+      .where(eq(stagedNotifications.id, stagedNotificationId!));
+    const recipients = row!.recipients as Array<{ smsOptOut?: boolean; doNotCall?: boolean }>;
+    expect(recipients[0]).toMatchObject({ smsOptOut: true, doNotCall: true });
   });
 
   it('IMMEDIATE mode lands as SCHEDULED with scheduled_at set', async () => {

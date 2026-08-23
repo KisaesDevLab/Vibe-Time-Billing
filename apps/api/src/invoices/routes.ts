@@ -2334,7 +2334,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         res.status(409).json({ error: 'no_email_destination' });
         return;
       }
-      if (parsed.data.channel === 'SMS' && (!deps.sendSms || !billingContact?.phone)) {
+      if (parsed.data.channel === 'SMS' && (!deps.sendSms || !billingContact?.smsPhone)) {
         res.status(409).json({ error: 'no_sms_destination' });
         return;
       }
@@ -2361,7 +2361,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
       // who already holds it; see the "re-sending mints an independent link"
       // test. The per-channel blocks below set the exact per-channel reason.)
       const emailDeliverable = wantEmail && !!deps.sendEmail && !!billingContact?.email;
-      const smsDeliverable = wantSms && !!deps.sendSms && !!billingContact?.phone;
+      const smsDeliverable = wantSms && !!deps.sendSms && !!billingContact?.smsPhone;
       if (!emailDeliverable && !smsDeliverable) {
         res.json({
           ok: true,
@@ -2462,7 +2462,8 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
         // NOTE: staff-initiated, like POST /:id/send-sms. SMS marketing/quiet-
         // hours consent (TCPA) is assumed enforced at the contact level; this
         // is a transactional payment request the staff member explicitly sent.
-        if (!deps.sendSms || !billingContact?.phone) {
+        // 0224 — smsPhone is null when the person opted out of texts.
+        if (!deps.sendSms || !billingContact?.smsPhone) {
           results.sms = 'no_destination';
         } else if (await onCooldown('SMS')) {
           results.sms = 'cooldown';
@@ -2479,7 +2480,7 @@ export function createInvoiceRouter(deps: InvoiceRoutesDeps): Router {
             context,
           });
           try {
-            await deps.sendSms({ to: billingContact.phone, body: rendered.body });
+            await deps.sendSms({ to: billingContact.smsPhone, body: rendered.body });
             results.sms = 'sent';
             await deps.db
               .insert(invoiceReminderLog)
@@ -3025,7 +3026,8 @@ async function sendInvoiceSms(
     .limit(1);
   if (!client) return { ok: false, status: 404, error: 'client_not_found' };
   const billingContact = await getBillingContact(deps.db, inv.clientId);
-  if (!billingContact?.phone) {
+  // 0224 — null when the person opted out of texts.
+  if (!billingContact?.smsPhone) {
     return { ok: false, status: 404, error: 'no_billing_phone' };
   }
   const portalBase = deps.portalBaseUrl ?? '';
@@ -3037,7 +3039,7 @@ async function sendInvoiceSms(
     `${client.name}: invoice ${inv.invoiceNumber} for ${total} is ready (due ${formatDateUS(inv.dueDate)}).` +
     (link ? ` View: ${link}` : '');
   try {
-    await deps.sendSms({ to: billingContact.phone, body });
+    await deps.sendSms({ to: billingContact.smsPhone, body });
     await recordOutbound({
       db: deps.db,
       firmId,
@@ -3051,7 +3053,7 @@ async function sendInvoiceSms(
     logger.error({ err, invoiceId: inv.id }, 'invoice sms dispatch failed');
     return { ok: false, status: 502, error: 'sms_dispatch_failed' };
   }
-  return { ok: true, textedTo: billingContact.phone };
+  return { ok: true, textedTo: billingContact.smsPhone };
 }
 
 function clientIp(req: Request): string {

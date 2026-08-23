@@ -13,6 +13,7 @@
 
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { MailX, MessageSquareOff, PhoneOff } from 'lucide-react';
 
 import { Button, Card, ColumnFilter, Combobox, Input, Modal, Pill, Table, tokens } from '@vibe/ui';
 import { RichTextEditor } from '../proposal-editor/RichTextEditor';
@@ -36,6 +37,23 @@ interface PersonRow {
   portalStatus: 'yes' | 'invited' | 'no';
   clientCount: number;
   bulkEmailOptOut: boolean;
+  // 0224 — channel blocks shown as an icon next to the handle.
+  smsOptOut: boolean;
+  doNotCall: boolean;
+}
+
+/** Small "blocked" marker next to a contact handle. */
+function Blocked({ title, kind }: { title: string; kind: 'email' | 'sms' | 'call' }): JSX.Element {
+  const Icon = kind === 'email' ? MailX : kind === 'sms' ? MessageSquareOff : PhoneOff;
+  return (
+    <span
+      title={title}
+      aria-label={title}
+      style={{ display: 'inline-flex', color: tokens.color.danger, lineHeight: 0 }}
+    >
+      <Icon size={13} />
+    </span>
+  );
 }
 
 const PORTAL_VALUES = [
@@ -65,7 +83,13 @@ export function PeopleDirectoryPage(): JSX.Element {
   const query = useMemo(
     () =>
       viewToPagedQuery(view, {
-        filterMap: { portal: 'portal', kind: 'kind', email: 'email', phone: 'phone' },
+        filterMap: {
+          portal: 'portal',
+          kind: 'kind',
+          email: 'email',
+          phone: 'phone',
+          mobile: 'mobile',
+        },
       }),
     [view],
   );
@@ -346,11 +370,7 @@ export function PeopleDirectoryPage(): JSX.Element {
                 render: (p) => (
                   <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
                     {p.email ?? '—'}
-                    {p.bulkEmailOptOut && (
-                      <span title="Blocked from bulk email">
-                        <Pill tone="warning">no bulk</Pill>
-                      </span>
-                    )}
+                    {p.bulkEmailOptOut && <Blocked kind="email" title="Blocked from bulk email" />}
                   </span>
                 ),
               },
@@ -369,7 +389,41 @@ export function PeopleDirectoryPage(): JSX.Element {
                     />
                   </span>
                 ) as unknown as string,
-                render: (p) => p.phone ?? '—',
+                render: (p) => (
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                    {p.phone ?? '—'}
+                    {p.phone && p.doNotCall && (
+                      <Blocked kind="call" title="Do not call (automated calls blocked)" />
+                    )}
+                  </span>
+                ),
+              },
+              {
+                key: 'mobile',
+                header: (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    Mobile{' '}
+                    <ColumnFilter
+                      ariaLabel="Filter or sort by mobile"
+                      values={PRESENCE_VALUES}
+                      selected={view.filterFor('mobile')}
+                      searchable={false}
+                      sort={view.sortFor('mobile')}
+                      onApply={(sel, dir) => view.apply('mobile', sel, dir)}
+                    />
+                  </span>
+                ) as unknown as string,
+                render: (p) => (
+                  <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                    {p.mobile ?? '—'}
+                    {p.mobile && p.smsOptOut && (
+                      <Blocked kind="sms" title="Text messages blocked" />
+                    )}
+                    {p.mobile && p.doNotCall && (
+                      <Blocked kind="call" title="Do not call (automated calls blocked)" />
+                    )}
+                  </span>
+                ),
               },
               {
                 key: 'clients',

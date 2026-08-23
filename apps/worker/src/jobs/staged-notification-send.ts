@@ -82,6 +82,9 @@ interface RecipientSnapshot {
   name: string;
   email: string | null;
   phone: string | null;
+  /** 0224 — channel opt-outs captured when the notification was staged. */
+  smsOptOut?: boolean;
+  doNotCall?: boolean;
 }
 
 type Rendered = Record<string, { subject: string | null; body: string } | undefined>;
@@ -346,7 +349,8 @@ async function sendSmsChannel(
 ): Promise<ChannelResult> {
   if (!deps.sendSms) return { ok: false, sentTo: [], error: 'sms_not_configured' };
   if (!content) return { ok: false, sentTo: [], error: 'no_rendered_content' };
-  const targets = recipients.filter((r) => r.phone);
+  // 0224 — people who opted out of texts are not recipients for this channel.
+  const targets = recipients.filter((r) => r.phone && !r.smsOptOut);
   if (targets.length === 0) return { ok: false, sentTo: [], error: 'no_recipient_handle' };
   const sentTo: string[] = [];
   let lastError: string | undefined;
@@ -423,8 +427,9 @@ async function sendCallChannel(
         return { ok: false, sentTo, deferred: true };
       }
       if (result.code === 'do_not_call') {
-        // Opted out of calls → deliver the SMS version instead.
-        if (deps.sendSms) {
+        // Opted out of calls → deliver the SMS version instead (0224: unless
+        // they opted out of texts as well — then nothing goes out).
+        if (deps.sendSms && !r.smsOptOut) {
           await deps.sendSms({ to: r.phone!, body: fallbackBody });
           sentTo.push(r.phone!);
           await logSend(db, log, row, 'sms', r.phone!, null, null);

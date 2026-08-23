@@ -41,6 +41,8 @@ interface PersonDetail {
   phone: string | null;
   mobile: string | null;
   bulkEmailOptOut?: boolean;
+  smsOptOut?: boolean;
+  doNotCall?: boolean;
   status: string;
   clients: ClientEntry[];
 }
@@ -348,6 +350,8 @@ function EditHeader({
   const [phone, setPhone] = useState(person.phone ?? '');
   const [mobile, setMobile] = useState(person.mobile ?? '');
   const [blockBulk, setBlockBulk] = useState(Boolean(person.bulkEmailOptOut));
+  const [blockSms, setBlockSms] = useState(Boolean(person.smsOptOut));
+  const [blockCalls, setBlockCalls] = useState(Boolean(person.doNotCall));
   const [saving, setSaving] = useState(false);
 
   function begin(): void {
@@ -356,6 +360,8 @@ function EditHeader({
     setPhone(person.phone ?? '');
     setMobile(person.mobile ?? '');
     setBlockBulk(Boolean(person.bulkEmailOptOut));
+    setBlockSms(Boolean(person.smsOptOut));
+    setBlockCalls(Boolean(person.doNotCall));
     setEditing(true);
   }
 
@@ -371,6 +377,8 @@ function EditHeader({
       if (person.kind === 'person') {
         body['mobile'] = mobile.trim() || null;
         body['bulkEmailOptOut'] = blockBulk;
+        body['smsOptOut'] = blockSms;
+        body['doNotCall'] = blockCalls;
       }
       await api(`/api/staff/people/${person.id}`, { method: 'PATCH', body: JSON.stringify(body) });
       setEditing(false);
@@ -454,6 +462,28 @@ function EditHeader({
               under portal notification preferences.
             </label>
           )}
+          {person.kind === 'person' && (
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={blockSms}
+                onChange={(e) => setBlockSms(e.target.checked)}
+              />
+              Block text messages — no automated texts (appointment reminders, status notices,
+              dunning, invoice texts). Sign-in codes still send.
+            </label>
+          )}
+          {person.kind === 'person' && (
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={blockCalls}
+                onChange={(e) => setBlockCalls(e.target.checked)}
+              />
+              Do not call — no automated voice calls (the text version is sent instead, unless texts
+              are blocked too). Also set when the person presses 9 on a call.
+            </label>
+          )}
         </div>
       ) : (
         <div style={{ display: 'flex', gap: 20, fontSize: 13, flexWrap: 'wrap' }}>
@@ -474,6 +504,10 @@ function EditHeader({
           {person.bulkEmailOptOut && (
             <span style={{ color: tokens.color.warning }}>Blocked from bulk email</span>
           )}
+          {person.smsOptOut && (
+            <span style={{ color: tokens.color.warning }}>Text messages blocked</span>
+          )}
+          {person.doNotCall && <span style={{ color: tokens.color.warning }}>Do not call</span>}
         </div>
       )}
     </Card>

@@ -20,6 +20,9 @@ export interface BillingContactSnapshot {
   fullName: string;
   email: string | null;
   phone: string | null;
+  /** 0224 — number to TEXT: mobile first, then phone; null when the person
+   *  opted out of automated texts. Use this for any SMS send. */
+  smsPhone: string | null;
 }
 
 // 0115 — name/email/phone are canonical on `person`; the billing/primary
@@ -36,12 +39,20 @@ async function pick(
       fullName: persons.fullName,
       email: persons.email,
       phone: persons.phone,
+      mobile: persons.mobile,
+      smsOptOut: persons.smsOptOut,
     })
     .from(clientContacts)
     .innerJoin(persons, eq(persons.id, clientContacts.personId))
     .where(and(eq(clientContacts.clientId, clientId), eq(flag, true)))
     .limit(1);
-  return row ?? null;
+  if (!row) return null;
+  return {
+    fullName: row.fullName,
+    email: row.email,
+    phone: row.phone,
+    smsPhone: row.smsOptOut ? null : (row.mobile ?? row.phone),
+  };
 }
 
 export async function getBillingContact(
