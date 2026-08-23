@@ -430,6 +430,7 @@ export function TermsTemplatesPage(): JSX.Element {
           <div
             style={{
               display: 'flex',
+              flexWrap: 'wrap',
               gap: 8,
               marginTop: 12,
               justifyContent: 'flex-end',

@@ -300,18 +300,21 @@ function TableCardList<T>({
                 {fields.map((c) => {
                   const v = c.render(row);
                   if (isEmptyCell(v)) return null;
+                  const label = cardLabel(c);
                   return (
                     <div key={c.key} style={{ minWidth: 0, maxWidth: '100%' }}>
-                      <div
-                        style={{
-                          fontSize: 10,
-                          textTransform: 'uppercase',
-                          letterSpacing: '0.08em',
-                          color: tokens.color.textMuted,
-                        }}
-                      >
-                        {cardLabel(c)}
-                      </div>
+                      {label !== '' && (
+                        <div
+                          style={{
+                            fontSize: 10,
+                            textTransform: 'uppercase',
+                            letterSpacing: '0.08em',
+                            color: tokens.color.textMuted,
+                          }}
+                        >
+                          {label}
+                        </div>
+                      )}
                       <div
                         style={{
                           fontVariantNumeric: c.align === 'right' ? 'tabular-nums' : 'normal',

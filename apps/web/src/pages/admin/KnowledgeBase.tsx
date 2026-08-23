@@ -164,7 +164,14 @@ export function KnowledgeBaseAdminPage(): JSX.Element {
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
       <Card>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div
+          style={{
+            display: 'flex',
+            flexWrap: 'wrap',
+            justifyContent: 'space-between',
+            alignItems: 'center',
+          }}
+        >
           <h2 style={{ margin: 0, fontSize: 18 }}>Knowledge Base</h2>
           <Button onClick={() => setDraft({ ...EMPTY })}>New article</Button>
         </div>

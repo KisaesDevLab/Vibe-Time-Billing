@@ -681,6 +681,7 @@ export function EngagementsPage(): JSX.Element {
   const engagementColumns: TableColumn<EngagementRow>[] = [
     {
       key: 'select',
+      mobile: 'actions',
       header: (
         <input
           type="checkbox"
@@ -700,6 +701,7 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'workflowState',
+      mobile: 'badge',
       header: (
         <>
           Status{' '}
@@ -728,6 +730,7 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'name',
+      mobile: 'title',
       header: (
         <>
           Name{' '}
@@ -747,6 +750,8 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'client',
+      mobile: 'meta',
+      mobileLabel: 'Client',
       header: (
         <>
           Client{' '}
@@ -766,6 +771,8 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'type',
+      mobile: 'field',
+      mobileLabel: 'Type',
       header: (
         <>
           Type{' '}
@@ -782,6 +789,7 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'serviceLine',
+      mobile: 'hidden',
       header: (
         <>
           Service line{' '}
@@ -800,6 +808,8 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'assignee',
+      mobile: 'field',
+      mobileLabel: 'Assignee',
       header: (
         <>
           Assignee(s){' '}
@@ -822,6 +832,7 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'startDate',
+      mobile: 'hidden',
       header: (
         <>
           Start{' '}
@@ -841,6 +852,8 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'dueDate',
+      mobile: 'field',
+      mobileLabel: 'Due',
       header: (
         <>
           Due{' '}
@@ -860,6 +873,7 @@ export function EngagementsPage(): JSX.Element {
     },
     {
       key: 'priority',
+      mobile: 'badge',
       header: (
         <>
           Priority{' '}
@@ -1132,6 +1146,7 @@ export function EngagementsPage(): JSX.Element {
               display: 'flex',
               gap: 8,
               alignItems: 'center',
+              flexWrap: 'wrap',
               padding: '8px 12px',
               marginBottom: 8,
               borderRadius: tokens.radius.md,
@@ -1141,7 +1156,7 @@ export function EngagementsPage(): JSX.Element {
             <span style={{ fontSize: 13, color: tokens.color.accent }}>
               {selectedIds.size} selected
             </span>
-            <span style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+            <span style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
               <BulkWorkflowButton
                 options={bulkStatusOptions}
                 onPick={(w) => void bulkSetWorkflow(w)}

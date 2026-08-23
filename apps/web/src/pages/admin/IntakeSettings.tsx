@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-import { Button, tokens } from '@vibe/ui';
+import { Button, ScrollX, tokens } from '@vibe/ui';
 
 import { api, getCsrfToken, type ApiError } from '../../api-client';
 
@@ -127,130 +127,132 @@ export function IntakeSettingsPage(): JSX.Element {
       </label>
       {error && <div style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</div>}
 
-      <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
-        <thead>
-          <tr style={{ textAlign: 'left', borderBottom: `1px solid ${tokens.color.border}` }}>
-            <th style={cell}>Staff</th>
-            <th style={cell}>Visible</th>
-            <th style={cell}>Accepting</th>
-            <th style={cell}>Title</th>
-            <th style={cell}>Order</th>
-            <th style={cell}>Email</th>
-            <th style={cell}>SMS</th>
-            <th style={cell}>Headshot</th>
-          </tr>
-        </thead>
-        <tbody>
-          {cards.map((c) => (
-            <tr
-              key={c.userId}
-              style={{
-                borderBottom: `1px solid ${tokens.color.border}`,
-                opacity: c.active ? 1 : 0.5,
-              }}
-            >
-              <td style={cell}>
-                <button
-                  onClick={() => navigate(`/admin/users/${c.userId}?tab=rates`)}
-                  title="Open profile & edit billing rates"
-                  style={{
-                    border: 'none',
-                    background: 'transparent',
-                    color: tokens.color.accent,
-                    cursor: 'pointer',
-                    fontSize: 13,
-                    fontWeight: 600,
-                    padding: 0,
-                    textAlign: 'left',
-                  }}
-                >
-                  {c.name}
-                </button>
-              </td>
-              <td style={cell}>
-                <input
-                  type="checkbox"
-                  checked={c.isVisible}
-                  disabled={savingId === c.userId}
-                  onChange={(e) => void patch(c.userId, { isVisible: e.target.checked })}
-                />
-              </td>
-              <td style={cell}>
-                <input
-                  type="checkbox"
-                  checked={c.acceptingUploads}
-                  disabled={savingId === c.userId}
-                  onChange={(e) => void patch(c.userId, { acceptingUploads: e.target.checked })}
-                />
-              </td>
-              <td style={cell}>
-                <input
-                  defaultValue={c.displayTitle ?? ''}
-                  placeholder="e.g. Tax Manager"
-                  onBlur={(e) =>
-                    e.target.value !== (c.displayTitle ?? '') &&
-                    void patch(c.userId, { displayTitle: e.target.value || null })
-                  }
-                  style={{
-                    padding: 4,
-                    fontSize: 13,
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    width: 140,
-                  }}
-                />
-              </td>
-              <td style={cell}>
-                <input
-                  type="number"
-                  defaultValue={c.displayOrder}
-                  onBlur={(e) =>
-                    Number(e.target.value) !== c.displayOrder &&
-                    void patch(c.userId, { displayOrder: Number(e.target.value) })
-                  }
-                  style={{
-                    padding: 4,
-                    fontSize: 13,
-                    border: `1px solid ${tokens.color.border}`,
-                    borderRadius: tokens.radius.sm,
-                    width: 56,
-                  }}
-                />
-              </td>
-              <td style={cell}>
-                <input
-                  type="checkbox"
-                  checked={c.notifyEmail}
-                  onChange={(e) => void patch(c.userId, { notifyEmail: e.target.checked })}
-                />
-              </td>
-              <td style={cell}>
-                <input
-                  type="checkbox"
-                  checked={c.notifySms}
-                  onChange={(e) => void patch(c.userId, { notifySms: e.target.checked })}
-                />
-              </td>
-              <td style={cell}>
-                <input
-                  ref={(el) => (fileInputs.current[c.userId] = el)}
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  style={{ display: 'none' }}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) void uploadHeadshot(c.userId, f);
-                    e.target.value = '';
-                  }}
-                />
-                <Button variant="ghost" onClick={() => fileInputs.current[c.userId]?.click()}>
-                  {c.hasHeadshot ? 'Replace' : 'Upload'}
-                </Button>
-              </td>
+      <ScrollX>
+        <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 12 }}>
+          <thead>
+            <tr style={{ textAlign: 'left', borderBottom: `1px solid ${tokens.color.border}` }}>
+              <th style={cell}>Staff</th>
+              <th style={cell}>Visible</th>
+              <th style={cell}>Accepting</th>
+              <th style={cell}>Title</th>
+              <th style={cell}>Order</th>
+              <th style={cell}>Email</th>
+              <th style={cell}>SMS</th>
+              <th style={cell}>Headshot</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {cards.map((c) => (
+              <tr
+                key={c.userId}
+                style={{
+                  borderBottom: `1px solid ${tokens.color.border}`,
+                  opacity: c.active ? 1 : 0.5,
+                }}
+              >
+                <td style={cell}>
+                  <button
+                    onClick={() => navigate(`/admin/users/${c.userId}?tab=rates`)}
+                    title="Open profile & edit billing rates"
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: tokens.color.accent,
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      fontWeight: 600,
+                      padding: 0,
+                      textAlign: 'left',
+                    }}
+                  >
+                    {c.name}
+                  </button>
+                </td>
+                <td style={cell}>
+                  <input
+                    type="checkbox"
+                    checked={c.isVisible}
+                    disabled={savingId === c.userId}
+                    onChange={(e) => void patch(c.userId, { isVisible: e.target.checked })}
+                  />
+                </td>
+                <td style={cell}>
+                  <input
+                    type="checkbox"
+                    checked={c.acceptingUploads}
+                    disabled={savingId === c.userId}
+                    onChange={(e) => void patch(c.userId, { acceptingUploads: e.target.checked })}
+                  />
+                </td>
+                <td style={cell}>
+                  <input
+                    defaultValue={c.displayTitle ?? ''}
+                    placeholder="e.g. Tax Manager"
+                    onBlur={(e) =>
+                      e.target.value !== (c.displayTitle ?? '') &&
+                      void patch(c.userId, { displayTitle: e.target.value || null })
+                    }
+                    style={{
+                      padding: 4,
+                      fontSize: 13,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                      width: 140,
+                    }}
+                  />
+                </td>
+                <td style={cell}>
+                  <input
+                    type="number"
+                    defaultValue={c.displayOrder}
+                    onBlur={(e) =>
+                      Number(e.target.value) !== c.displayOrder &&
+                      void patch(c.userId, { displayOrder: Number(e.target.value) })
+                    }
+                    style={{
+                      padding: 4,
+                      fontSize: 13,
+                      border: `1px solid ${tokens.color.border}`,
+                      borderRadius: tokens.radius.sm,
+                      width: 56,
+                    }}
+                  />
+                </td>
+                <td style={cell}>
+                  <input
+                    type="checkbox"
+                    checked={c.notifyEmail}
+                    onChange={(e) => void patch(c.userId, { notifyEmail: e.target.checked })}
+                  />
+                </td>
+                <td style={cell}>
+                  <input
+                    type="checkbox"
+                    checked={c.notifySms}
+                    onChange={(e) => void patch(c.userId, { notifySms: e.target.checked })}
+                  />
+                </td>
+                <td style={cell}>
+                  <input
+                    ref={(el) => (fileInputs.current[c.userId] = el)}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    style={{ display: 'none' }}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void uploadHeadshot(c.userId, f);
+                      e.target.value = '';
+                    }}
+                  />
+                  <Button variant="ghost" onClick={() => fileInputs.current[c.userId]?.click()}>
+                    {c.hasHeadshot ? 'Replace' : 'Upload'}
+                  </Button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ScrollX>
     </div>
   );
 }

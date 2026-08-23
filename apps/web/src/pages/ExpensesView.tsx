@@ -443,7 +443,14 @@ export function ExpensesView({
               />
             </label>
             <label style={{ display: 'grid', gap: 4, fontSize: 13 }}>
-              <span style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
+              <span
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  justifyContent: 'space-between',
+                  gap: 8,
+                }}
+              >
                 Category
                 {canManageCategories && (
                   <button

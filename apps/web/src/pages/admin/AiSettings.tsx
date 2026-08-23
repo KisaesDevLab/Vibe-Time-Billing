@@ -334,7 +334,14 @@ export function AiSettingsPage(): JSX.Element {
         {/* Cloud egress */}
         <Card>
           <div style={{ display: 'grid', gap: tokens.space.md, padding: tokens.space.md }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+              }}
+            >
               <strong>Cloud egress</strong>
               <Pill tone={egress.enabled ? 'success' : 'neutral'}>
                 {egress.enabled ? `Enabled · ${egress.mode}` : 'Disabled (local-only)'}
@@ -404,7 +411,12 @@ export function AiSettingsPage(): JSX.Element {
             <Card key={m.id}>
               <div style={{ display: 'grid', gap: tokens.space.sm, padding: tokens.space.md }}>
                 <div
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
                 >
                   <strong>{m.label}</strong>
                   <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>

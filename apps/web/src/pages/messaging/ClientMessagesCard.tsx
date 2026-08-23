@@ -419,6 +419,7 @@ function NewThreadForm({
               color: tokens.color.textMuted,
               marginBottom: 6,
               display: 'flex',
+              flexWrap: 'wrap',
               justifyContent: 'space-between',
             }}
           >

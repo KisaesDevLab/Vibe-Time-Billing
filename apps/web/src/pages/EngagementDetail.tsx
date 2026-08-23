@@ -964,7 +964,7 @@ export function EngagementDetailPage(): JSX.Element {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(5, 1fr)',
+              gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))',
               gap: 16,
             }}
           >
@@ -1310,6 +1310,7 @@ function EngagementNotes({ engagementId }: { engagementId: string }): JSX.Elemen
             <div
               style={{
                 display: 'flex',
+                flexWrap: 'wrap',
                 justifyContent: 'space-between',
                 marginBottom: 6,
                 color: tokens.color.textMuted,

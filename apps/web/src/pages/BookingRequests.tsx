@@ -170,7 +170,14 @@ export function BookingRequestsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 900 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <h1 style={{ margin: 0, fontSize: 22 }}>Booking requests</h1>
         {items.length > 0 && <Pill tone="danger">{items.length} pending</Pill>}
       </div>

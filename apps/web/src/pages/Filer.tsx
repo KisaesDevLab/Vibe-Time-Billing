@@ -36,6 +36,7 @@ import {
   EmptyState,
   PaginationBar,
   Pill,
+  ScrollX,
   Tabs,
   tokens,
 } from '@vibe/ui';
@@ -985,7 +986,7 @@ function CommitConfirmDialog({
               ) : null}
               ? Files are relocated in B2; this is undoable from History.
             </p>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
               <Button variant="ghost" onClick={onCancel}>
                 Cancel
               </Button>
@@ -1306,7 +1307,7 @@ function ImportTab(): JSX.Element {
                 </datalist>
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
               <Button variant="ghost" onClick={() => setDraft(null)}>
                 Cancel
               </Button>
@@ -1461,29 +1462,31 @@ const IMPORT_RESULT_TONE: Record<ZipImportResult['status'], 'success' | 'warning
 
 function ImportResults({ results }: { results: ZipImportResult[] }): JSX.Element {
   return (
-    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-      <thead>
-        <tr>
-          <th style={th()}>File</th>
-          <th style={th()}>Result</th>
-        </tr>
-      </thead>
-      <tbody>
-        {results.map((r) => (
-          <tr key={r.path} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
-            <td style={{ ...td(), fontFamily: tokens.font.mono, fontSize: 11 }}>{r.path}</td>
-            <td style={td()}>
-              <Pill tone={IMPORT_RESULT_TONE[r.status]}>{r.status}</Pill>
-              {r.detail && (
-                <span style={{ fontSize: 11, color: tokens.color.textMuted, marginLeft: 6 }}>
-                  {r.detail}
-                </span>
-              )}
-            </td>
+    <ScrollX>
+      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+        <thead>
+          <tr>
+            <th style={th()}>File</th>
+            <th style={th()}>Result</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {results.map((r) => (
+            <tr key={r.path} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+              <td style={{ ...td(), fontFamily: tokens.font.mono, fontSize: 11 }}>{r.path}</td>
+              <td style={td()}>
+                <Pill tone={IMPORT_RESULT_TONE[r.status]}>{r.status}</Pill>
+                {r.detail && (
+                  <span style={{ fontSize: 11, color: tokens.color.textMuted, marginLeft: 6 }}>
+                    {r.detail}
+                  </span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </ScrollX>
   );
 }
 
@@ -2108,7 +2111,7 @@ function RuleForm({
     >
       <strong style={{ fontSize: 13 }}>New rule</strong>
       <RuleFields draft={draft} setDraft={setDraft} />
-      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
         <Button variant="ghost" onClick={onCancel} disabled={busy}>
           Cancel
         </Button>
@@ -2192,7 +2195,7 @@ function RuleEditDialog({
         <Card title={`Edit rule — ${rule.name}`}>
           <div style={{ display: 'grid', gap: 12 }}>
             <RuleFields draft={draft} setDraft={setDraft} />
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>
@@ -2393,49 +2396,53 @@ function BatchDetail({
   }
   return (
     <div style={{ background: tokens.color.surface, padding: 12 }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-        <thead>
-          <tr>
-            <th style={th()}>From → To</th>
-            <th style={th()}>Action</th>
-            <th style={th()}>Status</th>
-            <th style={th('right')}>Undo</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
-              <td style={td()}>
-                <div style={{ fontFamily: tokens.font.mono, fontSize: 11, wordBreak: 'break-all' }}>
-                  {r.objectKeyFrom}
-                  {r.objectKeyTo && (
-                    <>
-                      {' → '}
-                      {r.objectKeyTo}
-                    </>
-                  )}
-                </div>
-                {r.error && (
-                  <div style={{ color: tokens.color.danger, fontSize: 11 }}>{r.error}</div>
-                )}
-              </td>
-              <td style={td()}>{r.action}</td>
-              <td style={td()}>
-                <Pill tone={LOG_STATUS_TONE[r.status]}>{r.status}</Pill>
-              </td>
-              <td style={{ ...td(), textAlign: 'right' }}>
-                {r.status === 'success' ? (
-                  <Button size="sm" variant="ghost" onClick={() => onUndoLog(r.id)}>
-                    Undo
-                  </Button>
-                ) : (
-                  '—'
-                )}
-              </td>
+      <ScrollX>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={th()}>From → To</th>
+              <th style={th()}>Action</th>
+              <th style={th()}>Status</th>
+              <th style={th('right')}>Undo</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.id} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                <td style={td()}>
+                  <div
+                    style={{ fontFamily: tokens.font.mono, fontSize: 11, wordBreak: 'break-all' }}
+                  >
+                    {r.objectKeyFrom}
+                    {r.objectKeyTo && (
+                      <>
+                        {' → '}
+                        {r.objectKeyTo}
+                      </>
+                    )}
+                  </div>
+                  {r.error && (
+                    <div style={{ color: tokens.color.danger, fontSize: 11 }}>{r.error}</div>
+                  )}
+                </td>
+                <td style={td()}>{r.action}</td>
+                <td style={td()}>
+                  <Pill tone={LOG_STATUS_TONE[r.status]}>{r.status}</Pill>
+                </td>
+                <td style={{ ...td(), textAlign: 'right' }}>
+                  {r.status === 'success' ? (
+                    <Button size="sm" variant="ghost" onClick={() => onUndoLog(r.id)}>
+                      Undo
+                    </Button>
+                  ) : (
+                    '—'
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </ScrollX>
     </div>
   );
 }

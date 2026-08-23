@@ -280,7 +280,14 @@ export function RollforwardPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg, maxWidth: 1100 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <h2 style={{ margin: 0, fontSize: 18 }}>Tax-season rollforward</h2>
         <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
           Step {step} of 4 · {['Scope', 'Engagements', 'Appointments', 'Done'][step - 1]}

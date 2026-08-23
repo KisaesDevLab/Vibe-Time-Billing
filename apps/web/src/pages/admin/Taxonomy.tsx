@@ -337,7 +337,9 @@ function EngagementTypesPanel(): JSX.Element {
               r.status === 'ARCHIVED' ? (
                 <Pill>ARCHIVED</Pill>
               ) : (
-                <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                <div
+                  style={{ display: 'flex', flexWrap: 'wrap', gap: 4, justifyContent: 'flex-end' }}
+                >
                   <Button
                     size="sm"
                     variant="ghost"

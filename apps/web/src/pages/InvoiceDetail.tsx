@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Pill, ScrollX, tokens } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { formatCents } from '../lib/money';
@@ -191,73 +191,75 @@ export function InvoiceDetailPage(): JSX.Element {
           Issued {invoice.issueDate} · Due {invoice.dueDate} · Amounts are set in Billing.
         </div>
 
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ background: tokens.color.surface }}>
-              <th style={th()}>Kind</th>
-              <th style={th()}>Description</th>
-              <th style={{ ...th(), textAlign: 'right' }}>Amount</th>
-            </tr>
-          </thead>
-          <tbody>
-            {manualLines.length === 0 ? (
-              <tr>
-                <td colSpan={3} style={{ padding: 16, color: tokens.color.textMuted }}>
-                  No line items.
-                </td>
+        <ScrollX>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: tokens.color.surface }}>
+                <th style={th()}>Kind</th>
+                <th style={th()}>Description</th>
+                <th style={{ ...th(), textAlign: 'right' }}>Amount</th>
               </tr>
-            ) : (
-              manualLines.map((l) => (
-                <LineRow
-                  key={l.id}
-                  line={l}
-                  editable={descEditable}
-                  onSaveDescription={(v) => void saveDescription(l.id, v)}
-                />
-              ))
-            )}
-          </tbody>
-          <tfoot>
-            <tr style={{ borderTop: `2px solid ${tokens.color.border}` }}>
-              <td colSpan={2} style={tdFoot('right')}>
-                Subtotal
-              </td>
-              <td style={tdFoot('right')}>{formatCents(invoice.subtotalCents)}</td>
-            </tr>
-            {invoice.surchargeCents > 0 && (
-              <tr>
+            </thead>
+            <tbody>
+              {manualLines.length === 0 ? (
+                <tr>
+                  <td colSpan={3} style={{ padding: 16, color: tokens.color.textMuted }}>
+                    No line items.
+                  </td>
+                </tr>
+              ) : (
+                manualLines.map((l) => (
+                  <LineRow
+                    key={l.id}
+                    line={l}
+                    editable={descEditable}
+                    onSaveDescription={(v) => void saveDescription(l.id, v)}
+                  />
+                ))
+              )}
+            </tbody>
+            <tfoot>
+              <tr style={{ borderTop: `2px solid ${tokens.color.border}` }}>
                 <td colSpan={2} style={tdFoot('right')}>
-                  Surcharge
+                  Subtotal
                 </td>
-                <td style={tdFoot('right')}>{formatCents(invoice.surchargeCents)}</td>
+                <td style={tdFoot('right')}>{formatCents(invoice.subtotalCents)}</td>
               </tr>
-            )}
-            {invoice.taxCents > 0 && (
-              <tr>
-                <td colSpan={2} style={tdFoot('right')}>
-                  Sales tax
+              {invoice.surchargeCents > 0 && (
+                <tr>
+                  <td colSpan={2} style={tdFoot('right')}>
+                    Surcharge
+                  </td>
+                  <td style={tdFoot('right')}>{formatCents(invoice.surchargeCents)}</td>
+                </tr>
+              )}
+              {invoice.taxCents > 0 && (
+                <tr>
+                  <td colSpan={2} style={tdFoot('right')}>
+                    Sales tax
+                  </td>
+                  <td style={tdFoot('right')}>{formatCents(invoice.taxCents)}</td>
+                </tr>
+              )}
+              {invoice.feeCents > 0 && (
+                <tr>
+                  <td colSpan={2} style={tdFoot('right')}>
+                    Processing fee
+                  </td>
+                  <td style={tdFoot('right')}>{formatCents(invoice.feeCents)}</td>
+                </tr>
+              )}
+              <tr style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                <td colSpan={2} style={{ ...tdFoot('right'), fontWeight: 700 }}>
+                  Total
                 </td>
-                <td style={tdFoot('right')}>{formatCents(invoice.taxCents)}</td>
-              </tr>
-            )}
-            {invoice.feeCents > 0 && (
-              <tr>
-                <td colSpan={2} style={tdFoot('right')}>
-                  Processing fee
+                <td style={{ ...tdFoot('right'), fontWeight: 700 }}>
+                  {formatCents(invoice.totalCents)}
                 </td>
-                <td style={tdFoot('right')}>{formatCents(invoice.feeCents)}</td>
               </tr>
-            )}
-            <tr style={{ borderTop: `1px solid ${tokens.color.border}` }}>
-              <td colSpan={2} style={{ ...tdFoot('right'), fontWeight: 700 }}>
-                Total
-              </td>
-              <td style={{ ...tdFoot('right'), fontWeight: 700 }}>
-                {formatCents(invoice.totalCents)}
-              </td>
-            </tr>
-          </tfoot>
-        </table>
+            </tfoot>
+          </table>
+        </ScrollX>
 
         {(invoice.surchargeCents > 0 || invoice.taxCents > 0) && (
           <p
@@ -291,9 +293,11 @@ export function InvoiceDetailPage(): JSX.Element {
             title={`Invoice ${invoice.invoiceNumber} — page view`}
             src={`/api/staff/invoices/${invoice.id}/pdf?format=html`}
             style={{
+              // Fixed letter size; the gray wrapper (overflow auto) pans on
+              // phones instead of squeezing the page into a sliver.
               width: 816,
               height: 1056,
-              maxWidth: '100%',
+              flexShrink: 0,
               border: 'none',
               background: '#fff',
               boxShadow: '0 4px 24px rgba(0,0,0,0.4)',

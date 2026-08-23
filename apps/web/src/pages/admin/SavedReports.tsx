@@ -184,7 +184,12 @@ export function SavedReportsPage(): JSX.Element {
           </label>
           <label style={{ fontSize: 13 }}>
             <span
-              style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+              style={{
+                display: 'flex',
+                flexWrap: 'wrap',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
             >
               Params JSON
               <Button

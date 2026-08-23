@@ -106,7 +106,7 @@ export function UnlinkedEmptyState({
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(180px, 100%), 1fr))',
             gap: 12,
             marginTop: 20,
             maxWidth: 560,

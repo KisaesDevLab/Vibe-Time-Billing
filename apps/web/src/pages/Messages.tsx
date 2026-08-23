@@ -11,7 +11,7 @@
 import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 
-import { Card, Input, Pill, tokens } from '@vibe/ui';
+import { Card, Input, Pill, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../api-client';
 
@@ -102,13 +102,16 @@ function ClientMessagesPanel(): JSX.Element {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  const narrow = useIsNarrow();
 
   async function loadThreads(): Promise<void> {
     try {
       const r = await api<{ items: ThreadRow[] }>('/api/staff/engagement-messaging/threads');
       const items = r.items ?? [];
       setThreads(items);
-      if (!activeId && items[0]) setActiveId(items[0].threadId);
+      // Desktop auto-opens the newest thread beside the list; phones show
+      // ONE pane at a time, so auto-selecting would hide the inbox.
+      if (!narrow && !activeId && items[0]) setActiveId(items[0].threadId);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'load_failed');
       setThreads([]);
@@ -157,107 +160,138 @@ function ClientMessagesPanel(): JSX.Element {
     : threads;
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: tokens.space.lg }}>
-      <Card title={`Threads (${visibleThreads.length})`}>
-        <div style={{ marginBottom: tokens.space.sm }}>
-          <Input
-            type="search"
-            placeholder="Search client or engagement…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            aria-label="Search threads by client or engagement"
-          />
-        </div>
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 2,
-            maxHeight: 'calc(100vh / var(--vibe-font-scale, 1) - 220px)',
-            overflowY: 'auto',
-          }}
-        >
-          {visibleThreads.length === 0 ? (
-            <p style={{ fontSize: 12, color: tokens.color.textMuted, padding: '8px 4px' }}>
-              No threads match “{search}”.
-            </p>
-          ) : null}
-          {visibleThreads.map((t) => {
-            const isActive = activeId === t.threadId;
-            return (
-              <button
-                key={t.threadId}
-                type="button"
-                onClick={() => setActiveId(t.threadId)}
-                style={{
-                  textAlign: 'left',
-                  padding: '10px 12px',
-                  borderRadius: tokens.radius.sm,
-                  background: isActive ? tokens.color.accentMuted : 'transparent',
-                  color: isActive ? tokens.color.accent : tokens.color.text,
-                  border: 'none',
-                  cursor: 'pointer',
-                  fontSize: 13,
-                  display: 'grid',
-                  gap: 4,
-                }}
-              >
-                {/* Client name is the primary label; the engagement name
-                    (thread title) is the secondary line. */}
-                <div style={{ fontWeight: 600 }}>{t.clientName ?? 'Client'}</div>
-                <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
-                  {t.title ?? 'Engagement thread'}
-                </div>
-                <div
+    <div
+      style={{
+        display: 'grid',
+        gridTemplateColumns: narrow ? '1fr' : '280px 1fr',
+        gap: tokens.space.lg,
+      }}
+    >
+      {/* Phones show one pane at a time: list, or the open conversation. */}
+      {(!narrow || !activeId) && (
+        <Card title={`Threads (${visibleThreads.length})`}>
+          <div style={{ marginBottom: tokens.space.sm }}>
+            <Input
+              type="search"
+              placeholder="Search client or engagement…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              aria-label="Search threads by client or engagement"
+            />
+          </div>
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 2,
+              maxHeight: 'calc(100vh / var(--vibe-font-scale, 1) - 220px)',
+              overflowY: 'auto',
+            }}
+          >
+            {visibleThreads.length === 0 ? (
+              <p style={{ fontSize: 12, color: tokens.color.textMuted, padding: '8px 4px' }}>
+                No threads match “{search}”.
+              </p>
+            ) : null}
+            {visibleThreads.map((t) => {
+              const isActive = activeId === t.threadId;
+              return (
+                <button
+                  key={t.threadId}
+                  type="button"
+                  onClick={() => setActiveId(t.threadId)}
                   style={{
-                    fontSize: 11,
-                    color: tokens.color.textMuted,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
+                    textAlign: 'left',
+                    padding: '10px 12px',
+                    borderRadius: tokens.radius.sm,
+                    background: isActive ? tokens.color.accentMuted : 'transparent',
+                    color: isActive ? tokens.color.accent : tokens.color.text,
+                    border: 'none',
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    display: 'grid',
+                    gap: 4,
                   }}
                 >
-                  {t.status === 'ARCHIVED' ? (
-                    <Pill tone="neutral">Archived</Pill>
-                  ) : t.lastReplyBy ? (
-                    <span>
-                      {t.lastReplyKind === 'client' ? '↩ ' : ''}
-                      {t.lastReplyBy} · {new Date(t.lastReplyAt ?? t.updatedAt).toLocaleString()}
-                    </span>
-                  ) : (
-                    <span>Updated {new Date(t.updatedAt).toLocaleString()}</span>
-                  )}
-                </div>
-              </button>
-            );
-          })}
-        </div>
-      </Card>
+                  {/* Client name is the primary label; the engagement name
+                    (thread title) is the secondary line. */}
+                  <div style={{ fontWeight: 600 }}>{t.clientName ?? 'Client'}</div>
+                  <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                    {t.title ?? 'Engagement thread'}
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 11,
+                      color: tokens.color.textMuted,
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 6,
+                    }}
+                  >
+                    {t.status === 'ARCHIVED' ? (
+                      <Pill tone="neutral">Archived</Pill>
+                    ) : t.lastReplyBy ? (
+                      <span>
+                        {t.lastReplyKind === 'client' ? '↩ ' : ''}
+                        {t.lastReplyBy} · {new Date(t.lastReplyAt ?? t.updatedAt).toLocaleString()}
+                      </span>
+                    ) : (
+                      <span>Updated {new Date(t.updatedAt).toLocaleString()}</span>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </Card>
+      )}
 
-      <Card
-        title={
-          activeThread
-            ? [activeThread.clientName, activeThread.title].filter(Boolean).join(' — ') ||
-              'Engagement thread'
-            : 'Pick a thread'
-        }
-        action={
-          activeThread?.engagementId ? (
-            <a
-              href={`/engagements/${activeThread.engagementId}`}
-              style={{ fontSize: 12, color: tokens.color.accent, textDecoration: 'none' }}
-            >
-              Open engagement →
-            </a>
-          ) : null
-        }
-      >
-        {activeId ? (
-          <ThreadView threadId={activeId} maxHeight={520} onSent={() => void loadThreads()} />
-        ) : (
-          <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Pick a thread on the left.</p>
-        )}
-      </Card>
+      {(!narrow || activeId) && (
+        <Card
+          title={
+            activeThread
+              ? [activeThread.clientName, activeThread.title].filter(Boolean).join(' — ') ||
+                'Engagement thread'
+              : 'Pick a thread'
+          }
+          action={
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+              {narrow && activeId && (
+                <button
+                  type="button"
+                  onClick={() => setActiveId(null)}
+                  style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: tokens.color.accent,
+                    cursor: 'pointer',
+                    fontSize: 13,
+                    padding: 0,
+                  }}
+                >
+                  ← All threads
+                </button>
+              )}
+              {activeThread?.engagementId ? (
+                <a
+                  href={`/engagements/${activeThread.engagementId}`}
+                  style={{ fontSize: 12, color: tokens.color.accent, textDecoration: 'none' }}
+                >
+                  Open engagement →
+                </a>
+              ) : null}
+            </span>
+          }
+        >
+          {activeId ? (
+            <ThreadView threadId={activeId} maxHeight={520} onSent={() => void loadThreads()} />
+          ) : (
+            <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+              Pick a thread on the left.
+            </p>
+          )}
+        </Card>
+      )}
     </div>
   );
 }

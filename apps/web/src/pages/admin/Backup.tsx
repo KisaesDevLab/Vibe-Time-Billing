@@ -324,6 +324,7 @@ export function BackupPage(): JSX.Element {
                 <div
                   style={{
                     display: 'flex',
+                    flexWrap: 'wrap',
                     justifyContent: 'space-between',
                     alignItems: 'baseline',
                   }}

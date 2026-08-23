@@ -144,7 +144,7 @@ export function ProcessProjectDialog({
                 style={{ ...inputStyle, resize: 'vertical' }}
               />
             </Field>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, justifyContent: 'flex-end' }}>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 Close
               </Button>

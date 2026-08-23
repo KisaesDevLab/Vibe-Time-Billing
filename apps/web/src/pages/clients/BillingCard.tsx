@@ -342,7 +342,13 @@ export function BillingCard({ clientId, clientName }: Props): JSX.Element {
             {error}
           </p>
         )}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 16 }}>
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))',
+            gap: 16,
+          }}
+        >
           <Stat label={`Invoiced ${yearLabel(yearFilter)}`} value={formatCents(totals.invoiced)} />
           <Stat label="Paid" value={formatCents(totals.paid)} />
           <Stat label="Outstanding" value={formatCents(totals.balance)} />

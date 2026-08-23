@@ -111,7 +111,7 @@ export function AiUsagePage(): JSX.Element {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(5, 1fr)',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))',
             gap: 16,
             fontSize: 13,
           }}

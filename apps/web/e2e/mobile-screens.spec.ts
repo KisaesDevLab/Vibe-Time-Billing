@@ -27,6 +27,7 @@ const COOKIE = process.env['STAFF_SESSION_COOKIE'];
 /** Route → screenshot slug. Keep desk pages in — they only need the
  *  no-overflow assertion (scroll is fine, sideways page-pan is not). */
 const PAGES: Array<[route: string, slug: string]> = [
+  // Phase 1-2: deep mobile UX
   ['/', 'dashboard'],
   ['/time', 'time-entry'],
   ['/tasks', 'tasks'],
@@ -37,6 +38,26 @@ const PAGES: Array<[route: string, slug: string]> = [
   ['/engagements', 'engagements'],
   ['/approvals', 'approvals'],
   ['/requests', 'requests'],
+  // Sweep: merely-usable pages — the no-overflow assertion is the bar
+  ['/people', 'people'],
+  ['/payments', 'payments'],
+  ['/appointments', 'appointments'],
+  ['/calendar/mine', 'my-calendar'],
+  ['/alerts', 'alerts'],
+  ['/intake', 'intake'],
+  ['/signatures', 'signatures'],
+  ['/proposals', 'proposals'],
+  ['/retainers', 'retainers'],
+  ['/filer', 'filer'],
+  ['/help', 'help'],
+  ['/account', 'account'],
+  // Desk pages: scroll-only, still must not pan sideways
+  ['/reports', 'reports'],
+  ['/wip', 'wip'],
+  ['/ar', 'ar'],
+  ['/audit', 'audit'],
+  ['/billing/batches', 'billing'],
+  ['/admin/users', 'admin-users'],
 ];
 
 /** Representative pages for the desktop pixel baseline. */

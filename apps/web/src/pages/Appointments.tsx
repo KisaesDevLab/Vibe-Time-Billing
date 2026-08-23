@@ -262,7 +262,14 @@ export function AppointmentsPage(): JSX.Element {
 
   return (
     <div style={{ display: 'grid', gap: tokens.space.lg }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <h1 style={{ margin: 0, fontSize: 22 }}>Appointments</h1>
         <Button onClick={() => go('book')}>Book appointment</Button>
       </div>
@@ -1032,7 +1039,14 @@ function DetailDrawer({
         boxShadow: '-8px 0 24px rgba(0,0,0,0.2)',
       }}
     >
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+      <div
+        style={{
+          display: 'flex',
+          flexWrap: 'wrap',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+        }}
+      >
         <h2 style={{ margin: 0, fontSize: 18 }}>{d?.appointment.title ?? 'Appointment'}</h2>
         <Button size="sm" variant="secondary" onClick={onClose}>
           Close
@@ -1247,6 +1261,7 @@ function MonthCalendar({
       <div
         style={{
           display: 'flex',
+          flexWrap: 'wrap',
           alignItems: 'center',
           justifyContent: 'space-between',
           marginBottom: 8,
@@ -1896,7 +1911,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
           <div>📅 Added to {selStaff.map(staffName).join(', ')}&apos;s calendar</div>
           {selectedEngagement && <div>🗎 Note added to {selectedEngagement.name}</div>}
         </div>
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 10 }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: 10 }}>
           <Button variant="secondary" onClick={onBooked}>
             View appointments
           </Button>
@@ -2089,7 +2104,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
               <div
                 style={{
                   display: 'grid',
-                  gridTemplateColumns: 'repeat(3, 1fr)',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(min(150px, 100%), 1fr))',
                   gap: 8,
                 }}
               >
@@ -2297,7 +2312,7 @@ function BookTab({ onBooked }: { onBooked: () => void }): JSX.Element {
                       <div
                         style={{
                           display: 'grid',
-                          gridTemplateColumns: 'repeat(4, 1fr)',
+                          gridTemplateColumns: 'repeat(auto-fit, minmax(min(120px, 100%), 1fr))',
                           gap: 6,
                         }}
                       >

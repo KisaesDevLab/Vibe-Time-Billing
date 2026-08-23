@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from 'react';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Pill, ScrollX, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 
@@ -145,83 +145,87 @@ export function RollDueRecurrencesDialog({ onClose }: Props): JSX.Element {
                   Clear
                 </button>
               </div>
-              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                <thead>
-                  <tr style={{ borderBottom: `1px solid ${tokens.color.border}` }}>
-                    <th style={th()}></th>
-                    <th style={th('left')}>Client</th>
-                    <th style={th('left')}>Template</th>
-                    <th style={th('left')}>Cadence</th>
-                    <th style={th('left')}>Trigger</th>
-                    <th style={th('left')}>Last engagement</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => {
-                    const result = results?.items.find((x) => x.recurrenceId === r.id);
-                    return (
-                      <tr
-                        key={r.id}
-                        style={{
-                          borderBottom: `1px solid ${tokens.color.border}`,
-                          background: result ? tokens.color.surface : 'transparent',
-                        }}
-                      >
-                        <td style={td()}>
-                          <input
-                            type="checkbox"
-                            checked={selected.has(r.id)}
-                            onChange={() => toggle(r.id)}
-                            disabled={busy || results != null}
-                          />
-                        </td>
-                        <td style={td()}>{r.clientName}</td>
-                        <td style={td()}>{r.templateName}</td>
-                        <td style={td()}>
-                          <Pill>{r.frequency}</Pill>
-                        </td>
-                        <td style={td()}>
-                          {r.triggerMode === 'SCHEDULE' ? `on ${r.nextRunDate ?? '—'}` : 'on close'}
-                        </td>
-                        <td style={td()}>
-                          {result ? (
-                            <Pill
-                              tone={
-                                result.kind === 'spawned'
-                                  ? 'success'
+              <ScrollX>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ borderBottom: `1px solid ${tokens.color.border}` }}>
+                      <th style={th()}></th>
+                      <th style={th('left')}>Client</th>
+                      <th style={th('left')}>Template</th>
+                      <th style={th('left')}>Cadence</th>
+                      <th style={th('left')}>Trigger</th>
+                      <th style={th('left')}>Last engagement</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map((r) => {
+                      const result = results?.items.find((x) => x.recurrenceId === r.id);
+                      return (
+                        <tr
+                          key={r.id}
+                          style={{
+                            borderBottom: `1px solid ${tokens.color.border}`,
+                            background: result ? tokens.color.surface : 'transparent',
+                          }}
+                        >
+                          <td style={td()}>
+                            <input
+                              type="checkbox"
+                              checked={selected.has(r.id)}
+                              onChange={() => toggle(r.id)}
+                              disabled={busy || results != null}
+                            />
+                          </td>
+                          <td style={td()}>{r.clientName}</td>
+                          <td style={td()}>{r.templateName}</td>
+                          <td style={td()}>
+                            <Pill>{r.frequency}</Pill>
+                          </td>
+                          <td style={td()}>
+                            {r.triggerMode === 'SCHEDULE'
+                              ? `on ${r.nextRunDate ?? '—'}`
+                              : 'on close'}
+                          </td>
+                          <td style={td()}>
+                            {result ? (
+                              <Pill
+                                tone={
+                                  result.kind === 'spawned'
+                                    ? 'success'
+                                    : result.kind === 'approval_queued'
+                                      ? 'warning'
+                                      : result.kind === 'skipped'
+                                        ? 'neutral'
+                                        : 'danger'
+                                }
+                              >
+                                {result.kind === 'spawned'
+                                  ? `spawned: ${result.name ?? ''}`
                                   : result.kind === 'approval_queued'
-                                    ? 'warning'
+                                    ? 'approval queued'
                                     : result.kind === 'skipped'
-                                      ? 'neutral'
-                                      : 'danger'
-                              }
-                            >
-                              {result.kind === 'spawned'
-                                ? `spawned: ${result.name ?? ''}`
-                                : result.kind === 'approval_queued'
-                                  ? 'approval queued'
-                                  : result.kind === 'skipped'
-                                    ? `skipped (${result.reason})`
-                                    : `error (${result.reason})`}
-                            </Pill>
-                          ) : r.lastEngagementName ? (
-                            <span style={{ fontSize: 12 }}>
-                              {r.lastEngagementName}{' '}
-                              <span style={{ color: tokens.color.textMuted }}>
-                                ({r.lastEngagementStatus})
+                                      ? `skipped (${result.reason})`
+                                      : `error (${result.reason})`}
+                              </Pill>
+                            ) : r.lastEngagementName ? (
+                              <span style={{ fontSize: 12 }}>
+                                {r.lastEngagementName}{' '}
+                                <span style={{ color: tokens.color.textMuted }}>
+                                  ({r.lastEngagementStatus})
+                                </span>
                               </span>
-                            </span>
-                          ) : (
-                            <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
-                              none yet
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                            ) : (
+                              <span style={{ color: tokens.color.textMuted, fontSize: 12 }}>
+                                none yet
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </ScrollX>
               {results && (
                 <p style={{ fontSize: 13, marginTop: 12 }}>
                   <strong>Done.</strong>{' '}
@@ -230,7 +234,15 @@ export function RollDueRecurrencesDialog({ onClose }: Props): JSX.Element {
                     .join(' · ')}
                 </p>
               )}
-              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 12 }}>
+              <div
+                style={{
+                  display: 'flex',
+                  flexWrap: 'wrap',
+                  gap: 8,
+                  justifyContent: 'flex-end',
+                  marginTop: 12,
+                }}
+              >
                 <Button variant="ghost" onClick={onClose}>
                   {results ? 'Close' : 'Cancel'}
                 </Button>

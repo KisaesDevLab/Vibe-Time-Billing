@@ -15,7 +15,7 @@
 
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 
-import { Button, Card, Input, Markdown, Pill, SectionHeading, tokens } from '@vibe/ui';
+import { Button, Card, Input, Markdown, Pill, ScrollX, SectionHeading, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { TemplateLibraryPanel } from './TemplateLibraryPanel';
@@ -453,6 +453,7 @@ export function PackagesPage(): JSX.Element {
                   <div
                     style={{
                       display: 'flex',
+                      flexWrap: 'wrap',
                       justifyContent: 'space-between',
                       alignItems: 'baseline',
                     }}
@@ -705,66 +706,68 @@ function PackageEntryEditor({
           No services in this tier yet. Add some from the catalog below.
         </p>
       ) : (
-        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead>
-            <tr style={{ textAlign: 'left', color: tokens.color.textMuted, fontSize: 11 }}>
-              <th style={{ padding: 6 }}>Service</th>
-              <th style={{ padding: 6 }}>Category</th>
-              <th style={{ padding: 6, textAlign: 'right' }}>Default</th>
-              <th style={{ padding: 6, textAlign: 'right' }}>Override</th>
-              <th style={{ padding: 6, textAlign: 'center' }}>Included?</th>
-              <th style={{ padding: 6 }}></th>
-            </tr>
-          </thead>
-          <tbody>
-            {entries.map((e) => (
-              <tr key={e.serviceId} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
-                <td style={{ padding: 6 }}>{e.serviceName}</td>
-                <td style={{ padding: 6 }}>
-                  <Pill>{e.serviceCategory}</Pill>
-                </td>
-                <td style={{ padding: 6, textAlign: 'right', color: tokens.color.textMuted }}>
-                  {dollars(Number(e.serviceDefaultPriceCents))}
-                </td>
-                <td style={{ padding: 6, textAlign: 'right' }}>
-                  <Input
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder="—"
-                    value={
-                      e.overridePriceCents != null ? (e.overridePriceCents / 100).toFixed(2) : ''
-                    }
-                    onChange={(ev) => {
-                      const v = ev.target.value.trim();
-                      if (v === '') onUpdate(e.serviceId, { overridePriceCents: null });
-                      else {
-                        const n = Number(v);
-                        if (Number.isFinite(n) && n >= 0) {
-                          onUpdate(e.serviceId, { overridePriceCents: Math.round(n * 100) });
-                        }
-                      }
-                    }}
-                    style={{ width: 110, textAlign: 'right' }}
-                  />
-                </td>
-                <td style={{ padding: 6, textAlign: 'center' }}>
-                  <input
-                    type="checkbox"
-                    checked={e.included}
-                    onChange={(ev) => onUpdate(e.serviceId, { included: ev.target.checked })}
-                    aria-label={`Include ${e.serviceName}`}
-                  />
-                </td>
-                <td style={{ padding: 6 }}>
-                  <Button size="sm" variant="ghost" onClick={() => onRemove(e.serviceId)}>
-                    Remove
-                  </Button>
-                </td>
+        <ScrollX>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr style={{ textAlign: 'left', color: tokens.color.textMuted, fontSize: 11 }}>
+                <th style={{ padding: 6 }}>Service</th>
+                <th style={{ padding: 6 }}>Category</th>
+                <th style={{ padding: 6, textAlign: 'right' }}>Default</th>
+                <th style={{ padding: 6, textAlign: 'right' }}>Override</th>
+                <th style={{ padding: 6, textAlign: 'center' }}>Included?</th>
+                <th style={{ padding: 6 }}></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {entries.map((e) => (
+                <tr key={e.serviceId} style={{ borderTop: `1px solid ${tokens.color.border}` }}>
+                  <td style={{ padding: 6 }}>{e.serviceName}</td>
+                  <td style={{ padding: 6 }}>
+                    <Pill>{e.serviceCategory}</Pill>
+                  </td>
+                  <td style={{ padding: 6, textAlign: 'right', color: tokens.color.textMuted }}>
+                    {dollars(Number(e.serviceDefaultPriceCents))}
+                  </td>
+                  <td style={{ padding: 6, textAlign: 'right' }}>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder="—"
+                      value={
+                        e.overridePriceCents != null ? (e.overridePriceCents / 100).toFixed(2) : ''
+                      }
+                      onChange={(ev) => {
+                        const v = ev.target.value.trim();
+                        if (v === '') onUpdate(e.serviceId, { overridePriceCents: null });
+                        else {
+                          const n = Number(v);
+                          if (Number.isFinite(n) && n >= 0) {
+                            onUpdate(e.serviceId, { overridePriceCents: Math.round(n * 100) });
+                          }
+                        }
+                      }}
+                      style={{ width: 110, textAlign: 'right' }}
+                    />
+                  </td>
+                  <td style={{ padding: 6, textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={e.included}
+                      onChange={(ev) => onUpdate(e.serviceId, { included: ev.target.checked })}
+                      aria-label={`Include ${e.serviceName}`}
+                    />
+                  </td>
+                  <td style={{ padding: 6 }}>
+                    <Button size="sm" variant="ghost" onClick={() => onRemove(e.serviceId)}>
+                      Remove
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </ScrollX>
       )}
 
       {candidates.length > 0 && (

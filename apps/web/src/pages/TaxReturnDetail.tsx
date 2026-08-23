@@ -1346,7 +1346,7 @@ function CollectSignaturesDialog({
               <p style={{ fontSize: 12, color: tokens.color.danger, margin: 0 }}>{error}</p>
             )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
               <Button variant="ghost" onClick={onClose} disabled={busy}>
                 Cancel
               </Button>
@@ -2604,7 +2604,7 @@ function ReleaseDialog(props: ReleaseDialogProps): JSX.Element {
             />
           </div>
           {err && <p style={{ fontSize: 12, color: tokens.color.danger, margin: 0 }}>{err}</p>}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
             <Button variant="ghost" onClick={props.onClose} disabled={busy}>
               Cancel
             </Button>
