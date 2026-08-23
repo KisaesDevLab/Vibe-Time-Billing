@@ -985,7 +985,7 @@ function LogView({
             value={hours}
             onChange={(e) => setHours(e.target.value)}
           />
-          <div style={{ gridColumn: 'span 3', display: 'grid', gap: 6 }}>
+          <div style={{ gridColumn: narrow ? 'auto' : 'span 3', display: 'grid', gap: 6 }}>
             <div>
               <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
                 Work code
@@ -1124,7 +1124,14 @@ function LogView({
               </span>
             </label>
           </div>
-          <div style={{ gridColumn: 4, display: 'grid', gap: 8, alignContent: 'end' }}>
+          <div
+            style={{
+              gridColumn: narrow ? 'auto' : 4,
+              display: 'grid',
+              gap: 8,
+              alignContent: 'end',
+            }}
+          >
             <div
               style={{
                 border: `1px solid ${tokens.color.border}`,
