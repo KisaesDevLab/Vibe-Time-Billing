@@ -4,6 +4,12 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Card, Input, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import {
+  NAMING_SLOTS,
+  SAMPLE_NAMING_FIELDS,
+  composeFilename,
+  validatePattern,
+} from '@vibe/core/filer';
 import { centsToDollarsInput, dollarsInputToCents } from '../../lib/money';
 import { BrandingUpload } from './BrandingUpload';
 
@@ -36,6 +42,11 @@ interface Firm {
 
 interface Settings {
   adjustmentApprovalThresholdCents: number;
+  // 0223 — AI file naming (router-mode only).
+  autoRenameUploads: boolean;
+  fileNamingPattern: string;
+  fileNamingExamples: string;
+  fileNamingMinConfidence: number;
   aiMonthlyBudgetCents: number;
   estimatedLaborPct: number;
   dropoffDueOffsetDays: number | null;
@@ -126,6 +137,8 @@ export function FirmSettingsPage(): JSX.Element {
   // Q35 — e-sign provider (firm_settings_proposals.esign_provider).
   const [esignProvider, setEsignProvider] = useState<EsignProvider>('native');
   const [openSignAvailable, setOpenSignAvailable] = useState(false);
+  // 0223 — AI file naming section only makes sense on the router.
+  const [aiMode, setAiMode] = useState<'direct' | 'router'>('direct');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<number | null>(null);
@@ -142,9 +155,11 @@ export function FirmSettingsPage(): JSX.Element {
       settings: Settings;
       esignProvider?: EsignProvider;
       openSignAvailable?: boolean;
+      aiMode?: 'direct' | 'router';
     }>('/api/staff/admin/firm-settings');
     setS(r.settings);
     setF(r.firm);
+    setAiMode(r.aiMode ?? 'direct');
     setEsignProvider(r.esignProvider ?? 'native');
     setOpenSignAvailable(Boolean(r.openSignAvailable));
   }
@@ -181,6 +196,14 @@ export function FirmSettingsPage(): JSX.Element {
         body: JSON.stringify({
           adjustmentApprovalThresholdCents: s.adjustmentApprovalThresholdCents,
           aiMonthlyBudgetCents: s.aiMonthlyBudgetCents,
+          ...(aiMode === 'router'
+            ? {
+                autoRenameUploads: s.autoRenameUploads,
+                fileNamingPattern: s.fileNamingPattern,
+                fileNamingExamples: s.fileNamingExamples,
+                fileNamingMinConfidence: s.fileNamingMinConfidence,
+              }
+            : {}),
           estimatedLaborPct: s.estimatedLaborPct,
           dropoffDueOffsetDays: s.dropoffDueOffsetDays,
           stepUpTimeoutMinutes: s.stepUpTimeoutMinutes,
@@ -720,6 +743,110 @@ export function FirmSettingsPage(): JSX.Element {
 
       {/* 0178 — AI pricing-suggestion knobs. The engine picks the number
           deterministically; these only tune the inputs. */}
+      {aiMode === 'router' && (
+        <Card title="AI file naming">
+          <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
+            Available because AI requests go through the Vibe AI Router. Names are proposed from
+            each document&apos;s contents and composed from the pattern below, so the model never
+            invents a filename. Originals are kept and any AI rename can be reverted.
+          </p>
+          <div style={{ display: 'grid', gap: 14, maxWidth: 620 }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+              <input
+                type="checkbox"
+                checked={s.autoRenameUploads}
+                onChange={(e) => setS({ ...s, autoRenameUploads: e.target.checked })}
+              />
+              Automatically rename client uploads on arrival (portal, intake, staff uploads)
+            </label>
+            <div>
+              <Input
+                label="Naming pattern"
+                value={s.fileNamingPattern}
+                onChange={(e) => setS({ ...s, fileNamingPattern: e.target.value })}
+              />
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+                {NAMING_SLOTS.map((slot) => (
+                  <button
+                    key={slot}
+                    type="button"
+                    onClick={() =>
+                      setS({ ...s, fileNamingPattern: `${s.fileNamingPattern} {${slot}}`.trim() })
+                    }
+                    style={{
+                      fontSize: 11,
+                      fontFamily: tokens.font.mono,
+                      padding: '2px 8px',
+                      borderRadius: 999,
+                      border: `1px solid ${tokens.color.border}`,
+                      background: tokens.color.surface,
+                      color: tokens.color.text,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {`{${slot}}`}
+                  </button>
+                ))}
+              </div>
+              {(() => {
+                const v = validatePattern(s.fileNamingPattern);
+                return v.ok ? (
+                  <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '6px 0 0' }}>
+                    Preview:{' '}
+                    <code>
+                      {composeFilename(s.fileNamingPattern, SAMPLE_NAMING_FIELDS, 'scan0023.pdf')}
+                    </code>
+                  </p>
+                ) : (
+                  <p style={{ fontSize: 12, color: tokens.color.danger, margin: '6px 0 0' }}>
+                    {v.error.replace(/_/g, ' ')}
+                  </p>
+                );
+              })()}
+            </div>
+            <label style={{ display: 'grid', gap: 4, fontSize: 13 }}>
+              <span>Examples the AI is shown (one per line)</span>
+              <textarea
+                rows={4}
+                value={s.fileNamingExamples}
+                onChange={(e) => setS({ ...s, fileNamingExamples: e.target.value })}
+                style={{
+                  fontFamily: tokens.font.mono,
+                  fontSize: 12,
+                  padding: 8,
+                  border: `1px solid ${tokens.color.border}`,
+                  borderRadius: tokens.radius.sm,
+                  background: tokens.color.surface,
+                  color: tokens.color.text,
+                }}
+              />
+            </label>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 14 }}>
+              Auto-rename only when confidence is at least
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={5}
+                value={Math.round(s.fileNamingMinConfidence * 100)}
+                onChange={(e) =>
+                  setS({
+                    ...s,
+                    fileNamingMinConfidence:
+                      Math.max(0, Math.min(100, Number(e.target.value))) / 100,
+                  })
+                }
+                style={{ width: 70 }}
+              />
+              %
+              <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
+                (below this the suggestion is kept for one-click apply)
+              </span>
+            </label>
+          </div>
+        </Card>
+      )}
+
       <Card title="Pricing suggestion">
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0 }}>
           Drives the on-demand pricing suggestion on engagements. The number is computed by a

@@ -45,11 +45,14 @@ import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
 import { registerTimeBillingTaskClasses } from './ai/vibe-router';
 import { onAiRuntimeChange, refreshAiRuntime, startAiRuntimeRefresh } from './ai/ai-runtime';
+import { startAutoRenameConsumer } from './files/auto-rename-queue';
+import type { Worker } from 'bullmq';
 
 const config = loadConfig();
 const redis = getRedis();
 const { db } = createDb({ connectionString: config.DATABASE_URL });
 const sessionStore = createSessionStore(redis);
+let autoRenameWorker: Worker | null = null;
 
 // Stripe — firm-owned keys per Q7. Prefer the key the firm entered + tested
 // in Admin → Billing → Stripe Connect (encrypted at rest) over the appliance
@@ -495,6 +498,14 @@ const server = app.listen(config.PORT, () => {
     });
   });
   startAiRuntimeRefresh(db);
+  // 0223 — auto-rename consumer (router-mode only at job time; gated on
+  // REDIS_URL / FILE_AUTO_RENAME_CONSUMER / NODE_ENV inside).
+  autoRenameWorker = startAutoRenameConsumer({
+    db,
+    redis,
+    cloudProvider: cloudAiProvider ?? null,
+    localProvider: localAiProvider ?? null,
+  });
   onAiRuntimeChange((rt) => {
     logger.info(
       { aiMode: rt.mode, source: rt.source, problem: rt.problem },
@@ -584,6 +595,7 @@ process.on('uncaughtException', (err) => {
 // process. Without this the next tsx run wastes 5+ seconds in retries.
 function shutdownGracefully(signal: string): void {
   logger.info({ signal }, 'received shutdown signal — closing api server');
+  void autoRenameWorker?.close().catch(() => undefined);
   server.close((err) => {
     if (err) logger.warn({ err }, 'server.close errored, exiting anyway');
     process.exit(0);

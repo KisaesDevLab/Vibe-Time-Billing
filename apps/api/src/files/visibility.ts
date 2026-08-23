@@ -33,6 +33,7 @@ import {
   type RbacDeps,
 } from '../auth/rbac-middleware';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { maybeEnqueueAutoRename } from './auto-rename-queue';
 
 export interface FileVisibilityRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -391,6 +392,7 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
           id: files.id,
           storageKey: files.storageKey,
           pendingUpload: files.pendingUpload,
+          source: files.source,
         })
         .from(files)
         .where(and(eq(files.id, req.params['id']!), eq(files.firmId, firmId)))
@@ -429,6 +431,13 @@ export function createFileVisibilityRouter(deps: FileVisibilityRoutesDeps): Rout
           sizeBytes: meta.sizeBytes,
         },
       }).catch(() => undefined);
+      // 0223 — the object is durable now; auto-rename if the firm opted in.
+      void maybeEnqueueAutoRename(deps.db, {
+        firmId,
+        fileId: row.id,
+        actorAppUserId: actorId,
+        source: row.source,
+      });
       res.json({ ok: true, etag: meta.etag, sizeBytes: meta.sizeBytes });
     },
   );

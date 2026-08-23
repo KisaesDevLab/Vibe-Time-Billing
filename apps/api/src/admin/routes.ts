@@ -69,6 +69,8 @@ import { addUuidIdGuard } from '../lib/uuid-guard';
 import { encryptTurnstileSecret } from '../intake/turnstile-config';
 import { renderHtmlToPdf } from '../pdf/render';
 import { composeRecoveryPacketHtml } from '../backup/recovery-packet';
+import { validatePattern } from '@vibe/core/filer';
+import { getAiRuntime } from '../ai/ai-runtime';
 
 export interface AdminRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -117,6 +119,16 @@ const ALLOCATION_METHODS = [
 
 const FirmSettingsPatchSchema = z.object({
   adjustmentApprovalThresholdCents: z.number().int().nonnegative().optional(),
+  // 0223 — AI file naming (router-mode only; the UI hides it otherwise).
+  autoRenameUploads: z.boolean().optional(),
+  fileNamingPattern: z
+    .string()
+    .min(1)
+    .max(120)
+    .refine((p) => validatePattern(p).ok, { message: 'invalid_naming_pattern' })
+    .optional(),
+  fileNamingExamples: z.string().max(2000).optional(),
+  fileNamingMinConfidence: z.number().min(0).max(1).optional(),
   aiMonthlyBudgetCents: z.number().int().nonnegative().optional(),
   // 0202 — estimated labor % of a target fee (rollforward budgeting).
   estimatedLaborPct: z.number().int().min(1).max(100).optional(),
@@ -256,6 +268,8 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         settings: safeSettings,
         esignProvider: proposalSettings?.esignProvider ?? 'native',
         openSignAvailable: Boolean(deps.openSignAvailable),
+        // 0223 — lets the settings page gate the AI file-naming section.
+        aiMode: getAiRuntime().mode,
       });
     },
   );
