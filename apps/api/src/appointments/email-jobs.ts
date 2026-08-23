@@ -716,7 +716,8 @@ export async function runAppointmentReminderTick(
                 to: phone,
                 script: body,
                 confirmUrl,
-                fallbackSmsBody: smsBody,
+                // 0224 — no SMS fallback of any kind for an SMS opt-out.
+                fallbackSmsBody: p.smsOptOut ? undefined : smsBody,
                 voice: tpl.voice ?? null,
                 personId: p.personId,
                 clientId: p.clientId,
@@ -726,7 +727,8 @@ export async function runAppointmentReminderTick(
               // failure) → skip WITHOUT recording so a later tick retries.
               // do_not_call raced a fresh press-9 → send the SMS instead.
               if (!result.ok) {
-                if (result.code === 'do_not_call' && deps.sendSms) {
+                // 0224 — same opt-out guard as the pre-checked branch above.
+                if (result.code === 'do_not_call' && deps.sendSms && !p.smsOptOut) {
                   await deps.sendSms({ to: phone, body: smsBody, firmId: appt.firmId });
                 } else {
                   continue;

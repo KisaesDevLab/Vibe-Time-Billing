@@ -16,6 +16,8 @@ import { and, eq } from 'drizzle-orm';
 import type { Database } from '@vibe/db';
 import { clientContacts, persons } from '@vibe/db/schema';
 
+import { pickSmsPhone } from '../people/sms-gate';
+
 export interface BillingContactSnapshot {
   fullName: string;
   email: string | null;
@@ -51,7 +53,7 @@ async function pick(
     fullName: row.fullName,
     email: row.email,
     phone: row.phone,
-    smsPhone: row.smsOptOut ? null : (row.mobile ?? row.phone),
+    smsPhone: pickSmsPhone(row),
   };
 }
 

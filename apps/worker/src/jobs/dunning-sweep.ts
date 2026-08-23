@@ -71,7 +71,7 @@ export async function runDunningSweep(
       // 0224 — text the mobile first; an SMS opt-out removes the handle.
       billingContactPhone: sql<
         string | null
-      >`CASE WHEN ${persons.smsOptOut} THEN NULL ELSE COALESCE(${persons.mobile}, ${persons.phone}) END`,
+      >`CASE WHEN ${persons.smsOptOut} THEN NULL ELSE COALESCE(NULLIF(BTRIM(${persons.mobile}), ''), NULLIF(BTRIM(${persons.phone}), '')) END`,
       primaryEngagementId: invoices.primaryEngagementId,
       firmId: invoices.firmId,
     })

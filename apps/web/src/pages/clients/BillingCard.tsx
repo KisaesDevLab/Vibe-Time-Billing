@@ -123,9 +123,11 @@ export function BillingCard({ clientId, clientName }: Props): JSX.Element {
       setError(
         msg === 'no_billing_phone'
           ? 'No phone on file for the client’s billing or primary contact.'
-          : msg === 'sms_provider_not_configured'
-            ? 'SMS provider not configured. Set one up in Admin → Messaging.'
-            : `SMS failed: ${msg}`,
+          : msg === 'sms_opted_out'
+            ? 'The billing contact has opted out of text messages (see their profile).'
+            : msg === 'sms_provider_not_configured'
+              ? 'SMS provider not configured. Set one up in Admin → Messaging.'
+              : `SMS failed: ${msg}`,
       );
     } finally {
       setSendingId(null);

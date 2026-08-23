@@ -119,7 +119,7 @@ describe('stageStatusNotification', () => {
     expect(rendered['SMS']!.body).toContain('Test Client Co');
   });
 
-  it('0224 — carries SMS / do-not-call opt-outs into the recipient snapshot', async () => {
+  it('0224 — carries the SMS opt-out into the recipient snapshot', async () => {
     await configureStatus({
       workflowState: 'WITH_CLIENT',
       notifyChannels: ['EMAIL', 'SMS'],
@@ -142,8 +142,8 @@ describe('stageStatusNotification', () => {
       .select()
       .from(stagedNotifications)
       .where(eq(stagedNotifications.id, stagedNotificationId!));
-    const recipients = row!.recipients as Array<{ smsOptOut?: boolean; doNotCall?: boolean }>;
-    expect(recipients[0]).toMatchObject({ smsOptOut: true, doNotCall: true });
+    const recipients = row!.recipients as Array<{ smsOptOut?: boolean }>;
+    expect(recipients[0]).toMatchObject({ smsOptOut: true });
   });
 
   it('IMMEDIATE mode lands as SCHEDULED with scheduled_at set', async () => {
