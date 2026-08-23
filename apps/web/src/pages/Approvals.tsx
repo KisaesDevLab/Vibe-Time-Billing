@@ -78,22 +78,31 @@ export function ApprovalsPage(): JSX.Element {
               {
                 key: 'type',
                 header: 'Type',
+                mobile: 'badge',
                 render: (r) => <Pill>{r.entityType.replace('_', ' ').toLowerCase()}</Pill>,
               },
-              { key: 'req', header: 'Requested by', render: (r) => r.requesterName },
+              {
+                key: 'req',
+                header: 'Requested by',
+                mobile: 'title',
+                render: (r) => r.requesterName,
+              },
               {
                 key: 'when',
                 header: 'When',
+                mobile: 'meta',
                 render: (r) => new Date(r.requestedAt).toLocaleString(),
               },
               {
                 key: 'entity',
                 header: 'Entity',
+                mobile: 'meta',
                 render: (r) => <code style={{ fontSize: 11 }}>{r.entityId.slice(0, 8)}…</code>,
               },
               {
                 key: 'step',
                 header: 'Step',
+                mobile: 'badge',
                 render: (r) =>
                   r.totalSteps > 1 ? (
                     <Pill tone={r.currentStep === r.totalSteps ? 'warning' : 'neutral'}>
@@ -104,8 +113,12 @@ export function ApprovalsPage(): JSX.Element {
                   ),
               },
               {
+                // Card mode: renders as a full-width block in the card body
+                // (mobile 'field' + empty label), keeping Approve/Reject as
+                // big tappable buttons rather than a pinned corner menu.
                 key: 'actions',
                 header: '',
+                mobile: 'field',
                 render: (r) =>
                   activeId === r.id ? (
                     <div style={{ display: 'grid', gap: 6 }}>
@@ -235,17 +248,19 @@ function PortalAccessRequestsCard(): JSX.Element {
       ) : (
         <Table<AccessRequest>
           columns={[
-            { key: 'name', header: 'Name', render: (r) => r.personName },
+            { key: 'name', header: 'Name', mobile: 'title', render: (r) => r.personName },
             {
               key: 'client',
               header: 'Client',
+              mobile: 'meta',
               render: (r) => <a href={`/clients/${r.clientId}`}>{r.clientName}</a>,
             },
-            { key: 'email', header: 'Email', render: (r) => r.email ?? '—' },
-            { key: 'phone', header: 'Phone', render: (r) => r.phone ?? '—' },
+            { key: 'email', header: 'Email', mobile: 'field', render: (r) => r.email ?? '—' },
+            { key: 'phone', header: 'Phone', mobile: 'field', render: (r) => r.phone ?? '—' },
             {
               key: 'id',
               header: 'ID',
+              mobile: 'field',
               render: (r) => (
                 <span style={{ fontVariantNumeric: 'tabular-nums' }}>
                   {r.idType === 'SSN_LAST4' ? `SSN ••• ${r.idValue}` : `EIN ••• ${r.idValue}`}
@@ -255,6 +270,7 @@ function PortalAccessRequestsCard(): JSX.Element {
             {
               key: 'actions',
               header: '',
+              mobile: 'field',
               render: (r) => (
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
                   <div style={{ minWidth: 130 }}>

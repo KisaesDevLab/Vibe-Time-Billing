@@ -207,7 +207,7 @@ export function ClientsPage(): JSX.Element {
       <Card
         title="Clients"
         action={
-          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
             {selectedIds.size > 0 && (
               <span style={{ fontSize: 12, color: tokens.color.textMuted }}>
                 {selectedIds.size} selected
@@ -335,6 +335,7 @@ export function ClientsPage(): JSX.Element {
             columns={[
               {
                 key: 'select',
+                mobile: 'actions',
                 header: (
                   <input
                     type="checkbox"
@@ -360,6 +361,7 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'name',
+                mobile: 'title',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Name{' '}
@@ -377,6 +379,8 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'owner',
+                mobile: 'field',
+                mobileLabel: 'Owner',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Owner{' '}
@@ -393,6 +397,8 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'externalId',
+                mobile: 'meta',
+                mobileLabel: 'Client ID',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     External ID{' '}
@@ -410,6 +416,8 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'type',
+                mobile: 'field',
+                mobileLabel: 'Type',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Type{' '}
@@ -427,6 +435,8 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'entity',
+                mobile: 'field',
+                mobileLabel: 'Entity',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Entity{' '}
@@ -443,6 +453,8 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'outstanding',
+                mobile: 'field',
+                mobileLabel: 'Outstanding',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Outstanding Bal.{' '}
@@ -473,6 +485,8 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'office',
+                mobile: 'field',
+                mobileLabel: 'Office',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Office{' '}
@@ -489,6 +503,7 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'status',
+                mobile: 'badge',
                 header: (
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                     Status{' '}
@@ -549,6 +564,7 @@ export function ClientsPage(): JSX.Element {
               },
               {
                 key: 'actions',
+                mobile: 'actions',
                 header: '',
                 align: 'right',
                 render: (c) => (

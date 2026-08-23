@@ -385,7 +385,15 @@ export function RequestDetailPage(): JSX.Element {
       )}
 
       <Card>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            alignItems: 'start',
+            flexWrap: 'wrap',
+            gap: 8,
+          }}
+        >
           <div>
             <h2 style={{ margin: 0, fontSize: 18 }}>{request.title}</h2>
             {clientName && (
@@ -597,7 +605,7 @@ export function RequestDetailPage(): JSX.Element {
           style={{
             marginTop: 16,
             display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
+            gridTemplateColumns: 'repeat(auto-fit, minmax(min(200px, 100%), 1fr))',
             gap: tokens.space.sm,
           }}
         >

@@ -248,6 +248,7 @@ export function StagedNotificationsCard(): JSX.Element {
           columns={[
             {
               key: 'select',
+              mobile: 'actions',
               header: (
                 <input
                   type="checkbox"
@@ -268,10 +269,11 @@ export function StagedNotificationsCard(): JSX.Element {
                   <span />
                 ),
             },
-            { key: 'client', header: 'Client', render: (r) => r.clientName },
+            { key: 'client', header: 'Client', mobile: 'title', render: (r) => r.clientName },
             {
               key: 'about',
               header: 'About',
+              mobile: 'meta',
               render: (r) => (
                 <span style={{ fontSize: 13 }}>
                   {r.engagementName ?? r.entityType}
@@ -287,6 +289,7 @@ export function StagedNotificationsCard(): JSX.Element {
             {
               key: 'channels',
               header: 'Methods',
+              mobile: 'badge',
               render: (r) => (
                 <span style={{ display: 'flex', gap: 4 }}>
                   {r.channels.map((c) => (
@@ -300,6 +303,7 @@ export function StagedNotificationsCard(): JSX.Element {
             {
               key: 'status',
               header: 'Status',
+              mobile: 'badge',
               render: (r) => (
                 <span style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                   <Pill tone={statusTone(r.status)}>
@@ -317,6 +321,7 @@ export function StagedNotificationsCard(): JSX.Element {
               key: 'actions',
               header: '',
               align: 'right',
+              mobile: 'field',
               render: (r) => (
                 <span style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
                   <Button
