@@ -203,10 +203,9 @@ WEBAUTHN_RP_ID=$RP_HOST
 WEBAUTHN_RP_NAME=$FIRM_NAME
 WEBAUTHN_ORIGIN=$APP_URL
 
-# === Mail / SMS / commercial license (configure later via admin UI) ===
+# === Mail / SMS (configure later via admin UI) ===
 MAIL_PROVIDER=smtp
 SMS_PROVIDER=console
-COMMERCIAL_LICENSE_TOKEN=
 
 # === Backup retention ===
 BACKUP_RETENTION_DAYS=30

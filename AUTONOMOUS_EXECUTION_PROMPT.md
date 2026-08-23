@@ -56,7 +56,7 @@ NON-NEGOTIABLES (these never relax, regardless of expedience):
 - Standard rate snapshot: time entries capture bill rate AND cost rate at creation (post-0063); historical reports never shift
 - Per-timekeeper allocation grain: adjustment_allocation rows at (adjustment_id, time_entry_id, app_user_id)
 - Customer-owned external resources: firm owns Stripe, Cloudflare, domain — Kisaes never holds customer credentials
-- License gate on portal: commercial license token check at boot and on critical portal routes
+- No portal license gate (removed 2026-08-22): the portal is part of the PolyForm Small Business license; only the firm-level portal_enabled switch remains
 - PolyForm Small Business License 1.0.0 license header on every source file
 - Server-side decryption only for message bodies + escrow files: never expose plaintext on the wire to a portal client beyond the authenticated session's TLS connection (no client-side crypto material)
 - UUID guards on every router (`addUuidIdGuard`) AND every UUID-typed query param (`uuidQueryParam`) — bad-UUID inputs must return 400, never 500

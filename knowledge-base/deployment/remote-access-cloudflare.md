@@ -34,7 +34,6 @@ For public access without opening firewall ports, the appliance ships a bundled 
 
 ## Tips
 
-- Portal hostnames are saved but get no ingress/DNS until a commercial license token is active — re-provision picks them up once licensed.
 - The tunnel ingress rewrites the origin Host header to `app.<zone>` / `portal.<zone>` so Caddy routes correctly regardless of the public label — no Caddyfile edits.
 - **Disable** deletes the tunnel and its DNS records, clears the stored tokens, removes the token file, and sets status `INACTIVE` — traffic stops until you re-provision.
 - On the local compose, the sidecar reads `TUNNEL_TOKEN` and only runs once a token file exists.

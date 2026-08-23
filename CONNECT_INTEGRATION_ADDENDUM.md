@@ -349,7 +349,7 @@ This phase **replaces** TB's original portal phase rather than adding to it. Re-
 - [ ] K.4 Update Connect threat model doc (`docs/THREAT_MODEL.md`): rewrite key-management section; explicitly enumerate what the model does and does not protect against; document sealed-on-disk vs admin-passphrase trust boundaries
 - [ ] K.5 Update TB pricing page: Connect license remains separately purchased; document "what unlocks when Connect license added to TB" feature matrix
 - [ ] K.6 Update Connect pricing page: clarify that TB integration features (engagement-thread provisioning, pay-to-unlock, request-driven time entries) require both licenses
-- [ ] K.7 Update `LICENSE.md` in TB repo: portal access already gated by commercial license; clarify Connect features additionally gated by Connect entitlement
+- [x] K.7 ~~Update `LICENSE.md` in TB repo: portal access already gated by commercial license~~ — superseded 2026-08-22: the portal (and Connect features) ship under PolyForm Small Business with no license token
 - [ ] K.8 Write `docs/architecture/CONNECT_INTEGRATION.md` — operator-facing doc explaining how the two products interact, how to enable/disable the integration, and how license entitlement is checked
 - [ ] K.9 Write `docs/architecture/AI_EGRESS_POLICY.md` — explains local-only default, the opt-in flow, the Shield dependency, and what happens when Shield becomes unreachable
 - [ ] K.10 Write `docs/ops/MIGRATION_FROM_STANDALONE.md` — for firms currently running Connect standalone who add TB later; covers data continuity, member sync backfill, and any one-time migration jobs

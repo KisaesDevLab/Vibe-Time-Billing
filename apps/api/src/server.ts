@@ -473,7 +473,7 @@ const server = app.listen(config.PORT, () => {
       localAiWired: Boolean(localAiProvider),
       mailProvider: mailer.id,
       smsProvider: smsProvider.id,
-      portalEnabled: Boolean(config.COMMERCIAL_LICENSE_TOKEN),
+      portalEnabled: true,
     },
     'vibe-tb-api listening',
   );

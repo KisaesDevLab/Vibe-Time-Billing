@@ -10,7 +10,6 @@ import type { PortalSession } from '@vibe/core/auth';
 import type { Database } from '@vibe/db';
 import { firmSettings } from '@vibe/db/schema';
 
-import { loadConfig } from '../config';
 import { constantTimeEquals } from '../lib/constant-time';
 import { readSessionCookie } from './cookies';
 import type { SessionStore } from './session-store';
@@ -63,12 +62,9 @@ function isImpersonationAllowedPath(originalUrl: string): boolean {
 export function portalAuthDeps(store: SessionStore, db?: Database | null) {
   return {
     async requireAuth(req: Request, res: Response, next: NextFunction): Promise<void> {
-      // License gate (non-negotiable #6).
-      const cfg = loadConfig();
-      if (!cfg.COMMERCIAL_LICENSE_TOKEN) {
-        res.status(503).json({ error: 'portal_disabled', reason: 'no_commercial_license' });
-        return;
-      }
+      // The client portal is part of the PolyForm Small Business license
+      // (no separate commercial token since 2026-08-22). The only switch
+      // left is the firm-level portal_enabled setting, checked below.
       const sid = readSessionCookie(req, 'portal');
       if (!sid) {
         res.status(401).json({ error: 'no_session' });
@@ -90,8 +86,8 @@ export function portalAuthDeps(store: SessionStore, db?: Database | null) {
         }
       }
 
-      // TR-5 — impersonation gates. Apply *after* the firm/license
-      // checks so the soft-TTL path destroys an expired session even
+      // TR-5 — impersonation gates. Apply *after* the firm-enabled
+      // check so the soft-TTL path destroys an expired session even
       // when the cookie's underlying Redis TTL hasn't fired yet.
       if (s.isImpersonation) {
         if (Date.now() - s.createdAt > IMPERSONATION_SOFT_TTL_MS) {

@@ -77,7 +77,6 @@ Required values to set (everything else has sensible defaults):
 Optional but recommended:
 - `STRIPE_SECRET_KEY` (Q7 — firm-owned account)
 - `ANTHROPIC_API_KEY` or local Ollama config (Q15)
-- `COMMERCIAL_LICENSE_TOKEN` (Q6 — needed to enable the client portal)
 
 ### 3. Bring up the stack
 
@@ -177,8 +176,8 @@ recommended pattern is a host-side rclone/syncthing job that mirrors
 - **Migrations fail with "lockfile out of date"** — pull the matching
   release image; do not run migrations from a different version's
   Drizzle snapshot.
-- **Portal returns 503** — set `COMMERCIAL_LICENSE_TOKEN` in `.env`
-  and restart. License absence intentionally disables the portal.
+- **Portal returns 503 `portal_disabled`** — the firm has turned the portal
+  off (Admin → Firm settings → Client portal). Re-enable it there.
 - **AI features return 503** — wire either `ANTHROPIC_API_KEY` or a
   local Ollama. Both can coexist; local is preferred per Q15.
 - **Workers idle** — check Redis connectivity. Worker container logs

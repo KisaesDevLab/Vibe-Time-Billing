@@ -48,7 +48,6 @@ describe('cross-realm session isolation', () => {
   beforeEach(async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     harness = await buildTestApp({ db: fakeStaffDb() as any });
-    process.env['COMMERCIAL_LICENSE_TOKEN'] = 'test-license-token';
   });
 
   async function loginStaff(): Promise<string> {

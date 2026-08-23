@@ -24,7 +24,6 @@ Vibe Practice Management runs as a self-hosted Docker appliance: an API containe
 - `APP_BASE_URL` / `PORTAL_BASE_URL` — staff and portal base URLs used in links/emails (local defaults `http://localhost:5195` / `:5196`).
 - `STAFF_JWT_SECRET` / `PORTAL_JWT_SECRET` — distinct signing secrets per realm; required.
 - `KMS_KEY` — 32-byte base64 envelope-encryption master key; required (API exits at boot if missing).
-- `COMMERCIAL_LICENSE_TOKEN` — enables the client portal; absent means portal disabled.
 
 ## What you'll see
 

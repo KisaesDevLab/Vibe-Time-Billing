@@ -796,13 +796,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
     '/license/validate',
     requirePermission(deps, 'firm:settings:read'),
     async (_req: Request, res: Response) => {
-      // The license check itself happens at boot; this endpoint reports
-      // the current state. Hooked up to the admin dashboard banner.
-      const token = process.env['COMMERCIAL_LICENSE_TOKEN'];
-      res.json({
-        valid: Boolean(token),
-        kind: token ? 'commercial' : 'community',
-      });
+      // Since 2026-08-22 there is no license token: the whole product,
+      // client portal included, ships under PolyForm Small Business 1.0.0.
+      // Kept for dashboard compatibility.
+      res.json({ valid: true, kind: 'polyform-small-business' });
     },
   );
 

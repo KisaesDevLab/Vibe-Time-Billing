@@ -44,7 +44,7 @@ Vibe PM covers the engagement-to-cash workflow: time tracking, billing & realiza
 
 ## License
 
-PolyForm Small Business License 1.0.0 — source-available. Companies with fewer than 100 total employees/contractors and under 1,000,000 USD (2019, inflation-adjusted) prior-year revenue may self-host, use, and modify the software freely; larger companies need a commercial license from Kisaes LLC. The client portal feature requires a separate commercial license token regardless of company size, and license-key functionality may not be circumvented. See `LICENSE.md` for full terms.
+PolyForm Small Business License 1.0.0 — source-available. Companies with fewer than 100 total employees/contractors and under 1,000,000 USD (2019, inflation-adjusted) prior-year revenue may self-host, use, and modify the software freely; larger companies need a commercial license from Kisaes LLC. The client portal is included under the same license — there is no separate token or portal add-on. See `LICENSE.md` for full terms.
 
 ## Status
 

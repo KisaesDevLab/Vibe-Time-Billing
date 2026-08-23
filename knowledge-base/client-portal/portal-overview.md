@@ -12,8 +12,7 @@ The client portal is a separate, branded web app (served from your firm's `porta
 
 ## What you'll see
 
-- The portal is **commercial-license-gated**. If the appliance has no commercial license token configured, the portal shows a full-page **Portal unavailable** message reading "This appliance does not have a commercial license token configured." Clients cannot even reach the login form.
-- The portal can also be turned off per-firm. When a firm disables it, the same **Portal unavailable** page instead reads "Your firm has disabled the client portal." Both states point the client to "Contact your firm administrator for help."
+- The portal is included with every appliance — no license token. It can be turned off per-firm (Admin → Firm settings); when disabled, clients see a full-page **Portal unavailable** message reading "Your firm has disabled the client portal." and are pointed to "Contact your firm administrator for help."
 - The portal header shows your firm's branding (logo + display name) when configured; otherwise it falls back to **Client Portal**. A green `portal` realm badge sits in the header.
 - The left navigation a signed-in client sees is grouped: at the top **Overview**, **Messages**, and **Updates** (an in-app notices inbox that shows an unread count badge); then **Billing & payments** (**Invoices**, **Statement**, **Payment methods**, **Tax payments**); **Documents** (**Requests**, **Files**, **Letters**); **Your work** (**Engagements**, **Appointments**, **Tax returns**); and a footer (**Profile**, **Notifications**, **Activity**, **Help**, **Switch client**).
 - On **Invoices**, clients see "Open invoices" and "Paid" cards, can open an invoice to see line items and payments, **View as PDF**, **Download receipt**, and pay an open balance with a `Pay $<amount>` button.

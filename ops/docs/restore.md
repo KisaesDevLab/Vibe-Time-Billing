@@ -38,7 +38,6 @@ A database dump alone is **not** restorable to a functioning appliance:
 - `KMS_KEY` (env) encrypts the other DB-stored secrets: Stripe keys,
   mail/SMS provider config, TOTP secrets.
 - `STAFF_JWT_SECRET` / `PORTAL_JWT_SECRET` sign sessions;
-  `COMMERCIAL_LICENSE_TOKEN` gates the portal;
   `PROPOSAL_SIGNATURE_HMAC_SEED` verifies existing proposal signatures.
 
 All of these are in the key bundle (given a `/secrets` mount). Recover

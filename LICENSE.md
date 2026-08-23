@@ -72,10 +72,3 @@ The **licensor** is the individual or entity offering these terms, and the **sof
 
 If your company does not qualify under [Small Business](#small-business) (100 or more total employees and contractors, or 1,000,000 USD (2019, inflation-adjusted) or more in prior-year revenue), you need a separate commercial license from Kisaes LLC to use the software. Contact Kisaes LLC to obtain one.
 
-## Commercial License Addendum
-
-The client portal feature of this software (the `apps/portal` application and all `client_portal_*` database tables and supporting infrastructure) requires a separate commercial license to enable, regardless of company size. A commercial license token is checked at boot and on critical portal routes. Token absence disables the portal cleanly with a clear administrative message; the rest of the software continues to function. You may not move, change, disable, or circumvent the license key functionality in the software.
-
-Connect-style features — engagement messaging (encrypted threads), escrow file release tied to invoice payment, and client document/information requests — are bundled into the same artifact as the rest of Vibe Practice Management and gated by the same portal license token. There is no separate "Connect" license tier; if your portal license is active, every Connect feature is too.
-
-To obtain a commercial license token, contact Kisaes LLC.
