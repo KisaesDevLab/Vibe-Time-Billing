@@ -75,6 +75,7 @@ export function NotificationsPage(): JSX.Element {
             style={{
               display: 'flex',
               alignItems: 'flex-start',
+              flexWrap: 'wrap', // phones: actions drop to their own line
               gap: 10,
               padding: '10px 0',
               borderBottom: `1px solid ${tokens.color.border}`,
@@ -82,7 +83,7 @@ export function NotificationsPage(): JSX.Element {
             }}
           >
             <Pill tone={TYPE_TONE[n.type] ?? 'neutral'}>{n.type.replace(/_/g, ' ')}</Pill>
-            <div style={{ flex: 1 }}>
+            <div style={{ flex: '1 1 200px', minWidth: 0 }}>
               <div style={{ fontWeight: n.status === 'UNREAD' ? 600 : 400 }}>{n.title}</div>
               {n.body && (
                 <div style={{ fontSize: 13, color: tokens.color.textMuted }}>{n.body}</div>
@@ -91,7 +92,7 @@ export function NotificationsPage(): JSX.Element {
                 {new Date(n.createdAt).toLocaleString()}
               </div>
             </div>
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
               {n.actionUrl && (
                 <Button
                   size="sm"

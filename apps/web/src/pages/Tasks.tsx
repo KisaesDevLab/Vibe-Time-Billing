@@ -612,6 +612,8 @@ function TaskTable(props: {
   const columns: TableColumn<TaskRow>[] = [
     {
       key: 'title',
+      mobile: 'title',
+      mobileLabel: 'Task',
       header: (
         <>
           Task{' '}
@@ -662,6 +664,8 @@ function TaskTable(props: {
     },
     {
       key: 'client',
+      mobile: 'meta',
+      mobileLabel: 'Client',
       header: (
         <>
           Client{' '}
@@ -701,6 +705,8 @@ function TaskTable(props: {
     },
     {
       key: 'assignee',
+      mobile: 'field',
+      mobileLabel: 'Assignee',
       header: (
         <>
           Assignee{' '}
@@ -720,6 +726,8 @@ function TaskTable(props: {
     },
     {
       key: 'priority',
+      mobile: 'badge',
+      mobileLabel: 'Priority',
       header: (
         <>
           Priority{' '}
@@ -740,6 +748,8 @@ function TaskTable(props: {
     },
     {
       key: 'status',
+      mobile: 'badge',
+      mobileLabel: 'Status',
       header: (
         <>
           Status{' '}
@@ -760,6 +770,8 @@ function TaskTable(props: {
     },
     {
       key: 'due',
+      mobile: 'field',
+      mobileLabel: 'Due',
       header: (
         <>
           Due{' '}
@@ -793,6 +805,7 @@ function TaskTable(props: {
     },
     {
       key: 'actions',
+      mobile: 'actions',
       header: 'Actions',
       align: 'right',
       render: (t) => (
@@ -1266,7 +1279,8 @@ function TaskDialog({
             <div
               style={{
                 display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
+                // Two columns when they fit; single column on phone sheets.
+                gridTemplateColumns: 'repeat(auto-fit, minmax(min(160px, 100%), 1fr))',
                 gap: 8,
               }}
             >

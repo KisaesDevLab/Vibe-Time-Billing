@@ -683,6 +683,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
             hasUnread: (i as { hasUnread?: boolean }).hasUnread,
           }))}
         navExtra={(collapsed: boolean) => <TimerChip collapsed={collapsed} />}
+        mobileBarExtra={<TimerChip bar />}
         trailing={
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <FontSizeControl />

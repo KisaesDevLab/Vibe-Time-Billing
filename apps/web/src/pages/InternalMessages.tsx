@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { Button, Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Pill, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../api-client';
 import { NewConversationDialog } from './messaging/NewConversationDialog';
@@ -26,6 +26,7 @@ export function TeamMessagesPanel(): JSX.Element {
   const [activeId, setActiveId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
+  const narrow = useIsNarrow();
 
   const loadThreads = useCallback(async () => {
     try {
@@ -68,122 +69,153 @@ export function TeamMessagesPanel(): JSX.Element {
       <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: '0 0 4px' }}>
         Internal — these conversations are never visible to clients.
       </p>
-      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: tokens.space.lg }}>
-        <Card title={`Conversations (${threads.length})`} action={newBtn}>
-          {threads.length === 0 ? (
-            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-              No conversations yet. Start one with the “New” button.
-            </p>
-          ) : (
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 2,
-                maxHeight: 'calc(100vh / var(--vibe-font-scale, 1) - 240px)',
-                overflowY: 'auto',
-              }}
-            >
-              {threads.map((t) => {
-                const isActive = activeId === t.threadId;
-                const hasUnread = t.unread > 0;
-                return (
-                  <button
-                    key={t.threadId}
-                    type="button"
-                    onClick={() => open(t.threadId)}
-                    style={{
-                      textAlign: 'left',
-                      padding: '10px 12px',
-                      borderRadius: tokens.radius.sm,
-                      // Active wins; otherwise unread rows get a tinted bubble.
-                      background: isActive
-                        ? tokens.color.accentMuted
-                        : hasUnread
-                          ? tokens.color.accentMuted
-                          : 'transparent',
-                      borderLeft: `3px solid ${
-                        isActive
-                          ? tokens.color.accent
-                          : hasUnread
-                            ? tokens.color.accent
-                            : 'transparent'
-                      }`,
-                      color: isActive || hasUnread ? tokens.color.accent : tokens.color.text,
-                      cursor: 'pointer',
-                      fontSize: 13,
-                      display: 'grid',
-                      gap: 4,
-                    }}
-                  >
-                    <div
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: narrow ? '1fr' : '280px 1fr',
+          gap: tokens.space.lg,
+        }}
+      >
+        {/* Phones show one pane at a time: list, or the open conversation. */}
+        {(!narrow || !activeId) && (
+          <Card title={`Conversations (${threads.length})`} action={newBtn}>
+            {threads.length === 0 ? (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+                No conversations yet. Start one with the “New” button.
+              </p>
+            ) : (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 2,
+                  maxHeight: 'calc(100vh / var(--vibe-font-scale, 1) - 240px)',
+                  overflowY: 'auto',
+                }}
+              >
+                {threads.map((t) => {
+                  const isActive = activeId === t.threadId;
+                  const hasUnread = t.unread > 0;
+                  return (
+                    <button
+                      key={t.threadId}
+                      type="button"
+                      onClick={() => open(t.threadId)}
                       style={{
-                        display: 'flex',
-                        justifyContent: 'space-between',
-                        alignItems: 'center',
-                        gap: 8,
+                        textAlign: 'left',
+                        padding: '10px 12px',
+                        borderRadius: tokens.radius.sm,
+                        // Active wins; otherwise unread rows get a tinted bubble.
+                        background: isActive
+                          ? tokens.color.accentMuted
+                          : hasUnread
+                            ? tokens.color.accentMuted
+                            : 'transparent',
+                        borderLeft: `3px solid ${
+                          isActive
+                            ? tokens.color.accent
+                            : hasUnread
+                              ? tokens.color.accent
+                              : 'transparent'
+                        }`,
+                        color: isActive || hasUnread ? tokens.color.accent : tokens.color.text,
+                        cursor: 'pointer',
+                        fontSize: 13,
+                        display: 'grid',
+                        gap: 4,
                       }}
                     >
-                      <span
+                      <div
                         style={{
-                          fontWeight: hasUnread ? 700 : 500,
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          gap: 8,
                         }}
                       >
-                        {t.label}
-                      </span>
-                      {hasUnread && (
                         <span
                           style={{
-                            background: tokens.color.accent,
-                            color: '#fff',
-                            borderRadius: tokens.radius.pill,
-                            fontSize: 11,
-                            padding: '1px 7px',
-                            minWidth: 18,
-                            textAlign: 'center',
+                            fontWeight: hasUnread ? 700 : 500,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
                           }}
                         >
-                          {t.unread}
+                          {t.label}
                         </span>
-                      )}
-                    </div>
-                    <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                      {t.isDirect ? 'Direct' : `Group · ${t.memberCount}`} · Updated{' '}
-                      {new Date(t.updatedAt).toLocaleString()}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </Card>
+                        {hasUnread && (
+                          <span
+                            style={{
+                              background: tokens.color.accent,
+                              color: '#fff',
+                              borderRadius: tokens.radius.pill,
+                              fontSize: 11,
+                              padding: '1px 7px',
+                              minWidth: 18,
+                              textAlign: 'center',
+                            }}
+                          >
+                            {t.unread}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        {t.isDirect ? 'Direct' : `Group · ${t.memberCount}`} · Updated{' '}
+                        {new Date(t.updatedAt).toLocaleString()}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </Card>
+        )}
 
-        <Card
-          title={active ? active.label : 'Pick a conversation'}
-          action={active && !active.isDirect ? <Pill tone="neutral">Group</Pill> : null}
-        >
-          {error && (
-            <p style={{ color: tokens.color.danger, fontSize: 13, marginBottom: 8 }} role="alert">
-              {error}
-            </p>
-          )}
-          {activeId ? (
-            <ThreadView
-              threadId={activeId}
-              apiBase="/api/staff/internal-messaging"
-              variant="internal"
-              maxHeight={520}
-              onSent={() => void loadThreads()}
-            />
-          ) : (
-            <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
-              Pick a conversation on the left, or start a new one.
-            </p>
-          )}
-        </Card>
+        {(!narrow || activeId) && (
+          <Card
+            title={active ? active.label : 'Pick a conversation'}
+            action={
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+                {narrow && activeId && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveId(null)}
+                    style={{
+                      border: 'none',
+                      background: 'transparent',
+                      color: tokens.color.accent,
+                      cursor: 'pointer',
+                      fontSize: 13,
+                      padding: 0,
+                    }}
+                  >
+                    ← All conversations
+                  </button>
+                )}
+                {active && !active.isDirect ? <Pill tone="neutral">Group</Pill> : null}
+              </span>
+            }
+          >
+            {error && (
+              <p style={{ color: tokens.color.danger, fontSize: 13, marginBottom: 8 }} role="alert">
+                {error}
+              </p>
+            )}
+            {activeId ? (
+              <ThreadView
+                threadId={activeId}
+                apiBase="/api/staff/internal-messaging"
+                variant="internal"
+                maxHeight={520}
+                onSent={() => void loadThreads()}
+              />
+            ) : (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted }}>
+                Pick a conversation on the left, or start a new one.
+              </p>
+            )}
+          </Card>
+        )}
       </div>
 
       {showNew && (
