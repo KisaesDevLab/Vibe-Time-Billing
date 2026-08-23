@@ -12,7 +12,12 @@ import type { Redis } from 'ioredis';
 
 import type { Database } from '@vibe/db';
 import { aiRequestLog, clientAiCosts, clients, engagements, firmSettings } from '@vibe/db/schema';
-import { aiCostPeriod, checkBudget, type AiProvider } from '@vibe/core/ai';
+import {
+  aiCostPeriod,
+  checkBudget,
+  type AiCompletionRequest,
+  type AiProvider,
+} from '@vibe/core/ai';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { uuidQueryParam } from '../lib/uuid-guard';
@@ -1371,6 +1376,11 @@ export async function runAiCompletion(
     /** A1 — router cost attribution (ledger dimensions, never in prompts). */
     clientId?: string | null;
     engagementId?: string | null;
+    /** 0223 — router-only: page images + structured output. */
+    attachments?: AiCompletionRequest['attachments'];
+    jsonSchema?: AiCompletionRequest['jsonSchema'];
+    /** Model that served the request is reported here when the caller cares. */
+    onResult?: (r: { model?: string; providerId: string }) => void;
   },
 ): Promise<string | null> {
   const provider = await pickProvider(deps, args.feature, args.firmId);
@@ -1386,7 +1396,10 @@ export async function runAiCompletion(
       systemPrompt: args.systemPrompt,
       userPrompt: args.userPrompt,
       maxTokens: args.maxTokens ?? 220,
+      ...(args.attachments ? { attachments: args.attachments } : {}),
+      ...(args.jsonSchema ? { jsonSchema: args.jsonSchema } : {}),
     });
+    args.onResult?.({ model: result.model, providerId: result.providerId });
     await logAiRequest(deps, {
       firmId: args.firmId,
       providerId: provider.id,
