@@ -94,6 +94,8 @@ pub fn run() {
             windows::show_timer_widget,
             windows::timer_widget_visible,
             windows::toggle_timer_widget,
+            windows::resize_timer_widget,
+            windows::open_main_at,
             menu::set_favorites,
             // hotkeys + watchers
             hotkeys::set_hotkeys,

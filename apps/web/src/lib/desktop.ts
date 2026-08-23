@@ -187,6 +187,17 @@ export function setTimerWidgetVisible(visible: boolean): Promise<void> {
   return invoke('show_timer_widget', { show: visible });
 }
 
+/** Widget asks the shell to grow/shrink its window (logical px). */
+export function resizeTimerWidget(height: number): Promise<void> {
+  return invoke('resize_timer_widget', { height });
+}
+
+/** Focus the main window and navigate it to `path` (used from the widget,
+ *  which has its own document and cannot call the main router directly). */
+export function openMainAt(path: string): Promise<void> {
+  return invoke('open_main_at', { path });
+}
+
 /** Show ↔ hide; resolves with the new visibility. */
 export function toggleTimerWidget(): Promise<boolean> {
   return invoke<boolean>('toggle_timer_widget');

@@ -32,14 +32,15 @@ pub fn show_timer_widget_impl<R: Runtime>(app: &AppHandle<R>, show: bool) -> tau
     };
     let w = WebviewWindowBuilder::new(app, TIMER_LABEL, url)
         .title("Vibe PM timer")
-        .inner_size(320.0, 72.0)
-        .min_inner_size(260.0, 60.0)
-        .max_inner_size(520.0, 120.0)
+        .inner_size(340.0, 88.0)
+        .min_inner_size(300.0, 88.0)
+        .max_inner_size(560.0, 300.0)
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
-        .resizable(true)
-        .transparent(false)
+        .resizable(false)
+        .shadow(false)
+        .transparent(true)
         .visible(true)
         .build()?;
     // Closing the widget hides it; the tray / hotkey bring it back.
@@ -73,6 +74,41 @@ pub fn show_timer_widget<R: Runtime>(app: AppHandle<R>, show: bool) -> Result<()
     show_timer_widget_impl(&app, show).map_err(|e| e.to_string())?;
     crate::tray::refresh_menu(&app);
     crate::menu::refresh(&app);
+    Ok(())
+}
+
+/// The widget grows to list parked timers; width is preserved.
+#[tauri::command]
+pub fn resize_timer_widget<R: Runtime>(app: AppHandle<R>, height: f64) -> Result<(), String> {
+    let Some(w) = app.get_webview_window(TIMER_LABEL) else {
+        return Ok(());
+    };
+    let scale = w.scale_factor().unwrap_or(1.0);
+    let width = w
+        .inner_size()
+        .map(|s| s.width as f64 / scale)
+        .unwrap_or(340.0);
+    let h = height.clamp(88.0, 300.0);
+    w.set_size(tauri::LogicalSize::new(width, h))
+        .map_err(|e| e.to_string())
+}
+
+/// Focus the main window and navigate its SPA (same dual-delivery trick as
+/// menu actions: event + eval, so it works regardless of event permissions).
+#[tauri::command]
+pub fn open_main_at<R: Runtime>(app: AppHandle<R>, path: String) -> Result<(), String> {
+    if !path.starts_with('/') || path.starts_with("//") {
+        return Err("invalid_path".into());
+    }
+    crate::tray::show_main(&app);
+    let _ = tauri::Emitter::emit(&app, "menu:navigate", serde_json::json!({ "path": path }));
+    if let Some(w) = app.get_webview_window("main") {
+        let js = format!(
+            "window.dispatchEvent(new CustomEvent('vibe:desktop-navigate',{{detail:{}}}));",
+            serde_json::json!({ "path": path, "nonce": crate::state::now_ms() })
+        );
+        let _ = w.eval(&js);
+    }
     Ok(())
 }
 
