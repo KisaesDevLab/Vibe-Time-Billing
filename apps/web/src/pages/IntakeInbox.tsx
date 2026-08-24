@@ -6,10 +6,13 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
+import { useNavigate } from 'react-router-dom';
 import { Button, tokens } from '@vibe/ui';
 
 import { api, type ApiError } from '../api-client';
 import { SendIntakeLinkDialog } from './intake/SendIntakeLinkDialog';
+import { CaptureClientInfo } from './clients/CaptureClientInfo';
+import { isDesktop } from '../lib/desktop';
 
 interface SessionListItem {
   id: string;
@@ -63,6 +66,16 @@ interface ClientOpt {
 }
 
 export function IntakeInboxPage(): JSX.Element {
+  const navigate = useNavigate();
+  // DS-4 — Capture Client Info is reachable from here too (not only the
+  // Create Client wizard); the result opens the wizard prefilled.
+  const [ocrAvailable, setOcrAvailable] = useState(false);
+  const [captureOpen, setCaptureOpen] = useState(false);
+  useEffect(() => {
+    void api<{ available: boolean }>('/api/staff/ocr/status')
+      .then((r) => setOcrAvailable(!!r.available))
+      .catch(() => setOcrAvailable(false));
+  }, []);
   const [list, setList] = useState<SessionListItem[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -203,7 +216,14 @@ export function IntakeInboxPage(): JSX.Element {
         }}
       >
         <h1 style={{ fontSize: 20, margin: 0 }}>Document Intake</h1>
-        <Button onClick={() => setShowLink(true)}>Send a link</Button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          {ocrAvailable && (
+            <Button variant="secondary" onClick={() => setCaptureOpen(true)}>
+              {isDesktop() ? 'Capture client info from UltraTax' : 'Import client info'}
+            </Button>
+          )}
+          <Button onClick={() => setShowLink(true)}>Send a link</Button>
+        </div>
       </div>
       {error && (
         <div style={{ color: tokens.color.danger, fontSize: 13, marginTop: 8 }}>{error}</div>
@@ -468,6 +488,11 @@ export function IntakeInboxPage(): JSX.Element {
       </div>
 
       {showLink && <SendIntakeLinkDialog onClose={() => setShowLink(false)} />}
+      <CaptureClientInfo
+        open={captureOpen}
+        onClose={() => setCaptureOpen(false)}
+        onApply={(mapped) => navigate('/clients', { state: { capture: mapped } })}
+      />
     </div>
   );
 }

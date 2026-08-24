@@ -25,6 +25,7 @@ import {
 
 import { logger } from '../logger';
 import { bullBookingQueue, type BookingQueue } from './queue';
+import { pokeStaffEvents } from '../notifications/staff-events-bus';
 
 export interface AppointmentPublicDeps {
   db: Database | null;
@@ -205,6 +206,7 @@ export function createAppointmentPublicRouter(deps: AppointmentPublicDeps): Rout
           actionUrl: `/appointments#list`,
         })
         .catch((err: unknown) => logger.warn({ err }, 'staff_notification insert failed'));
+      pokeStaffEvents([r.staffId]);
     }
     await queue
       .cancellationSend({ appointmentId: appt.id, cancelledBy: 'client' })
@@ -271,6 +273,7 @@ export function createAppointmentPublicRouter(deps: AppointmentPublicDeps): Rout
             actionUrl: `/appointments#inbox`,
           })
           .catch((err: unknown) => logger.warn({ err }, 'staff_notification insert failed'));
+        pokeStaffEvents([appt.createdById]);
       }
       await queue
         .rescheduleRequestedStaffSend({ appointmentId: appt.id, message })

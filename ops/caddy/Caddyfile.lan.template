@@ -23,7 +23,8 @@
   }
 
   # Staff API
-  @api path /api/*
+  # /desktop/* = desktop shell update manifest + installers (API-served)
+  @api path /api/* /desktop/*
   reverse_proxy @api localhost:3001 {
     header_up X-Real-IP {remote_host}
     header_up X-Vibe-Realm app

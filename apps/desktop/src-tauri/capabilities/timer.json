@@ -1,0 +1,34 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "timer",
+  "description": "Always-on-top mini timer, loaded from the same remote origin as the main window. Needs events + the drag region; every timer mutation goes through the API.",
+  "windows": ["timer"],
+  "remote": {
+    "urls": [
+      "https://*",
+      "https://*:*",
+      "http://localhost:*",
+      "http://127.0.0.1:*",
+      "http://*.local:*"
+    ]
+  },
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "allow-toggle-timer-widget",
+    "allow-timer-widget-visible",
+    "allow-show-timer-widget",
+    "allow-resize-timer-widget",
+    "allow-open-main-at",
+    "allow-show-main-window",
+    "allow-broadcast-timers-changed",
+    "allow-set-tray-state",
+    "allow-app-version",
+    "allow-get-server-url",
+    "allow-secret-get",
+    "allow-secret-set",
+    "allow-secret-delete",
+    "allow-device-info"
+  ]
+}

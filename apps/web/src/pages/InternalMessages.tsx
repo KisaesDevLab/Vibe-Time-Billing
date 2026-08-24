@@ -8,7 +8,9 @@ import { useCallback, useEffect, useState } from 'react';
 
 import { Button, Card, Pill, tokens, useIsNarrow } from '@vibe/ui';
 
+import { useLocation } from 'react-router-dom';
 import { api } from '../api-client';
+import { STAFF_EVENT_WINDOW_EVENT } from '../components/DesktopShellBridge';
 import { NewConversationDialog } from './messaging/NewConversationDialog';
 import { ThreadView } from './messaging/ThreadView';
 
@@ -23,7 +25,15 @@ interface ThreadRow {
 
 export function TeamMessagesPanel(): JSX.Element {
   const [threads, setThreads] = useState<ThreadRow[] | null>(null);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  // DS-2 — `?thread=<id>` (from a notification / deep link) opens that thread.
+  const location = useLocation();
+  const [activeId, setActiveId] = useState<string | null>(() =>
+    new URLSearchParams(location.search).get('thread'),
+  );
+  useEffect(() => {
+    const id = new URLSearchParams(location.search).get('thread');
+    if (id) setActiveId(id);
+  }, [location.search]);
   const [error, setError] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const narrow = useIsNarrow();
@@ -41,7 +51,15 @@ export function TeamMessagesPanel(): JSX.Element {
   useEffect(() => {
     void loadThreads();
     const t = setInterval(() => void loadThreads(), 20000);
-    return () => clearInterval(t);
+    // DS-2 — reload immediately when the event stream announces a team message.
+    const onEvent = (e: Event): void => {
+      if ((e as CustomEvent<{ category?: string }>).detail?.category === 'team') void loadThreads();
+    };
+    window.addEventListener(STAFF_EVENT_WINDOW_EVENT, onEvent);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener(STAFF_EVENT_WINDOW_EVENT, onEvent);
+    };
   }, [loadThreads]);
 
   function open(threadId: string): void {

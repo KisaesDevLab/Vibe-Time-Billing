@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
+#
+# DS-0 — build the Tauri desktop shell on Windows. Manual dispatch or a
+# `desktop-v*` tag; never on push, so the regular web CI stays Rust-free.
+#
+# Secrets (repo → Settings → Secrets):
+#   TAURI_SIGNING_PRIVATE_KEY           from `pnpm --filter @vibe/desktop tauri signer generate`
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (may be empty)
+#
+# Outputs: NSIS + MSI installers, the updater .sig files, and a ready
+# latest.json to copy into DESKTOP_RELEASES_DIR on the appliance.
+
+name: desktop-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: Release notes shown in the in-app update banner
+        required: false
+        default: ''
+  push:
+    tags: ['desktop-v*']
+
+env:
+  NODE_VERSION: '24.4.0'
+  PNPM_VERSION: '9.15.9'
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (Tauri bundle; the staff app is loaded from the appliance at runtime)
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm --filter @vibe/desktop tauri build
+
+      - name: Assemble release folder
+        shell: pwsh
+        run: |
+          $bundle = "apps/desktop/src-tauri/target/release/bundle"
+          New-Item -ItemType Directory -Force -Path release | Out-Null
+          # NSIS names the file after productName ("Vibe Time & Billing_…");
+          # the API's download route allows only [A-Za-z0-9._-], so rename.
+          Get-ChildItem "$bundle/nsis" -Filter *-setup.exe | ForEach-Object {
+            $safe = ($_.Name -replace '[^A-Za-z0-9._-]+', '-')
+            Copy-Item $_.FullName "release/$safe"
+            Copy-Item "$($_.FullName).sig" "release/$safe.sig"
+          }
+          $version = (Get-Content apps/desktop/src-tauri/tauri.conf.json | ConvertFrom-Json).version
+          $exe = Get-ChildItem release -Filter *-setup.exe | Select-Object -First 1
+          $sig = Get-Content "release/$($exe.Name).sig" -Raw
+          $notes = "${{ github.event.inputs.notes }}"
+          if (-not $notes) { $notes = "Vibe desktop $version" }
+          $manifest = @{
+            version  = $version
+            notes    = $notes
+            pub_date = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+            platforms = @{
+              "windows-x86_64" = @{
+                signature = $sig.Trim()
+                url       = "/desktop/dl/$($exe.Name)"
+              }
+            }
+          }
+          $manifest | ConvertTo-Json -Depth 5 | Set-Content release/latest.json -Encoding UTF8
+          Get-ChildItem release
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vibe-desktop-windows
+          path: release/
+          if-no-files-found: error

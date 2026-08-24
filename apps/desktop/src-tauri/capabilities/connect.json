@@ -1,0 +1,14 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "connect",
+  "description": "The bundled first-launch connect page (tauri://localhost) only needs core IPC to call set_server_url.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "allow-get-server-url",
+    "allow-set-server-url",
+    "allow-clear-server-url",
+    "allow-app-version",
+    "allow-device-info"
+  ]
+}

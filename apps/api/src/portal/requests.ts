@@ -30,6 +30,8 @@ import { loadClientFolder } from '../clients/files';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { maybeEnqueueAutoRename } from '../files/auto-rename-queue';
+import { pokeFirmStaffEvents } from '../notifications/staff-events-bus';
+import { notifyRequestClientReply } from '../requests/notify-reply';
 
 // req.portalSession augmented by portal-middleware.
 
@@ -171,6 +173,8 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       .update(clientRequests)
       .set({ clientReplyText: parsed.data.text, clientReplySeenAt: null, updatedAt: new Date() })
       .where(eq(clientRequests.id, scoped.id));
+    pokeFirmStaffEvents(session.firmId);
+    await notifyRequestClientReply(deps.db, scoped.id, 'reply').catch(() => undefined);
     await emitAudit(deps.db, {
       action: 'UPDATE',
       entityType: 'client_request',
@@ -222,6 +226,8 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
         updatedAt: new Date(),
       })
       .where(eq(clientRequests.id, scoped.id));
+    pokeFirmStaffEvents(session.firmId);
+    await notifyRequestClientReply(deps.db, scoped.id, 'needs_info').catch(() => undefined);
     await emitAudit(deps.db, {
       action: 'UPDATE',
       entityType: 'client_request',

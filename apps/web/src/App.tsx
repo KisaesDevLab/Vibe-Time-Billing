@@ -2,7 +2,6 @@
 import {
   lazy,
   Suspense,
-  useEffect,
   useState,
   type ComponentType,
   type LazyExoticComponent,
@@ -45,7 +44,6 @@ import {
 } from 'lucide-react';
 
 import { BRAND } from './brand';
-import { api } from './api-client';
 
 // Firm logo + product name in the shell header. The logo comes from the public
 // branding endpoint (same one the portal/PDFs use); it renders nothing when no
@@ -70,6 +68,11 @@ function BrandMark(): JSX.Element {
 import { QuickFind } from './QuickFind';
 import { TimerProvider } from './timer-context';
 import { TimerChip } from './timer/TimerChip';
+import { DesktopTimerBridge } from './timer/DesktopTimerBridge';
+import { DesktopShellBridge, useDesktopNotifier } from './components/DesktopShellBridge';
+import { StaffToasts } from './components/StaffToasts';
+import { useStaffEvents } from './lib/staff-events';
+import { desktopWindowLabel } from './lib/desktop';
 
 import { AuthProvider, useAuth, usePermission } from './auth-context';
 
@@ -184,10 +187,24 @@ const AppointmentsPage = lazyPage(() => import('./pages/Appointments'), 'Appoint
 const StaffNotificationsPage = lazyPage(() => import('./pages/Notifications'), 'NotificationsPage');
 const TasksPage = lazyPage(() => import('./pages/Tasks'), 'TasksPage');
 const TimeEntryPage = lazyPage(() => import('./pages/TimeEntry'), 'TimeEntryPage');
+const TimerWidgetPage = lazyPage(() => import('./pages/desktop/TimerWidget'), 'TimerWidgetPage');
 const TotpEnrollPage = lazyPage(() => import('./pages/TotpEnroll'), 'TotpEnrollPage');
 const WipDashboardPage = lazyPage(() => import('./pages/Wip'), 'WipDashboardPage');
 
 export function App(): JSX.Element {
+  // DS-1 — the shell's always-on-top widget window loads
+  // `index.html?__window=timer` (works for both the Vite dev server and the
+  // bundled asset protocol, no SPA fallback needed) and renders only the
+  // widget, whatever the path.
+  if (desktopWindowLabel() === 'timer') {
+    return (
+      <AuthProvider>
+        <Suspense fallback={<FullPageMsg>Loading…</FullPageMsg>}>
+          <TimerWidgetGate />
+        </Suspense>
+      </AuthProvider>
+    );
+  }
   return (
     <AuthProvider>
       <Suspense fallback={<FullPageMsg>Loading…</FullPageMsg>}>
@@ -200,6 +217,17 @@ export function App(): JSX.Element {
             element={
               <RequireAuth>
                 <TotpEnrollPage />
+              </RequireAuth>
+            }
+          />
+          {/* DS-1 — always-on-top mini timer window (desktop shell only). */}
+          <Route
+            path="/desktop/timer"
+            element={
+              <RequireAuth>
+                <TimerProvider>
+                  <TimerWidgetPage />
+                </TimerProvider>
               </RequireAuth>
             }
           />
@@ -296,6 +324,17 @@ export function App(): JSX.Element {
   );
 }
 
+function TimerWidgetGate(): JSX.Element {
+  const { me, loading } = useAuth();
+  if (loading) return <FullPageMsg>Loading…</FullPageMsg>;
+  if (!me) return <FullPageMsg>Sign in from the main Vibe window.</FullPageMsg>;
+  return (
+    <TimerProvider>
+      <TimerWidgetPage />
+    </TimerProvider>
+  );
+}
+
 function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
   const { me, loading } = useAuth();
   const location = useLocation();
@@ -358,49 +397,17 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       adminTaxonomyWrite ||
       adminRateRead,
   };
-  const [teamUnread, setTeamUnread] = useState(0);
-  const [notifUnread, setNotifUnread] = useState(0);
-  // New/unhandled counts that drive the orange nav highlight for Requests
-  // (open) and Intake (received but not yet processed).
-  const [requestsNew, setRequestsNew] = useState(0);
-  const [intakeNew, setIntakeNew] = useState(0);
-  useEffect(() => {
-    let alive = true;
-    const poll = (): void => {
-      void api<{ unread: number }>('/api/staff/internal-messaging/unread-count')
-        .then((r) => {
-          if (alive) setTeamUnread(r.unread);
-        })
-        .catch(() => undefined);
-      void api<{ count: number }>('/api/staff/notifications/unread-count')
-        .then((r) => {
-          if (alive) setNotifUnread(r.count);
-        })
-        .catch(() => undefined);
-      if (can.requests) {
-        void api<{ count: number }>('/api/staff/requests/client-responses/unread-count')
-          .then((r) => {
-            if (alive) setRequestsNew(r.count ?? 0);
-          })
-          .catch(() => undefined);
-      }
-      if (can.intake) {
-        // Unread received submissions — the lightweight count endpoint
-        // (the old poll fetched + decrypted the whole session list).
-        void api<{ received: number; unread: number }>('/api/staff/intake/count')
-          .then((r) => {
-            if (alive) setIntakeNew(r.unread ?? r.received ?? 0);
-          })
-          .catch(() => undefined);
-      }
-    };
-    poll();
-    const t = setInterval(poll, 30000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, [location.pathname, can.appointments, can.requests, can.intake]);
+  // DS-2 — one event stream replaces the four 30 s count polls. Nav badges
+  // read from `counts`; notifications become toasts (native ones in the
+  // desktop shell when the window is unfocused). The hook polls the old
+  // endpoints while the stream is down, so nothing regresses in a browser
+  // behind a proxy that drops long-lived responses.
+  const notifier = useDesktopNotifier();
+  const { counts } = useStaffEvents(true, { requests: can.requests, intake: can.intake }, notifier);
+  const teamUnread = counts.teamUnread;
+  const notifUnread = counts.notifUnread;
+  const requestsNew = counts.requestsNew;
+  const intakeNew = counts.intakeNew;
   return (
     <TimerProvider>
       <AppShell
@@ -696,7 +703,10 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       >
         <Suspense fallback={<RouteFallback />}>{children}</Suspense>
         <QuickFind />
+        <StaffToasts />
+        <DesktopShellBridge counts={counts} />
       </AppShell>
+      <DesktopTimerBridge />
     </TimerProvider>
   );
 }

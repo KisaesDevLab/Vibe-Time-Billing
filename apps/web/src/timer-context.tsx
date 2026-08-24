@@ -20,6 +20,7 @@ import {
 } from 'react';
 
 import { api } from './api-client';
+import { broadcastTimersChanged, isDesktop, onDesktopEvent } from './lib/desktop';
 import { usePermission } from './auth-context';
 
 export interface TimerDto {
@@ -241,6 +242,10 @@ export function TimerProvider({ children }: { children: ReactNode }): JSX.Elemen
     async (path: string, init?: { method: string; body?: string }) => {
       try {
         applyList(await api<TimerListResponse>(path, init));
+        // DS-1 — the desktop shell has a second window (mini widget) with
+        // its own provider; tell it to resync now rather than on its next
+        // 60 s poll. Only after mutations, never on refresh (no ping-pong).
+        if (isDesktop()) void broadcastTimersChanged().catch(() => undefined);
       } catch (err) {
         void refresh();
         throw err;
@@ -248,6 +253,11 @@ export function TimerProvider({ children }: { children: ReactNode }): JSX.Elemen
     },
     [applyList, refresh],
   );
+
+  useEffect(() => {
+    if (!canUse || !isDesktop()) return;
+    return onDesktopEvent('desktop:timers-changed', () => void refresh());
+  }, [canUse, refresh]);
 
   const startTimer = useCallback(
     async (prefill?: TimerStartPrefill) => {
@@ -291,6 +301,7 @@ export function TimerProvider({ children }: { children: ReactNode }): JSX.Elemen
           body: JSON.stringify(fields),
         });
         applyList(r);
+        if (isDesktop()) void broadcastTimersChanged().catch(() => undefined);
         // Let open pages react (e.g. /time reloads its entries table when
         // a timer is quick-saved from the header popover).
         window.dispatchEvent(new Event('vibe:timer-saved'));
@@ -308,6 +319,7 @@ export function TimerProvider({ children }: { children: ReactNode }): JSX.Elemen
   const discard = useCallback(
     async (id: string) => {
       applyList(await api<TimerListResponse>(`/api/staff/timers/${id}`, { method: 'DELETE' }));
+      if (isDesktop()) void broadcastTimersChanged().catch(() => undefined);
     },
     [applyList],
   );

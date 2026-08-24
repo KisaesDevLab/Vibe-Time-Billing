@@ -10,6 +10,14 @@ import {
 } from 'react';
 
 import { api, setCsrfToken } from './api-client';
+import { isDesktop } from './lib/desktop';
+import {
+  enrollDesktopDevice,
+  forgetDesktopCredential,
+  hasDesktopCredential,
+  tryDesktopSessionRefresh,
+} from './lib/desktop-session';
+import { getDesktopSettings } from './lib/desktop-settings';
 
 interface Me {
   appUserId: string;
@@ -42,6 +50,22 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
       setMe(data);
       setCsrfToken(data.csrfToken);
     } catch {
+      // DS-3 — inside the desktop shell a remembered device can mint a
+      // fresh session before we give up and show the login page.
+      if (
+        isDesktop() &&
+        getDesktopSettings().rememberDevice &&
+        (await tryDesktopSessionRefresh())
+      ) {
+        try {
+          const data = await api<Me>('/api/auth/me');
+          setMe(data);
+          setCsrfToken(data.csrfToken);
+          return;
+        } catch {
+          /* fall through */
+        }
+      }
       setMe(null);
       setCsrfToken(null);
     } finally {
@@ -49,10 +73,22 @@ export function AuthProvider({ children }: { children: ReactNode }): JSX.Element
     }
   }, []);
 
+  // DS-3 — once signed in inside the shell, remember this device (unless
+  // the user turned that off in Account → Desktop). Idempotent per device.
+  useEffect(() => {
+    if (!me || !isDesktop() || !getDesktopSettings().rememberDevice) return;
+    void hasDesktopCredential().then((has) => {
+      if (!has) void enrollDesktopDevice();
+    });
+  }, [me]);
+
   const logout = useCallback(async () => {
     try {
       await api('/api/auth/logout', { method: 'POST' });
     } finally {
+      // Explicit sign-out also forgets the device credential; otherwise the
+      // next launch would silently sign back in.
+      await forgetDesktopCredential();
       setMe(null);
       setCsrfToken(null);
     }

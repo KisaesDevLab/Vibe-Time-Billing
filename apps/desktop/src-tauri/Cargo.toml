@@ -1,7 +1,7 @@
 [package]
 name = "vibe-desktop"
-version = "0.1.0"
-description = "Vibe Time & Billing desktop shell"
+version = "0.2.4"
+description = "Vibe Practice Management desktop shell"
 edition = "2021"
 rust-version = "1.77"
 
@@ -13,12 +13,55 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Cross-platform window/monitor capture. Confirm the exact version against
-# the API used in src/lib.rs when first building on the firm's workstation
-# (xcap's accessor return types have shifted across 0.x releases).
+
+# Native window capture (Capture Client Info). Confirm the exact 0.x API
+# against src/capture.rs on first build — accessor return types moved
+# between releases.
 xcap = "0.3"
 image = "0.25"
 base64 = "0.22"
+
+# DS-1 timer
+tauri-plugin-global-shortcut = "2"
+user-idle = "0.6"
+
+# DS-2 notifications / deep links
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
+# DS-3 rollout
+tauri-plugin-updater = "2"
+tauri-plugin-autostart = "2"
+tauri-plugin-window-state = "2"
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service"] }
+hostname = "0.4"
+uuid = { version = "1", features = ["v4"] }
+
+# DS-4 files
+tauri-plugin-opener = "2"
+notify = "7"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+tokio = { version = "1", features = ["fs", "io-util"] }
+futures-util = "0.3"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.55"
+tauri-winrt-notification = "0.7"
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_System_Threading",
+] }
+
+[target.'cfg(not(windows))'.dependencies]
+notify-rust = "4"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

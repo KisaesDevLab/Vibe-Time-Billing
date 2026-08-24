@@ -13,6 +13,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Button, Card, Combobox, Pill, Tabs, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { uploadOneClientFile } from '../lib/client-files-upload';
 
 type Priority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
 
@@ -204,17 +205,34 @@ export function RequestDetailPage(): JSX.Element {
     }
   }
 
-  async function fulfillItem(itemId: string): Promise<void> {
+  async function fulfillItem(itemId: string, fileId?: string): Promise<void> {
     setBusy(itemId);
     try {
       await api(`/api/staff/requests/${id}/items/${itemId}/fulfill`, {
         method: 'POST',
-        body: JSON.stringify({}),
+        body: JSON.stringify(fileId ? { fileId } : {}),
       });
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'fulfill_failed');
     } finally {
+      setBusy(null);
+    }
+  }
+
+  // DS-4 — drop a file from Explorer onto an item: it lands in the client's
+  // File Manager (normal presigned upload) and fulfils the item with it.
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  async function dropOnItem(itemId: string, files: FileList | null): Promise<void> {
+    setDropTarget(null);
+    const file = files?.[0];
+    if (!file || !clientId) return;
+    setBusy(itemId);
+    try {
+      const { fileId } = await uploadOneClientFile(clientId, file, 'other');
+      await fulfillItem(itemId, fileId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'upload_failed');
       setBusy(null);
     }
   }
@@ -665,9 +683,29 @@ export function RequestDetailPage(): JSX.Element {
               {items.map((it) => (
                 <div
                   key={it.id}
+                  onDragOver={(e) => {
+                    if (it.status === 'FULFILLED' || !clientId) return;
+                    if (Array.from(e.dataTransfer.types).includes('Files')) {
+                      e.preventDefault();
+                      setDropTarget(it.id);
+                    }
+                  }}
+                  onDragLeave={() => setDropTarget((t) => (t === it.id ? null : t))}
+                  onDrop={(e) => {
+                    if (it.status === 'FULFILLED' || !clientId) return;
+                    e.preventDefault();
+                    void dropOnItem(it.id, e.dataTransfer.files);
+                  }}
+                  title={
+                    it.status !== 'FULFILLED' && clientId
+                      ? 'Drop a file here to attach it and fulfil this item'
+                      : undefined
+                  }
                   style={{
                     padding: 10,
-                    border: `1px solid ${tokens.color.border}`,
+                    border: `1px ${dropTarget === it.id ? 'dashed' : 'solid'} ${
+                      dropTarget === it.id ? tokens.color.accent : tokens.color.border
+                    }`,
                     borderRadius: tokens.radius.md,
                     display: 'flex',
                     gap: 10,

@@ -39,6 +39,7 @@ import {
   type AvailabilityWindowRow,
   type StaffBusyProvider,
 } from './availability';
+import { pokeStaffEvents } from '../notifications/staff-events-bus';
 
 export interface PublicBookingRoutesDeps {
   db: Database | null;
@@ -814,6 +815,7 @@ async function notifyStaffOfRequest(
           actionUrl: `/appointments?bookingRequest=${requestId}`,
         })
         .catch((err: unknown) => logger.warn({ err }, 'booking staff_notification insert failed'));
+      pokeStaffEvents([u.id]);
     }
     if (deps.sendEmail && u.email) {
       await deps.sendEmail({ to: u.email, subject, body: lines }).catch(() => undefined);

@@ -9,7 +9,7 @@
 // Two CTAs at the top: "Create and close" (toast + back to list) and
 // "Create and manage" (navigate to the new client's detail page).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
@@ -59,6 +59,9 @@ interface Props {
   onCreated: () => void;
   /** Persisted users for the Client Owner dropdown. */
   users: AppUser[];
+  /** DS-4 — a Capture Client Info result handed in from another page
+   *  (Intake Inbox, Client Detail). Applied when the wizard opens. */
+  initialCapture?: MappedIntake | null;
 }
 
 const labelStyle: React.CSSProperties = {
@@ -80,7 +83,13 @@ function emptyContact(): DraftContact {
   };
 }
 
-export function CreateClientWizard({ open, onClose, onCreated, users }: Props): JSX.Element {
+export function CreateClientWizard({
+  open,
+  onClose,
+  onCreated,
+  users,
+  initialCapture,
+}: Props): JSX.Element {
   const navigate = useNavigate();
 
   const [step, setStep] = useState('type');
@@ -178,6 +187,15 @@ export function CreateClientWizard({ open, onClose, onCreated, users }: Props): 
     setMailing({});
     setError(null);
   }
+
+  // A capture made elsewhere (Intake Inbox) lands here when the wizard opens.
+  const appliedInitial = useRef<MappedIntake | null>(null);
+  useEffect(() => {
+    if (!open || !initialCapture || appliedInitial.current === initialCapture) return;
+    appliedInitial.current = initialCapture;
+    applyIntake(initialCapture);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialCapture]);
 
   // Prefill the wizard from an OCR capture. Nothing is saved — the user lands
   // on the info step to review and can edit any field before creating.

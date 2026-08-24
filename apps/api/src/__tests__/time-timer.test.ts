@@ -485,3 +485,55 @@ describe('GET / — list + lazy auto-pause', () => {
     expect(r.statusCode).toBe(403);
   });
 });
+
+describe('POST /:id/trim — DS-1 idle trim', () => {
+  it('subtracts idle seconds and keeps the timer running', async () => {
+    const started = await invoke(router(), 'post', '/', req({}));
+    const [t] = items(started);
+    await backdate(t!.id, 600);
+    const r = await invoke(router(), 'post', '/:id/trim', req({ seconds: 300 }, { id: t!.id }));
+    expect(r.statusCode).toBe(200);
+    const [after] = items(r);
+    expect(after!.status).toBe('RUNNING');
+    expect(after!.elapsedSeconds).toBeGreaterThanOrEqual(299);
+    expect(after!.elapsedSeconds).toBeLessThan(305);
+  });
+
+  it('pause:true parks the timer at the trimmed total', async () => {
+    const started = await invoke(router(), 'post', '/', req({}));
+    const [t] = items(started);
+    await backdate(t!.id, 600);
+    const r = await invoke(
+      router(),
+      'post',
+      '/:id/trim',
+      req({ seconds: 100, pause: true }, { id: t!.id }),
+    );
+    expect(r.statusCode).toBe(200);
+    const [after] = items(r);
+    expect(after!.status).toBe('PAUSED');
+    expect(after!.elapsedSeconds).toBeGreaterThanOrEqual(499);
+    expect(after!.elapsedSeconds).toBeLessThan(505);
+  });
+
+  it('never goes below zero', async () => {
+    const started = await invoke(router(), 'post', '/', req({}));
+    const [t] = items(started);
+    const r = await invoke(router(), 'post', '/:id/trim', req({ seconds: 3600 }, { id: t!.id }));
+    expect(r.statusCode).toBe(200);
+    const [after] = items(r);
+    expect(after!.elapsedSeconds).toBeLessThanOrEqual(1);
+  });
+
+  it('rejects a bad payload and unknown timers', async () => {
+    const bad = await invoke(router(), 'post', '/:id/trim', req({ seconds: 0 }, { id: 'x' }));
+    expect(bad.statusCode).toBe(400);
+    const missing = await invoke(
+      router(),
+      'post',
+      '/:id/trim',
+      req({ seconds: 10 }, { id: '00000000-0000-0000-0000-000000000000' }),
+    );
+    expect(missing.statusCode).toBe(404);
+  });
+});

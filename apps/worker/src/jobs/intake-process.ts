@@ -21,7 +21,14 @@ import { PDFDocument } from 'pdf-lib';
 import type { Logger } from 'pino';
 
 import type { Database } from '@vibe/db';
-import { appUsers, auditLog, intakeFiles, intakeSessions, intakeStaffCards } from '@vibe/db/schema';
+import {
+  appUsers,
+  auditLog,
+  intakeFiles,
+  intakeSessions,
+  intakeStaffCards,
+  staffNotifications,
+} from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
 import { clamdScan, isClamdConfigured, type ClamScanResult } from '../clamd';
@@ -31,6 +38,10 @@ const RECEIVED_PREFIX = 'intake/received';
 const EMBEDDABLE = new Set(['image/jpeg', 'image/png']);
 
 export interface IntakeProcessDeps {
+  /** DS-2 — optional: publish a "poke" so open staff event streams in the
+   *  API refresh their intake counter immediately. Channel contract lives
+   *  in apps/api/src/notifications/staff-events.ts. */
+  publish?: (channel: string, message: string) => Promise<unknown>;
   sendEmail?: MailDispatch;
   sendSms?: SmsDispatch;
   appBaseUrl?: string;
@@ -191,6 +202,9 @@ export async function runIntakeProcess(
     .update(intakeSessions)
     .set({ status: 'received' })
     .where(eq(intakeSessions.id, sessionId));
+  if (deps.publish) {
+    await deps.publish(`vibe:staff-events:firm:${firmId}`, '1').catch(() => undefined);
+  }
 
   await notifyStaff(db, log, deps, {
     sessionId,
@@ -247,6 +261,24 @@ async function notifyStaff(
   await writeAlert(db, args.sessionId, args.targetStaffId, args.firmId, 'intake_received', {
     fileCount: args.fileCount,
   });
+  // DS-2 — notification-center row → badge + desktop toast for the target
+  // staffer (the SSE stream picks it up; the poke below makes it instant).
+  await db
+    .insert(staffNotifications)
+    .values({
+      firmId: args.firmId,
+      recipientAppUserId: args.targetStaffId,
+      type: 'intake_received',
+      entityType: 'intake_session',
+      entityId: args.sessionId,
+      title: 'New intake submission',
+      body: `${args.fileCount} file${args.fileCount === 1 ? '' : 's'} received`,
+      actionUrl: '/intake',
+    })
+    .catch((err: unknown) => log.warn({ err }, 'intake-process: staff_notification insert failed'));
+  if (deps.publish) {
+    await deps.publish(`vibe:staff-events:${args.targetStaffId}`, '1').catch(() => undefined);
+  }
 
   if (!card) return;
 

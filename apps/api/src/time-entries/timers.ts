@@ -61,6 +61,18 @@ const TimerPatchSchema = z.object({
     .optional(),
 });
 
+// DS-1 — desktop idle detection: "you were away 18 min" → drop that span.
+// Subtracts from the elapsed total as of now; never below zero.
+const TimerTrimSchema = z.object({
+  seconds: z
+    .number()
+    .int()
+    .min(1)
+    .max(24 * 3600),
+  // Also park the timer (the "stop at idle start" choice).
+  pause: z.boolean().optional(),
+});
+
 const TimerSaveSchema = z.object({
   engagementId: z.string().uuid().optional(),
   workCodeId: z.string().uuid().optional(),
@@ -546,6 +558,54 @@ export function createTimerRouter(deps: TimeEntryRoutesDeps): Router {
           accumulatedSeconds: row.accumulatedSeconds,
         },
         after: parsed.data,
+      });
+      res.json(await listPayload(db, session.appUserId));
+    },
+  );
+
+  router.post(
+    '/:id/trim',
+    requirePermission(deps, 'time_entry:create'),
+    async (req: Request, res: Response) => {
+      const parsed = TimerTrimSchema.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload' });
+        return;
+      }
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [], serverTime: new Date().toISOString() });
+        return;
+      }
+      const db = deps.db;
+      const row = await ownTimer(db, session.appUserId, req.params['id']!);
+      if (!row) {
+        res.status(404).json({ error: 'timer_not_found' });
+        return;
+      }
+      const now = new Date();
+      const before = elapsedSecondsOf(row, now);
+      const after = Math.max(0, before - parsed.data.seconds);
+      const stillRunning = row.status === 'RUNNING' && !parsed.data.pause;
+      await db
+        .update(timeTimers)
+        .set({
+          accumulatedSeconds: after,
+          status: stillRunning ? 'RUNNING' : 'PAUSED',
+          lastStartedAt: stillRunning ? now : null,
+          updatedAt: now,
+        })
+        .where(eq(timeTimers.id, row.id));
+      await auditTimer(req, {
+        action: 'UPDATE',
+        id: row.id,
+        before: { elapsedSeconds: before, status: row.status },
+        after: {
+          elapsedSeconds: after,
+          trimmedSeconds: before - after,
+          status: stillRunning ? 'RUNNING' : 'PAUSED',
+          reason: 'idle',
+        },
       });
       res.json(await listPayload(db, session.appUserId));
     },

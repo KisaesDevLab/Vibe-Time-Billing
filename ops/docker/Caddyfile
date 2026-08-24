@@ -52,7 +52,9 @@
 (staff-realm) {
 	encode gzip zstd
 
-	handle /api/* {
+	# /desktop/* = desktop shell update manifest + installers (API-served).
+	@staff_api path /api/* /desktop/*
+	handle @staff_api {
 		reverse_proxy api:3001 {
 			header_up X-Real-IP {remote_host}
 			header_up X-Vibe-Realm app

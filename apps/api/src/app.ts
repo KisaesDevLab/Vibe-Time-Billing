@@ -155,6 +155,10 @@ import { createAppointmentPublicRouter } from './appointments/public-routes';
 import { createPublicBookingRouter } from './appointments/public-booking-routes';
 import { createAppointmentTwilioRouter } from './appointments/twilio-routes';
 import { createNotificationCenterRouter } from './notifications/center-routes';
+import { createStaffEventsRouter } from './notifications/staff-events';
+import { setStaffEventsPublisher } from './notifications/staff-events-bus';
+import { createDesktopAuthRouter, createDesktopDevicesRouter } from './auth/desktop-devices';
+import { createDesktopReleasesRouter, createDesktopReleaseStatusRouter } from './desktop/releases';
 import { createStagedNotificationRouter } from './notifications/staged/routes';
 import { createServiceRouter } from './services-catalog/routes';
 import { createServiceTagRouter } from './services-catalog/tags';
@@ -560,6 +564,29 @@ export function createApp(deps: AppDeps): Express {
     requireCsrf: auth.requireCsrf,
   });
   app.use('/api/auth', authRouter);
+
+  // DS-3 — desktop shell device credentials (enroll is authed; refresh is
+  // public by nature — it is how a cold-started shell gets a session).
+  app.use(
+    '/api/auth',
+    createDesktopAuthRouter({
+      db: deps.db,
+      redis: deps.redis,
+      sessionStore: deps.sessionStore,
+      fakeUserRoles: deps.fakeUserRoles,
+      requireAuth: auth.requireAuth,
+      requireCsrf: auth.requireCsrf,
+    }),
+  );
+
+  // DS-3 — desktop auto-update manifest + installers (public, unauthenticated).
+  app.use(
+    '/desktop',
+    createDesktopReleasesRouter({
+      releasesDir: config.DESKTOP_RELEASES_DIR ?? null,
+      baseUrl: config.APP_BASE_URL,
+    }),
+  );
 
   // Protect everything else under /api/staff/* with requireAuth.
   app.use('/api/staff', auth.requireAuth, auth.requireCsrf);
@@ -1721,6 +1748,33 @@ export function createApp(deps: AppDeps): Express {
   // BK-7 — in-app staff notification center.
   const notificationCenterRouter = createNotificationCenterRouter({ db: deps.db });
   app.use('/api/staff/notifications', auth.requireAuth, auth.requireCsrf, notificationCenterRouter);
+
+  // DS-2 — one SSE stream per staff client (counts + notifications + appointment
+  // reminders) replacing the Shell's four 30 s polls.
+  setStaffEventsPublisher(deps.redis);
+  app.use(
+    '/api/staff/events',
+    auth.requireAuth,
+    createStaffEventsRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles, redis: deps.redis }),
+  );
+
+  // DS-3 — remembered desktop devices (own + admin) and release status.
+  app.use(
+    '/api/staff/desktop/devices',
+    auth.requireAuth,
+    auth.requireCsrf,
+    createDesktopDevicesRouter({
+      db: deps.db,
+      redis: deps.redis,
+      sessionStore: deps.sessionStore,
+      fakeUserRoles: deps.fakeUserRoles,
+    }),
+  );
+  app.use(
+    '/api/staff/desktop/releases',
+    auth.requireAuth,
+    createDesktopReleaseStatusRouter({ releasesDir: config.DESKTOP_RELEASES_DIR ?? null }),
+  );
 
   // 0146 — staged client-notification approval queue.
   const stagedNotificationRouter = createStagedNotificationRouter({
