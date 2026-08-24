@@ -164,6 +164,19 @@ export const VIEWER_REPORTS: ReportSpec[] = [
     params: DATE_PARAMS,
   },
   {
+    kind: 'payroll-period',
+    label: 'Payroll period',
+    description:
+      'One row per employee for the pay period containing the given date (default today): regular, OT, PTO, sick, comp, holiday, and unpaid hours. Locking + approval live on the Payroll review page.',
+    params: [{ name: 'date', label: 'Any date in the period (YYYY-MM-DD)' }],
+  },
+  {
+    kind: 'time-off-balances',
+    label: 'Time-off balances',
+    description:
+      'Accrued vs used vs current balance per employee per bank (PTO / Sick / Comp) — for year-end review and PTO-liability accruals.',
+  },
+  {
     kind: 'subscription-profitability',
     label: 'Subscription profitability',
     description: 'Retainer revenue vs cost-to-serve over a trailing window.',

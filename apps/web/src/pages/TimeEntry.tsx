@@ -426,6 +426,8 @@ function LogView({
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // 0226 — warn-only payroll overdraw notice from the last save.
+  const [payrollNotice, setPayrollNotice] = useState<string | null>(null);
   const narrow = useIsNarrow();
 
   // v2 Sprint E — client-first workflow. The CPA picks a client, then
@@ -823,23 +825,29 @@ function LogView({
         setFinishingTimerId('');
         clearTimerParam();
       } else {
-        const res = await api<{ workflowState?: string }>('/api/staff/time-entries', {
-          method: 'POST',
-          body: JSON.stringify({
-            engagementId,
-            workCodeId: workCodeId || undefined,
-            entryDate,
-            hours: Number(hours),
-            description,
-            outOfScopeOverride: outOfScope,
-            linkedMessageIds: linkMessageId ? [linkMessageId] : undefined,
-            workflowState: statusToSet,
-            appointmentId: appointmentId || undefined,
-          }),
-        });
+        const res = await api<{ workflowState?: string; payrollWarning?: string }>(
+          '/api/staff/time-entries',
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              engagementId,
+              workCodeId: workCodeId || undefined,
+              entryDate,
+              hours: Number(hours),
+              description,
+              outOfScopeOverride: outOfScope,
+              linkedMessageIds: linkMessageId ? [linkMessageId] : undefined,
+              workflowState: statusToSet,
+              appointmentId: appointmentId || undefined,
+            }),
+          },
+        );
         if (statusToSet) {
           onEngagementStatusChanged(engagementId, res.workflowState ?? statusToSet);
         }
+        // 0226 — warn-only overdraw notice when a PTO/Sick/Comp work
+        // code spent more than the accrued balance.
+        setPayrollNotice(res.payrollWarning ?? null);
       }
       setHours('1.00');
       setDescription('');
@@ -848,7 +856,13 @@ function LogView({
       setAppointmentId('');
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'failed');
+      const msg = err instanceof Error ? err.message : 'failed';
+      // 0226 — friendly message for entries dated in a locked pay period.
+      setError(
+        msg === 'payroll_locked'
+          ? 'That date falls in a locked payroll period — entries there can no longer be added or changed.'
+          : msg,
+      );
     } finally {
       setSubmitting(false);
     }
@@ -1296,6 +1310,11 @@ function LogView({
           </p>
         )}
         {error && <p style={{ color: tokens.color.danger, fontSize: 12, marginTop: 8 }}>{error}</p>}
+        {payrollNotice && (
+          <p style={{ color: tokens.color.warning, fontSize: 12, marginTop: 8 }}>
+            Saved — {payrollNotice}.
+          </p>
+        )}
       </Card>
 
       <Card

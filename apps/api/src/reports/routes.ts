@@ -43,6 +43,7 @@ import { sql as drz } from 'drizzle-orm';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { csvField } from '../lib/csv';
+import type { EmployeePeriodRow } from '../payroll/routes';
 import { namesByIds } from './names';
 import { renderHtmlToPdf } from '../pdf/render';
 import {
@@ -3172,6 +3173,227 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${fname}.pdf"`);
       res.send(pdf);
+    },
+  );
+
+  // ==================================================================
+  // 0226 — payroll timekeeping reports.
+  // ==================================================================
+
+  // Shared loader: resolve the pay period (by id or containing a date)
+  // and compute the per-employee rollup.
+  async function loadPayrollPeriodRows(
+    req: Request,
+    firmId: string,
+  ): Promise<{
+    period: { id: string; startDate: string; endDate: string; status: string };
+    employees: EmployeePeriodRow[];
+  } | null> {
+    const db = deps.db!;
+    const { payPeriods: pp } = await import('@vibe/db/schema');
+    const { sql: drz, desc: drzDesc } = await import('drizzle-orm');
+    const { loadPeriodEmployeeRows } = await import('../payroll/routes');
+    const periodId = typeof req.query['periodId'] === 'string' ? req.query['periodId'] : null;
+    // Viewer path: ?date=YYYY-MM-DD selects the period containing it
+    // (default: today). Deterministic when a stale locked period from an
+    // old frequency scheme overlaps a current one: latest start wins.
+    const dateParam =
+      typeof req.query['date'] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query['date'])
+        ? req.query['date']
+        : new Date().toISOString().slice(0, 10);
+    const [period] = periodId
+      ? await db
+          .select()
+          .from(pp)
+          .where(and(eq(pp.id, periodId), eq(pp.firmId, firmId)))
+          .limit(1)
+      : await db
+          .select()
+          .from(pp)
+          .where(
+            and(
+              eq(pp.firmId, firmId),
+              drz`${pp.startDate} <= ${dateParam}::date`,
+              drz`${pp.endDate} >= ${dateParam}::date`,
+            ),
+          )
+          .orderBy(drzDesc(pp.startDate))
+          .limit(1);
+    if (!period) return null;
+    // Snapshot-aware: LOCKED periods return the totals frozen at lock.
+    const employees = await loadPeriodEmployeeRows(db, firmId, period);
+    return { period, employees };
+  }
+
+  // One row per employee: regular / OT / PTO / sick / comp / holiday /
+  // unpaid hours for a pay period. JSON for the viewer, .csv for export.
+  router.get(
+    '/payroll-period',
+    requirePermission(deps, 'payroll:period:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ rows: [] });
+        return;
+      }
+      const data = await loadPayrollPeriodRows(req, session.firmId);
+      if (!data) {
+        res.status(404).json({ error: 'period_not_found' });
+        return;
+      }
+      // `rows` for the Payroll review page; `items` for the generic viewer.
+      res.json({ period: data.period, rows: data.employees, items: data.employees });
+    },
+  );
+
+  router.get(
+    '/payroll-period.csv',
+    requirePermission(deps, 'payroll:period:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(404).json({ error: 'no_db' });
+        return;
+      }
+      const data = await loadPayrollPeriodRows(req, session.firmId);
+      if (!data) {
+        res.status(404).json({ error: 'period_not_found' });
+        return;
+      }
+      const header = [
+        'employee',
+        'exempt',
+        'full_time',
+        'regular_hours',
+        'ot_hours',
+        'pto_hours',
+        'sick_hours',
+        'comp_used_hours',
+        'holiday_hours',
+        'unpaid_hours',
+        'actual_logged_hours',
+        'approved',
+      ].join(',');
+      const lines = data.employees.map((r) =>
+        [
+          csvField(r.fullName),
+          r.overtimeExempt ? 'Y' : 'N',
+          r.isFullTime ? 'Y' : 'N',
+          r.regularHours.toFixed(2),
+          r.otHours.toFixed(2),
+          r.ptoHours.toFixed(2),
+          r.sickHours.toFixed(2),
+          r.compUsedHours.toFixed(2),
+          r.holidayHours.toFixed(2),
+          r.unpaidHours.toFixed(2),
+          r.actualWorkedHours.toFixed(2),
+          r.approvedAt ? 'Y' : 'N',
+        ].join(','),
+      );
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="payroll-${data.period.startDate}-${data.period.endDate}.csv"`,
+      );
+      res.send([header, ...lines].join('\n') + '\n');
+    },
+  );
+
+  // Per-employee daily drill-down for one pay period.
+  router.get(
+    '/payroll-employee-detail',
+    requirePermission(deps, 'payroll:period:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ rows: [] });
+        return;
+      }
+      const periodId = typeof req.query['periodId'] === 'string' ? req.query['periodId'] : null;
+      const appUserId = typeof req.query['appUserId'] === 'string' ? req.query['appUserId'] : null;
+      if (!periodId || !appUserId) {
+        res.status(400).json({ error: 'missing_params' });
+        return;
+      }
+      const {
+        payPeriods: pp,
+        timeEntries: te,
+        workCodes: wc,
+        engagements: eng,
+        clients: cl,
+      } = await import('@vibe/db/schema');
+      const [period] = await deps.db
+        .select()
+        .from(pp)
+        .where(and(eq(pp.id, periodId), eq(pp.firmId, session.firmId)))
+        .limit(1);
+      if (!period) {
+        res.status(404).json({ error: 'period_not_found' });
+        return;
+      }
+      const { sql: drz } = await import('drizzle-orm');
+      const rows = await deps.db
+        .select({
+          entryDate: te.entryDate,
+          hours: te.hours,
+          category: drz<string>`COALESCE(${wc.payrollCategory}, 'REGULAR')`,
+          clientName: cl.name,
+          engagementName: eng.name,
+          workCodeName: wc.name,
+          description: te.description,
+        })
+        .from(te)
+        .innerJoin(eng, eq(eng.id, te.engagementId))
+        .innerJoin(cl, eq(cl.id, eng.clientId))
+        .leftJoin(wc, eq(wc.id, te.workCodeId))
+        .where(
+          and(
+            eq(cl.firmId, session.firmId),
+            eq(te.appUserId, appUserId),
+            ne(te.status, 'ARCHIVED'),
+            drz`${te.entryDate} >= ${period.startDate}::date`,
+            drz`${te.entryDate} <= ${period.endDate}::date`,
+          ),
+        )
+        .orderBy(te.entryDate);
+      res.json({ period, rows });
+    },
+  );
+
+  // Accrued vs used vs balance per employee per bank — for year-end and
+  // PTO-liability accrual entries.
+  router.get(
+    '/time-off-balances',
+    requirePermission(deps, 'payroll:period:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ rows: [] });
+        return;
+      }
+      const { appUsers: au } = await import('@vibe/db/schema');
+      const { loadBalances } = await import('../payroll/balances');
+      const users = await deps.db
+        .select({ id: au.id, fullName: au.fullName, isFullTime: au.isFullTime })
+        .from(au)
+        .where(and(eq(au.firmId, session.firmId), eq(au.status, 'ACTIVE')))
+        .orderBy(au.fullName);
+      const balances = await loadBalances(
+        deps.db,
+        session.firmId,
+        users.map((u) => u.id),
+      );
+      const rows = users.flatMap((u) =>
+        (balances.get(u.id) ?? []).map((b) => ({
+          employee: u.fullName,
+          fullTime: u.isFullTime,
+          bank: b.bank,
+          accruedHours: b.accruedHours,
+          usedHours: b.usedHours,
+          balanceHours: b.balanceHours,
+        })),
+      );
+      res.json({ rows, items: rows });
     },
   );
 

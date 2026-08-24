@@ -90,6 +90,8 @@ import { runLateEntryAlert } from './jobs/late-entry-alert';
 import { runMilestoneDateTrigger } from './jobs/milestone-date-trigger';
 import { runHourBankExpiration } from './jobs/hour-bank-expiration';
 import { runHourBankReplenish } from './jobs/hour-bank-replenish';
+import { runPayrollAccrual } from './jobs/payroll-accrual';
+import { runPayrollCarryover } from './jobs/payroll-carryover';
 import { runApprovalEscalation } from './jobs/approval-escalation';
 import { runApprovalSlaMonitor } from './jobs/approval-sla-monitor';
 import { runPaymentRetry } from './jobs/payment-retry';
@@ -300,6 +302,11 @@ const QUEUES = [
   'milestone-date-trigger',
   'hour-bank-expiration',
   'hour-bank-replenish',
+  // 0226 — payroll timekeeping. Nightly accrual sweep (pay-period
+  // materialization + PTO/Sick/Comp accruals + annual grants) and the
+  // Jan-1 carryover-cap forfeit.
+  'payroll-accrual',
+  'payroll-carryover',
   'approval-escalation',
   'approval-sla-monitor',
   'payment-retry',
@@ -448,6 +455,30 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runHourBankReplenish(db, logger);
     logger.info({ jobId: job.id, ...result }, 'hour-bank-replenish complete');
+  },
+  'payroll-accrual': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'payroll-accrual: no DB configured');
+      return;
+    }
+    const result = await runPayrollAccrual(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'payroll-accrual complete');
+    // Self-heal: the carryover cron fires only on Jan 1 — if the
+    // appliance was off that day the forfeit would be skipped for the
+    // whole year. Re-run it (idempotent via 'CY:<year>' period keys)
+    // from every January daily tick.
+    if (new Date().getUTCMonth() === 0) {
+      const carry = await runPayrollCarryover(db, logger);
+      logger.info({ jobId: job.id, ...carry }, 'payroll-carryover (january catch-up) complete');
+    }
+  },
+  'payroll-carryover': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'payroll-carryover: no DB configured');
+      return;
+    }
+    const result = await runPayrollCarryover(db, logger);
+    logger.info({ jobId: job.id, ...result }, 'payroll-carryover complete');
   },
   'approval-escalation': async (job) => {
     if (!db) {
@@ -833,6 +864,9 @@ const CRON: Record<QueueName, string> = {
   'milestone-date-trigger': '5 1 * * *',
   'hour-bank-expiration': '10 1 * * *',
   'hour-bank-replenish': '40 1 * * *',
+  // 0226 — payroll accrual nightly at 02:10; carryover forfeit Jan 1.
+  'payroll-accrual': '10 2 * * *',
+  'payroll-carryover': '30 2 1 1 *',
   'approval-escalation': '20 * * * *',
   'approval-sla-monitor': '50 * * * *',
   'payment-retry': '15 2 * * *',

@@ -96,6 +96,8 @@ const WorkCodeSchema = z.object({
   serviceLineId: z.string().uuid().nullable().optional(),
   billableDefault: z.boolean().optional(),
   descriptionTemplate: z.string().max(500).optional(),
+  // 0226 — payroll bucket for this code's hours.
+  payrollCategory: z.enum(['REGULAR', 'PTO', 'SICK', 'HOLIDAY', 'COMP_USED', 'UNPAID']).optional(),
 });
 
 const EngagementTypeSchema = z.object({
@@ -408,6 +410,7 @@ export function createTaxonomyRouter(deps: TaxonomyRoutesDeps): Router {
         'serviceLineId',
         'billableDefault',
         'descriptionTemplate',
+        'payrollCategory',
       ] as const) {
         const v = parsed.data[k];
         if (v !== undefined) updates[k] = v;

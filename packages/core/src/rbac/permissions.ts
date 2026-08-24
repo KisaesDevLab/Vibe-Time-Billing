@@ -55,6 +55,16 @@ export const PERMISSION_KEYS = [
   'time_entry:update:any',
   'time_entry:delete:own',
 
+  // Payroll timekeeping (0226). policy:manage = accrual policies,
+  // assignments, work-code payroll categories, exempt/full-time flags.
+  // period:manage = approve/lock/unlock periods, OT→comp conversion,
+  // manual ledger adjustments.
+  'payroll:policy:manage',
+  'payroll:period:read',
+  'payroll:period:manage',
+  'time_off:request:own',
+  'time_off:approve',
+
   // Pre-bill / WIP / billing batches
   'billing_batch:read',
   'billing_batch:write',
@@ -269,6 +279,12 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'proposal:read',
     'proposal:write',
     'kb:manage',
+    // 0226 — payroll: partner runs the period review/lock and approves
+    // time off; policy authoring stays admin-only.
+    'payroll:period:read',
+    'payroll:period:manage',
+    'time_off:request:own',
+    'time_off:approve',
   ]),
 
   manager: new Set<PermissionKey>([
@@ -331,6 +347,11 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     // P04 — manager sees the pipeline read-only; only partners author.
     'proposal:read',
     'kb:manage',
+    // 0226 — payroll: manager reviews period totals and approves time
+    // off but cannot lock periods or adjust ledgers (partner-only).
+    'payroll:period:read',
+    'time_off:request:own',
+    'time_off:approve',
   ]),
 
   senior: new Set<PermissionKey>([
@@ -359,6 +380,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'appointment:read',
     // P02 — senior reads catalog to pick services when logging time.
     'service:read',
+    // 0226 — payroll: own time-off requests + own balances.
+    'time_off:request:own',
   ]),
 
   staff: new Set<PermissionKey>([
@@ -381,6 +404,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'appointment:read',
     // P02 — staff reads catalog too (same time-entry use case).
     'service:read',
+    // 0226 — payroll: own time-off requests + own balances.
+    'time_off:request:own',
   ]),
 };
 

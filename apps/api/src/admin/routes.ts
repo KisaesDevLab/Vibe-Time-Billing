@@ -213,6 +213,17 @@ const FirmSettingsPatchSchema = z.object({
     )
     .optional(),
   pricingAllowLlmAdjust: z.boolean().optional(),
+  // 0226 — payroll timekeeping knobs.
+  payrollEnabled: z.boolean().optional(),
+  payrollWorkweekStartDay: z.number().int().min(0).max(6).optional(),
+  payrollPeriodFrequency: z.enum(['WEEKLY', 'BIWEEKLY', 'SEMI_MONTHLY', 'MONTHLY']).optional(),
+  payrollPeriodAnchorDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .nullable()
+    .optional(),
+  payrollHolidayDefaultHours: z.number().min(0).max(24).optional(),
+  payrollCompOtMultiplier: z.number().min(1).max(3).optional(),
 });
 // NOT .strict(): the PATCH handler validates the SAME combined body against
 // both this schema and FirmPatchSchema. Zod's default STRIP behavior drops the
@@ -317,6 +328,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           set['pricingEconomicManualPct'] = pricingEconomicManualPct.toFixed(2);
         if (pricingTargetMarginPct !== undefined)
           set['pricingTargetMarginPct'] = pricingTargetMarginPct.toFixed(2);
+        if (typeof set['payrollHolidayDefaultHours'] === 'number')
+          set['payrollHolidayDefaultHours'] = set['payrollHolidayDefaultHours'].toFixed(2);
+        if (typeof set['payrollCompOtMultiplier'] === 'number')
+          set['payrollCompOtMultiplier'] = set['payrollCompOtMultiplier'].toFixed(2);
         await deps.db.update(firmSettings).set(set).where(eq(firmSettings.firmId, firmId));
       }
       if (firmData) {
@@ -534,6 +549,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           defaultOfficeId: appUsers.defaultOfficeId,
           standardHoursPerWeek: appUsers.standardHoursPerWeek,
           billableTargetHoursPerMonth: appUsers.billableTargetHoursPerMonth,
+          // 0226 — payroll classification (the UserDetail Payroll tab
+          // reads these back; without them the toggles always show true).
+          overtimeExempt: appUsers.overtimeExempt,
+          isFullTime: appUsers.isFullTime,
           totpEnrolledAt: appUsers.totpEnrolledAt,
           // 0062 — profile expansion fields
           displayId: appUsers.displayId,
@@ -686,6 +705,13 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
         patch['billableTargetHoursPerMonth'] = Math.round(
           body['billableTargetHoursPerMonth'] as number,
         );
+      }
+      // 0226 — payroll classification flags.
+      if (typeof body['overtimeExempt'] === 'boolean') {
+        patch['overtimeExempt'] = body['overtimeExempt'];
+      }
+      if (typeof body['isFullTime'] === 'boolean') {
+        patch['isFullTime'] = body['isFullTime'];
       }
       // (0063 dropped the app_user.cost_rate_cents handler — cost rate
       // lives on staff_rate_snapshot now, edited via the snapshot
