@@ -12,5 +12,23 @@
       "http://*.local:*"
     ]
   },
-  "permissions": ["core:default", "core:event:default", "core:window:allow-start-dragging"]
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "allow-toggle-timer-widget",
+    "allow-timer-widget-visible",
+    "allow-show-timer-widget",
+    "allow-resize-timer-widget",
+    "allow-open-main-at",
+    "allow-show-main-window",
+    "allow-broadcast-timers-changed",
+    "allow-set-tray-state",
+    "allow-app-version",
+    "allow-get-server-url",
+    "allow-secret-get",
+    "allow-secret-set",
+    "allow-secret-delete",
+    "allow-device-info"
+  ]
 }
