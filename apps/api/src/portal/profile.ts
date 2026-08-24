@@ -398,6 +398,21 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       res.status(403).json({ error: 'client_not_accessible' });
       return;
     }
+    // Optional ?from/?to (YYYY-MM-DD) bound the LEDGER rows; totals and
+    // the running balance are always computed over the full history so
+    // the outstanding figure and per-row balances stay true regardless
+    // of the window. Defaults: Jan 1 of the current year → today.
+    const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const qFrom = typeof req.query['from'] === 'string' ? req.query['from'] : '';
+    const qTo = typeof req.query['to'] === 'string' ? req.query['to'] : '';
+    if ((qFrom && !DATE_RE.test(qFrom)) || (qTo && !DATE_RE.test(qTo))) {
+      res.status(400).json({ error: 'invalid_date' });
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const from = qFrom || `${today.slice(0, 4)}-01-01`;
+    const to = qTo || today;
+
     const rows = await deps.db
       .select({
         id: invoices.id,
@@ -421,8 +436,98 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       .orderBy(invoices.issueDate);
     const totalBilled = rows.reduce((a, r) => a + Number(r.totalCents), 0);
     const totalPaid = rows.reduce((a, r) => a + Number(r.paidCents), 0);
+
+    // Successful, un-voided payments against those invoices (plus any
+    // refunds on them) become the credit side of the ledger.
+    const payRows = rows.length
+      ? await deps.db
+          .select({
+            id: payments.id,
+            invoiceId: payments.invoiceId,
+            invoiceNumber: invoices.invoiceNumber,
+            amountCents: payments.amountCents,
+            receivedAt: payments.receivedAt,
+            refundedAt: payments.refundedAt,
+            refundedAmountCents: payments.refundedAmountCents,
+            provider: payments.provider,
+            channel: payments.channel,
+          })
+          .from(payments)
+          .innerJoin(invoices, eq(invoices.id, payments.invoiceId))
+          .where(
+            and(
+              eq(invoices.clientId, session.activeClientId),
+              drz`${invoices.status} IN ('SENT', 'OVERDUE', 'PARTIALLY_PAID', 'PAID')`,
+              drz`${payments.status} = 'SUCCEEDED'`,
+              drz`${payments.voidedAt} IS NULL`,
+            ),
+          )
+      : [];
+
+    interface LedgerEvent {
+      date: string;
+      type: 'INVOICE' | 'PAYMENT' | 'REFUND';
+      reference: string;
+      description: string;
+      chargeCents: number;
+      creditCents: number;
+      balanceCents: number;
+      invoiceId: string;
+      paymentId: string | null;
+    }
+    const dayOf = (d: Date | string): string =>
+      typeof d === 'string' ? d.slice(0, 10) : d.toISOString().slice(0, 10);
+    const events: LedgerEvent[] = [
+      ...rows.map((r) => ({
+        date: dayOf(r.issueDate),
+        type: 'INVOICE' as const,
+        reference: r.invoiceNumber,
+        description: `Invoice ${r.invoiceNumber}`,
+        chargeCents: Number(r.totalCents),
+        creditCents: 0,
+        balanceCents: 0,
+        invoiceId: r.id,
+        paymentId: null,
+      })),
+      ...payRows.map((p) => ({
+        date: dayOf(p.receivedAt),
+        type: 'PAYMENT' as const,
+        reference: p.invoiceNumber,
+        description: `Payment — ${p.channel ?? p.provider} (Invoice ${p.invoiceNumber})`,
+        chargeCents: 0,
+        creditCents: Number(p.amountCents),
+        balanceCents: 0,
+        invoiceId: p.invoiceId,
+        paymentId: p.id,
+      })),
+      ...payRows
+        .filter((p) => p.refundedAt && Number(p.refundedAmountCents ?? 0) > 0)
+        .map((p) => ({
+          date: dayOf(p.refundedAt!),
+          type: 'REFUND' as const,
+          reference: p.invoiceNumber,
+          description: `Refund (Invoice ${p.invoiceNumber})`,
+          chargeCents: Number(p.refundedAmountCents),
+          creditCents: 0,
+          balanceCents: 0,
+          invoiceId: p.invoiceId,
+          paymentId: p.id,
+        })),
+    ];
+    // Chronological; charges before credits on the same day so the
+    // running balance never dips below its true intra-day floor.
+    const typeOrder = { INVOICE: 0, REFUND: 1, PAYMENT: 2 } as const;
+    events.sort((a, b) => a.date.localeCompare(b.date) || typeOrder[a.type] - typeOrder[b.type]);
+    let balance = 0;
+    for (const e of events) {
+      balance += e.chargeCents - e.creditCents;
+      e.balanceCents = balance;
+    }
+
     res.json({
       invoices: rows,
+      range: { from, to },
+      ledger: events.filter((e) => e.date >= from && e.date <= to),
       totals: {
         billedCents: totalBilled,
         paidCents: totalPaid,
