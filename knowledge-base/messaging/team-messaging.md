@@ -23,7 +23,7 @@ Any signed-in staff member can open the Team tab and start or join conversations
 
 ## Engagement team discussions
 
-Each engagement can also have one staff-only **team discussion**, started from the **Team discussion** card on the engagement's detail page. Starting one automatically adds the engagement's assigned team and the client's partner-in-charge; other staff can join from the same card. These threads appear on the Team tab labeled **Engagement · <client name>**, with an **Open engagement →** link in the header — but only once someone has actually posted. An engagement with no team conversation never clutters the Team list.
+Each engagement can also have one staff-only **team discussion**, started from the **Team discussion** card on the engagement's detail page. Starting one automatically adds the engagement's assigned team and the client's partner-in-charge; other staff can join from the same card. Use the **Participants (N)** control on the card to see who's in the conversation, add any staff member from the directory, remove someone, or leave it yourself. These threads appear on the Team tab labeled **Engagement · <client name>**, with an **Open engagement →** link in the header — but only once someone has actually posted. An engagement with no team conversation never clutters the Team list.
 
 ## Field reference
 

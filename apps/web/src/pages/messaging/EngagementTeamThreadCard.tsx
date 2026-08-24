@@ -3,16 +3,21 @@
 // Embedded engagement-level TEAM discussion card (staff-only, never
 // visible to the client). Unlike the client thread, the team thread is
 // provisioned lazily — this card offers "Start" until someone posts, and
-// "Join" to staff who aren't members yet. Hidden entirely when the
-// engagement's client is restricted for the viewer.
+// "Join" to staff who aren't members yet. Members can manage the
+// participant list inline (add from the staff directory, remove, leave).
+// Hidden entirely when the engagement's client is restricted for the
+// viewer.
 
 import { useCallback, useEffect, useState } from 'react';
 
 import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { useAuth } from '../../auth-context';
 
 import { ThreadView } from './ThreadView';
+
+const API_BASE = '/api/staff/internal-messaging';
 
 interface TeamThreadLookup {
   threadId: string;
@@ -120,9 +125,10 @@ export function EngagementTeamThreadCard({
       {state.kind === 'ready' && state.lookup.member && (
         <>
           {internalHint}
+          <ParticipantsSection threadId={state.lookup.threadId} onSelfRemoved={() => void load()} />
           <ThreadView
             threadId={state.lookup.threadId}
-            apiBase="/api/staff/internal-messaging"
+            apiBase={API_BASE}
             variant="internal"
             embedded
             maxHeight={360}
@@ -130,5 +136,171 @@ export function EngagementTeamThreadCard({
         </>
       )}
     </Card>
+  );
+}
+
+// ── participants ──────────────────────────────────────────────────────
+
+interface MemberRow {
+  id: string;
+  appUserId: string | null;
+  name: string;
+}
+
+function ParticipantsSection({
+  threadId,
+  onSelfRemoved,
+}: {
+  threadId: string;
+  onSelfRemoved: () => void;
+}): JSX.Element {
+  const { me } = useAuth();
+  const [open, setOpen] = useState(false);
+  const [members, setMembers] = useState<MemberRow[]>([]);
+  const [directory, setDirectory] = useState<{ id: string; name: string }[]>([]);
+  const [selectedId, setSelectedId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadMembers = useCallback(async () => {
+    try {
+      const r = await api<{ members: MemberRow[] }>(`${API_BASE}/threads/${threadId}`);
+      setMembers(r.members ?? []);
+    } catch {
+      setMembers([]);
+    }
+  }, [threadId]);
+
+  useEffect(() => {
+    void loadMembers();
+  }, [loadMembers]);
+
+  useEffect(() => {
+    if (!open) return;
+    void api<{ staff: { id: string; name: string }[] }>(`${API_BASE}/directory`)
+      .then((r) => setDirectory(r.staff ?? []))
+      .catch(() => setDirectory([]));
+  }, [open]);
+
+  async function addMember(): Promise<void> {
+    if (!selectedId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`${API_BASE}/threads/${threadId}/members`, {
+        method: 'POST',
+        body: JSON.stringify({ appUserId: selectedId }),
+      });
+      setSelectedId('');
+      await loadMembers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeMember(appUserId: string): Promise<void> {
+    const self = appUserId === me?.appUserId;
+    if (self && !window.confirm('Leave this discussion? You can rejoin from this card.')) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`${API_BASE}/threads/${threadId}/members/${appUserId}`, { method: 'DELETE' });
+      if (self) {
+        onSelfRemoved();
+        return;
+      }
+      await loadMembers();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const memberIds = new Set(members.map((m) => m.appUserId));
+  const addable = directory.filter((s) => !memberIds.has(s.id));
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        style={{
+          border: 'none',
+          background: 'transparent',
+          color: tokens.color.accent,
+          cursor: 'pointer',
+          fontSize: 12,
+          padding: 0,
+        }}
+      >
+        {open ? '▾' : '▸'} Participants ({members.length})
+      </button>
+      {open && (
+        <div style={{ marginTop: 8, display: 'grid', gap: 6 }}>
+          {members.map((m) => {
+            const self = m.appUserId === me?.appUserId;
+            return (
+              <div
+                key={m.id}
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  fontSize: 13,
+                  borderBottom: `1px solid ${tokens.color.border}`,
+                  padding: '4px 0',
+                }}
+              >
+                <span>
+                  {m.name}
+                  {self ? ' (you)' : ''}
+                </span>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={busy || !m.appUserId}
+                  onClick={() => m.appUserId && void removeMember(m.appUserId)}
+                >
+                  {self ? 'Leave' : 'Remove'}
+                </Button>
+              </div>
+            );
+          })}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <select
+              value={selectedId}
+              onChange={(e) => setSelectedId(e.target.value)}
+              style={{
+                flex: 1,
+                padding: '4px 8px',
+                fontSize: 13,
+                border: `1px solid ${tokens.color.border}`,
+                borderRadius: tokens.radius.sm,
+                background: tokens.color.surface,
+                color: tokens.color.text,
+              }}
+            >
+              <option value="">Add a team member…</option>
+              {addable.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <Button size="sm" onClick={() => void addMember()} disabled={!selectedId || busy}>
+              Add
+            </Button>
+          </div>
+          {error && (
+            <p style={{ fontSize: 12, color: tokens.color.danger, margin: 0 }} role="alert">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
