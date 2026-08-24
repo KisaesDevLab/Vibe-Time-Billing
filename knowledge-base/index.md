@@ -74,6 +74,7 @@ _Logging, editing, and reviewing time._
 - [Day, week & month views and targets](time-tracking/time-grids-and-targets.md) — Review your hours by period with color-coded target indicators.
 - [Editing, deleting, and locking time](time-tracking/editing-time.md) — Correct your own entries; understand versioning, locking, and the late-entry window.
 - [Printing a Process Project sheet](time-tracking/process-project-sheet.md) — Print a per-engagement processing form from the Quick-log view.
+- [Time off — balances, requests, and sick time](time-tracking/time-off.md) — Check PTO/Sick/Comp balances, request time off, and log same-day sick time.
 
 ## Rates
 
@@ -238,6 +239,7 @@ _Firm settings, users, roles, and taxonomy._
 - [Users, roles & permissions](admin/users-roles.md) — How RBAC works and who can do what.
 - [Taxonomy: service lines, work codes, reason codes](admin/taxonomy.md) — The vocabulary that organizes work and billing.
 - [Holidays, required fields & other settings](admin/admin-misc.md) — Smaller admin controls worth knowing.
+- [Payroll timekeeping](admin/payroll-timekeeping.md) — Overtime classification, PTO/Sick/Comp accrual policies, pay-period review, lock, and payroll exports.
 - [Engagement status-change history report](admin/status-history.md) — Firm-wide log of every engagement progress-status change — who changed it, when, and from/to.
 - [Engagement statuses & per-status client notifications](admin/engagement-status-notifications.md) — Manage your board statuses and configure which ones notify clients, by which channels, immediately or via approval.
 - [Set up the calendar connection (admin)](admin/calendar-oauth-setup.md) — Enable Microsoft 365 / Google so staff can link their calendars.
