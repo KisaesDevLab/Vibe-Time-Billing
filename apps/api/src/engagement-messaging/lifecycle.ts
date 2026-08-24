@@ -100,7 +100,7 @@ export async function syncMembersFromAssignments(
   await db.transaction((tx) => syncMembersFromAssignmentsTx(tx, engagementId, link.threadId));
 }
 
-async function syncMembersFromAssignmentsTx(
+export async function syncMembersFromAssignmentsTx(
   tx: Parameters<Parameters<Database['transaction']>[0]>[0],
   engagementId: string,
   threadId: string,

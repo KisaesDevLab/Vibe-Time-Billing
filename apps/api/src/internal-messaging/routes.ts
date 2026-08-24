@@ -10,14 +10,24 @@
 
 import express, { type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, inArray, isNull, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, ne, notInArray, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, messages, threadMembers, threads } from '@vibe/db/schema';
+import {
+  appUsers,
+  clients,
+  engagementInternalThreadLinks,
+  engagements,
+  messages,
+  threadMembers,
+  threads,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { getApplianceLockState } from '../crypto/boot';
+import { syncMembersFromAssignmentsTx } from '../engagement-messaging/lifecycle';
 import {
   generateWrappedTDek,
   encryptForThread,
@@ -140,23 +150,50 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
       res.json({ threads: [] });
       return;
     }
+    // 0165 — hide team threads about a restricted client's engagement.
+    const blockedClientIds = await getBlockedClientIdsCached(
+      deps,
+      req,
+      session.appUserId,
+      session.firmId,
+    );
+    const conds = [
+      eq(threadMembers.appUserId, session.appUserId),
+      isNull(threadMembers.removedAt),
+      eq(threads.firmId, session.firmId),
+      eq(threads.kind, 'internal'),
+      // 0225 interaction rule — an engagement's team thread only surfaces
+      // here once a conversation actually exists (≥1 message). Until then
+      // it is reachable only from the engagement page.
+      sql`(${engagementInternalThreadLinks.engagementId} IS NULL OR EXISTS (
+        SELECT 1 FROM vibetb.message m
+        WHERE m.thread_id = ${threads.id} AND m.deleted_at IS NULL))`,
+    ];
+    if (blockedClientIds.length) {
+      const expr = or(
+        isNull(engagements.clientId),
+        notInArray(engagements.clientId, blockedClientIds),
+      );
+      if (expr) conds.push(expr);
+    }
     const myRows = await deps.db
       .select({
         threadId: threads.id,
         title: threads.title,
         updatedAt: threads.updatedAt,
         status: threads.status,
+        engagementId: engagementInternalThreadLinks.engagementId,
+        clientName: clients.name,
       })
       .from(threadMembers)
       .innerJoin(threads, eq(threads.id, threadMembers.threadId))
-      .where(
-        and(
-          eq(threadMembers.appUserId, session.appUserId),
-          isNull(threadMembers.removedAt),
-          eq(threads.firmId, session.firmId),
-          eq(threads.kind, 'internal'),
-        ),
+      .leftJoin(
+        engagementInternalThreadLinks,
+        eq(engagementInternalThreadLinks.threadId, threads.id),
       )
+      .leftJoin(engagements, eq(engagements.id, engagementInternalThreadLinks.engagementId))
+      .leftJoin(clients, eq(clients.id, engagements.clientId))
+      .where(and(...conds))
       .orderBy(desc(threads.updatedAt));
 
     const ids = myRows.map((r) => r.threadId);
@@ -194,6 +231,8 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
         unread: unread.get(r.threadId) ?? 0,
         updatedAt: r.updatedAt,
         status: r.status,
+        engagementId: r.engagementId,
+        clientName: r.clientName,
       };
     });
     res.json({ threads: result });
@@ -225,6 +264,165 @@ export function createInternalMessagingRouter(deps: InternalMessagingDeps): Rout
     for (const n of unread.values()) total += n;
     res.json({ unread: total });
   });
+
+  // ── Engagement team threads (0225) ──────────────────────────────────
+  // One staff-only thread per engagement, provisioned lazily the first
+  // time someone starts the discussion — so untouched engagements never
+  // appear in the Team list.
+
+  async function loadEngagement(
+    db: Database,
+    engagementId: string,
+    firmId: string,
+  ): Promise<{ id: string; name: string; clientId: string } | null> {
+    const [row] = await db
+      .select({
+        id: engagements.id,
+        name: engagements.name,
+        clientId: engagements.clientId,
+        firmId: clients.firmId,
+      })
+      .from(engagements)
+      .innerJoin(clients, eq(clients.id, engagements.clientId))
+      .where(eq(engagements.id, engagementId))
+      .limit(1);
+    if (!row || row.firmId !== firmId) return null;
+    return { id: row.id, name: row.name, clientId: row.clientId };
+  }
+
+  // GET /engagements/:id/thread — resolve the engagement's team thread.
+  // 404 no_team_thread until someone starts it; `member` tells the UI
+  // whether to render the thread or offer "Join".
+  router.get(
+    '/engagements/:id/thread',
+    requirePermission(deps, 'messaging:read'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const eng = await loadEngagement(deps.db, req.params['id']!, session.firmId);
+      if (!eng) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      if (await blockIfClientRestricted(deps, req, res, eng.clientId)) return;
+      const [link] = await deps.db
+        .select({
+          threadId: engagementInternalThreadLinks.threadId,
+          title: threads.title,
+          status: threads.status,
+        })
+        .from(engagementInternalThreadLinks)
+        .innerJoin(threads, eq(threads.id, engagementInternalThreadLinks.threadId))
+        .where(eq(engagementInternalThreadLinks.engagementId, eng.id))
+        .limit(1);
+      if (!link) {
+        res.status(404).json({ error: 'no_team_thread' });
+        return;
+      }
+      const member = await isMember(deps.db, link.threadId, session.appUserId);
+      res.json({ threadId: link.threadId, title: link.title, status: link.status, member });
+    },
+  );
+
+  // POST /engagements/:id/thread — create-or-join, idempotent. Creates
+  // the thread (seeding members from engagement assignments + the
+  // client's partner-in-charge) if missing, and always ensures the
+  // caller is an active member.
+  router.post(
+    '/engagements/:id/thread',
+    requirePermission(deps, 'messaging:write'),
+    async (req, res) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      if (!requireUnlocked(session.firmId, res)) return;
+      const eng = await loadEngagement(deps.db, req.params['id']!, session.firmId);
+      if (!eng) {
+        res.status(404).json({ error: 'engagement_not_found' });
+        return;
+      }
+      if (await blockIfClientRestricted(deps, req, res, eng.clientId)) return;
+
+      const [existing] = await deps.db
+        .select({ threadId: engagementInternalThreadLinks.threadId })
+        .from(engagementInternalThreadLinks)
+        .where(eq(engagementInternalThreadLinks.engagementId, eng.id))
+        .limit(1);
+      let threadId = existing?.threadId ?? null;
+      let created = false;
+      if (!threadId) {
+        const wrapped = generateWrappedTDek(deps.db, session.firmId);
+        threadId = await deps.db.transaction(async (tx) => {
+          const [t] = await tx
+            .insert(threads)
+            .values({
+              firmId: session.firmId,
+              tDekWrapped: Buffer.from(wrapped),
+              kind: 'internal',
+              title: eng.name,
+            })
+            .returning({ id: threads.id });
+          const tid = t!.id;
+          const linked = await tx
+            .insert(engagementInternalThreadLinks)
+            .values({ engagementId: eng.id, threadId: tid })
+            .onConflictDoNothing()
+            .returning({ threadId: engagementInternalThreadLinks.threadId });
+          if (linked.length === 0) {
+            // Lost a create race — drop the orphan thread and reuse the
+            // winner's.
+            await tx.delete(threads).where(eq(threads.id, tid));
+            const [winner] = await tx
+              .select({ threadId: engagementInternalThreadLinks.threadId })
+              .from(engagementInternalThreadLinks)
+              .where(eq(engagementInternalThreadLinks.engagementId, eng.id))
+              .limit(1);
+            return winner!.threadId;
+          }
+          await syncMembersFromAssignmentsTx(tx, eng.id, tid);
+          return tid;
+        });
+        created = true;
+      }
+
+      // Ensure the caller is an active member (insert or reactivate).
+      const [mem] = await deps.db
+        .select({ id: threadMembers.id, removedAt: threadMembers.removedAt })
+        .from(threadMembers)
+        .where(
+          and(eq(threadMembers.threadId, threadId), eq(threadMembers.appUserId, session.appUserId)),
+        )
+        .limit(1);
+      if (mem) {
+        if (mem.removedAt) {
+          await deps.db
+            .update(threadMembers)
+            .set({ removedAt: null, joinedAt: new Date(), lastReadAt: null })
+            .where(eq(threadMembers.id, mem.id));
+        }
+      } else {
+        await deps.db
+          .insert(threadMembers)
+          .values({ threadId, appUserId: session.appUserId, memberRole: 'staff' });
+      }
+
+      if (created) {
+        await emitAudit(deps.db, {
+          action: 'CREATE',
+          entityType: 'internal_thread',
+          entityId: threadId,
+          actorAppUserId: session.appUserId,
+          after: { engagementId: eng.id },
+        }).catch(() => undefined);
+      }
+      res.status(created ? 201 : 200).json({ threadId });
+    },
+  );
 
   // POST /threads — start a DM or group. A 1:1 (one other member, no title)
   // reuses an existing direct thread if one exists.

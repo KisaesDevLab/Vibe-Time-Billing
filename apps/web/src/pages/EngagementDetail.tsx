@@ -13,6 +13,7 @@ import {
   percentInputToBps,
 } from '../lib/money';
 import { EngagementMessagesCard } from './messaging/EngagementMessagesCard';
+import { EngagementTeamThreadCard } from './messaging/EngagementTeamThreadCard';
 import { EngagementStatusHistoryCard } from './EngagementStatusHistoryCard';
 import { EngagementRecurringPlansCard } from './billing/EngagementRecurringPlansCard';
 import { RecurringEngagementsCard } from './clients/RecurringEngagementsCard';
@@ -985,6 +986,8 @@ export function EngagementDetailPage(): JSX.Element {
       />
 
       {id && <EngagementMessagesCard engagementId={id} />}
+
+      {id && <EngagementTeamThreadCard engagementId={id} />}
 
       {id && engagement && (
         <EngagementRecurringPlansCard engagementId={id} engagementName={engagement.name} />

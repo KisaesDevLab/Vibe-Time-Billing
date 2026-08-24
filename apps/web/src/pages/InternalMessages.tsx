@@ -19,6 +19,9 @@ interface ThreadRow {
   memberCount: number;
   unread: number;
   updatedAt: string;
+  // 0225 — set when the thread is an engagement's team discussion.
+  engagementId: string | null;
+  clientName: string | null;
 }
 
 export function TeamMessagesPanel(): JSX.Element {
@@ -161,8 +164,12 @@ export function TeamMessagesPanel(): JSX.Element {
                         )}
                       </div>
                       <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
-                        {t.isDirect ? 'Direct' : `Group · ${t.memberCount}`} · Updated{' '}
-                        {new Date(t.updatedAt).toLocaleString()}
+                        {t.engagementId
+                          ? `Engagement${t.clientName ? ` · ${t.clientName}` : ''}`
+                          : t.isDirect
+                            ? 'Direct'
+                            : `Group · ${t.memberCount}`}{' '}
+                        · Updated {new Date(t.updatedAt).toLocaleString()}
                       </div>
                     </button>
                   );
@@ -193,7 +200,16 @@ export function TeamMessagesPanel(): JSX.Element {
                     ← All conversations
                   </button>
                 )}
-                {active && !active.isDirect ? <Pill tone="neutral">Group</Pill> : null}
+                {active?.engagementId ? (
+                  <a
+                    href={`/engagements/${active.engagementId}`}
+                    style={{ fontSize: 12, color: tokens.color.accent, textDecoration: 'none' }}
+                  >
+                    Open engagement →
+                  </a>
+                ) : active && !active.isDirect ? (
+                  <Pill tone="neutral">Group</Pill>
+                ) : null}
               </span>
             }
           >

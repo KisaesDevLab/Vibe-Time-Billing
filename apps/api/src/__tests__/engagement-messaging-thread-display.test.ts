@@ -65,7 +65,13 @@ async function seedClientThread(title: string): Promise<string> {
 
 describe('engagement message thread list — display fields', () => {
   it('returns the client name alongside the engagement title', async () => {
-    await seedClientThread('Annual Tax 2026');
+    const threadId = await seedClientThread('Annual Tax 2026');
+    // 0225 — threads only list once a conversation exists.
+    await harness.db.insert(messages).values({
+      threadId,
+      senderAppUserId: seed.appUserId,
+      bodyCiphertext: Buffer.alloc(48, 1),
+    });
     const res = await request(app()).get('/api/staff/engagement-messaging/threads');
     expect(res.status).toBe(200);
     expect(res.body.items).toHaveLength(1);

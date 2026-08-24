@@ -30,6 +30,7 @@ Every engagement has a private, encrypted message thread shared between your sta
 ## What you'll see
 
 - Threads are created automatically when an engagement is opened with portal contacts assigned; staff don't create engagement threads from the inbox.
+- The inbox only lists threads where a conversation actually exists (at least one message). A freshly opened engagement's empty thread stays out of the list until someone posts; you can always reach it (and send the first message) from the engagement's **Messages** card or the client's record.
 - You only see threads you are a **member** of. Membership mirrors engagement assignments plus the client's partner-in-charge; a removed member loses access.
 - If you aren't a member: "You aren't a member of this thread. Ask the engagement partner to add you, then refresh."
 - Archived threads show an **Archived** pill and block new replies ("This thread is archived. Reopen the engagement to send a reply."). Threads archive when the engagement is archived.
