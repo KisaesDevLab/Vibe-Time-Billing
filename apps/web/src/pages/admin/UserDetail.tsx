@@ -129,7 +129,7 @@ interface Snapshot {
   entries: SnapshotEntry[];
 }
 
-type Tab = 'main' | 'contact' | 'rates' | 'skills' | 'targets' | 'notes' | 'booking';
+type Tab = 'main' | 'contact' | 'rates' | 'skills' | 'targets' | 'payroll' | 'notes' | 'booking';
 
 const fieldStyle: React.CSSProperties = {
   boxSizing: 'border-box',
@@ -151,7 +151,16 @@ export function UserDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const [searchParams] = useSearchParams();
   const requestedTab = searchParams.get('tab');
-  const VALID_TABS: Tab[] = ['main', 'contact', 'rates', 'skills', 'targets', 'notes', 'booking'];
+  const VALID_TABS: Tab[] = [
+    'main',
+    'contact',
+    'rates',
+    'skills',
+    'targets',
+    'payroll',
+    'notes',
+    'booking',
+  ];
   const [tab, setTab] = useState<Tab>(
     VALID_TABS.includes(requestedTab as Tab) ? (requestedTab as Tab) : 'main',
   );
@@ -415,6 +424,9 @@ export function UserDetailPage(): JSX.Element {
           <TabButton current={tab} value="targets" onSelect={changeTab}>
             Targets
           </TabButton>
+          <TabButton current={tab} value="payroll" onSelect={changeTab}>
+            Payroll
+          </TabButton>
           <TabButton current={tab} value="notes" onSelect={changeTab}>
             Notes
           </TabButton>
@@ -466,6 +478,7 @@ export function UserDetailPage(): JSX.Element {
       )}
       {tab === 'skills' && id && <SkillsTab userId={id} />}
       {tab === 'targets' && id && <TargetsTab userId={id} />}
+      {tab === 'payroll' && id && <PayrollTab userId={id} />}
       {tab === 'booking' && id && <BookingSettingsEditor userId={id} />}
       {tab === 'notes' && (
         <NotesTab
@@ -1801,5 +1814,265 @@ function NotesTab({
         <Plain>—</Plain>
       )}
     </Card>
+  );
+}
+
+// ---------------------------------------------------------------------
+// Payroll tab (0226) — classification flags, assigned accrual policies,
+// PTO/Sick/Comp balances, ledger history, and the manual adjustment
+// dialog (go-live starting balances, corrections, comp grants).
+// ---------------------------------------------------------------------
+
+interface PayrollBank {
+  bank: 'PTO' | 'SICK' | 'COMP';
+  accruedHours: number;
+  usedHours: number;
+  balanceHours: number;
+}
+
+interface PayrollAssignment {
+  id: string;
+  bank: string;
+  policyName: string;
+  effectiveDate: string;
+}
+
+interface LedgerRow {
+  id: string;
+  bank: string;
+  entryDate: string;
+  deltaHours: string;
+  reason: string;
+  note: string;
+  createdAt: string;
+}
+
+function PayrollTab({ userId }: { userId: string }): JSX.Element {
+  const [flags, setFlags] = useState<{ overtimeExempt: boolean; isFullTime: boolean } | null>(null);
+  const [banks, setBanks] = useState<PayrollBank[]>([]);
+  const [assignments, setAssignments] = useState<PayrollAssignment[]>([]);
+  const [ledger, setLedger] = useState<LedgerRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  // Manual adjustment form.
+  const [adjBank, setAdjBank] = useState<'PTO' | 'SICK' | 'COMP'>('PTO');
+  const [adjHours, setAdjHours] = useState('');
+  const [adjNote, setAdjNote] = useState('');
+  const [adjBusy, setAdjBusy] = useState(false);
+
+  async function loadPayroll(): Promise<void> {
+    try {
+      const [u, bal, asg, led] = await Promise.all([
+        api<{ user: { overtimeExempt?: boolean; isFullTime?: boolean } }>(
+          `/api/staff/admin/users/${userId}`,
+        ),
+        api<{ items: Array<{ appUserId: string; banks: PayrollBank[] }> }>(
+          '/api/staff/payroll/balances',
+        ),
+        api<{ items: PayrollAssignment[] }>(`/api/staff/payroll/assignments?appUserId=${userId}`),
+        api<{ items: LedgerRow[] }>(`/api/staff/payroll/ledger?appUserId=${userId}`),
+      ]);
+      setFlags({
+        overtimeExempt: u.user.overtimeExempt ?? true,
+        isFullTime: u.user.isFullTime ?? true,
+      });
+      setBanks(bal.items.find((i) => i.appUserId === userId)?.banks ?? []);
+      setAssignments(asg.items ?? []);
+      setLedger(led.items ?? []);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+
+  useEffect(() => {
+    void loadPayroll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  async function saveFlag(patch: {
+    overtimeExempt?: boolean;
+    isFullTime?: boolean;
+  }): Promise<void> {
+    setError(null);
+    try {
+      await api(`/api/staff/admin/users/${userId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(patch),
+      });
+      await loadPayroll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    }
+  }
+
+  async function submitAdjustment(): Promise<void> {
+    const delta = Number(adjHours);
+    if (!delta || !adjNote.trim()) {
+      setError('Adjustment needs non-zero hours and a reason note.');
+      return;
+    }
+    setError(null);
+    setNotice(null);
+    setAdjBusy(true);
+    try {
+      await api('/api/staff/payroll/ledger/adjustment', {
+        method: 'POST',
+        body: JSON.stringify({
+          appUserId: userId,
+          bank: adjBank,
+          deltaHours: delta,
+          reason: 'ADJUSTMENT',
+          note: adjNote.trim(),
+        }),
+      });
+      setNotice(`Adjusted ${adjBank} by ${delta > 0 ? '+' : ''}${delta}h.`);
+      setAdjHours('');
+      setAdjNote('');
+      await loadPayroll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'failed');
+    } finally {
+      setAdjBusy(false);
+    }
+  }
+
+  return (
+    <div style={{ display: 'grid', gap: tokens.space.lg }}>
+      {error && <p style={{ color: tokens.color.danger, fontSize: 13 }}>{error}</p>}
+      {notice && <p style={{ color: tokens.color.accent, fontSize: 13 }}>{notice}</p>}
+
+      <Card title="Classification">
+        {flags ? (
+          <div style={{ display: 'grid', gap: 10 }}>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={flags.overtimeExempt}
+                onChange={(e) => void saveFlag({ overtimeExempt: e.target.checked })}
+              />
+              Exempt from overtime (salaried — payroll uses standard hours, no OT)
+            </label>
+            <label style={{ display: 'flex', gap: 8, alignItems: 'center', fontSize: 13 }}>
+              <input
+                type="checkbox"
+                checked={flags.isFullTime}
+                onChange={(e) => void saveFlag({ isFullTime: e.target.checked })}
+              />
+              Full-time (accrues PTO/Sick/Comp; part-timers report worked hours only)
+            </label>
+          </div>
+        ) : (
+          <p style={{ fontSize: 13 }}>Loading…</p>
+        )}
+      </Card>
+
+      <Card title="Balances">
+        <Table<PayrollBank>
+          columns={[
+            { key: 'bank', header: 'Bank', render: (b) => <Pill tone="accent">{b.bank}</Pill> },
+            { key: 'accrued', header: 'Accrued', render: (b) => b.accruedHours.toFixed(2) },
+            { key: 'used', header: 'Used', render: (b) => b.usedHours.toFixed(2) },
+            {
+              key: 'balance',
+              header: 'Balance',
+              render: (b) => (
+                <strong
+                  style={{ color: b.balanceHours < 0 ? tokens.color.danger : tokens.color.text }}
+                >
+                  {b.balanceHours.toFixed(2)}h
+                </strong>
+              ),
+            },
+          ]}
+          rows={banks}
+          rowKey={(b) => b.bank}
+          empty="No balances yet."
+        />
+        <div style={{ marginTop: 12, fontSize: 12, color: tokens.color.textMuted }}>
+          Assigned policies:{' '}
+          {assignments.length > 0
+            ? assignments.map((a) => `${a.bank} → ${a.policyName}`).join(' · ')
+            : 'none (assign on Admin → Payroll)'}
+        </div>
+      </Card>
+
+      <Card title="Manual balance adjustment">
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'auto 1fr 2fr auto',
+            gap: 12,
+            alignItems: 'end',
+          }}
+        >
+          <label style={{ display: 'grid', gap: 4, fontSize: 12 }}>
+            Bank
+            <select
+              value={adjBank}
+              onChange={(e) => setAdjBank(e.target.value as typeof adjBank)}
+              style={{
+                padding: '8px 10px',
+                fontSize: 13,
+                borderRadius: tokens.radius.sm,
+                border: `1px solid ${tokens.color.border}`,
+                background: tokens.color.bg,
+                color: tokens.color.text,
+              }}
+            >
+              <option>PTO</option>
+              <option>SICK</option>
+              <option>COMP</option>
+            </select>
+          </label>
+          <Input
+            label="Hours (± allowed)"
+            type="number"
+            step="0.25"
+            value={adjHours}
+            onChange={(e) => setAdjHours(e.target.value)}
+          />
+          <Input
+            label="Reason note (required)"
+            value={adjNote}
+            onChange={(e) => setAdjNote(e.target.value)}
+          />
+          <Button disabled={adjBusy} onClick={() => void submitAdjustment()}>
+            {adjBusy ? 'Saving…' : 'Apply'}
+          </Button>
+        </div>
+        <p style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 0 }}>
+          Writes an append-only ledger entry (audit-logged). Use for go-live starting balances,
+          corrections, or comp-time grants.
+        </p>
+      </Card>
+
+      <Card title="Ledger history">
+        <Table<LedgerRow>
+          columns={[
+            { key: 'date', header: 'Date', render: (l) => l.entryDate },
+            { key: 'bank', header: 'Bank', render: (l) => l.bank },
+            {
+              key: 'delta',
+              header: 'Hours',
+              render: (l) => {
+                const n = Number(l.deltaHours);
+                return (
+                  <span style={{ color: n < 0 ? tokens.color.danger : tokens.color.text }}>
+                    {n > 0 ? '+' : ''}
+                    {n.toFixed(2)}
+                  </span>
+                );
+              },
+            },
+            { key: 'reason', header: 'Reason', render: (l) => l.reason },
+            { key: 'note', header: 'Note', render: (l) => l.note || '—' },
+          ]}
+          rows={ledger}
+          rowKey={(l) => l.id}
+          empty="No ledger entries yet."
+        />
+      </Card>
+    </div>
   );
 }
