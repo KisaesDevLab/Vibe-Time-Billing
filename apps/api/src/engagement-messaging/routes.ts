@@ -158,15 +158,21 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
       }
     }
 
-    const items = rows.map((r) => {
-      const last = lastByThread.get(r.threadId);
-      return {
-        ...r,
-        lastReplyBy: last?.name ?? null,
-        lastReplyKind: last?.kind ?? null,
-        lastReplyAt: last?.at ?? null,
-      };
-    });
+    const items = rows
+      .map((r) => {
+        const last = lastByThread.get(r.threadId);
+        return {
+          ...r,
+          lastReplyBy: last?.name ?? null,
+          lastReplyKind: last?.kind ?? null,
+          lastReplyAt: last?.at ?? null,
+        };
+      })
+      // 0225 interaction rule — threads auto-provisioned at engagement
+      // create stay out of the inbox until a conversation actually exists
+      // (someone posted). Empty threads remain reachable from the
+      // engagement and client detail cards.
+      .filter((r) => r.lastReplyAt !== null);
     res.json({ items });
   });
 

@@ -435,6 +435,11 @@ Context: an on-demand pricing suggestion on the engagement Activity card. The nu
 
 Deferred follow-ups (noted, not blocking): a **periodic worker** to auto-refresh the economic index (admin/manual refresh ships now); Tier-1 rate-base is intentionally **burdened cost** while Tier-2 is **billable** — do not unify.
 
+## Q65 — Messaging "interaction" visibility rule [engagement team threads]
+Context: operator asked (2026-08-24) for per-engagement team conversations, and for engagements to stay off the Messages page (Clients and Team tabs) "unless the user has an interaction with the engagement/message."
+
+- **Q65 — What counts as an interaction?** Options: (a) strictly per-user — the viewer personally posted/opened the thread; (b) a conversation exists — the thread has ≥1 message from anyone. **Default picked: (b).** Strict per-user hiding would make a client's first message on an unopened thread invisible to the assigned staff — a lost client message. Under (b) the auto-provisioned empty thread never clutters the list, and the moment anyone (client or staff) posts, every member sees it. Team threads additionally don't exist at all until a staff member starts the discussion from the engagement page. Revisit if the operator wants the stricter reading (would need an "unread from client" escape hatch).
+
 ---
 
 # CHANGE LOG

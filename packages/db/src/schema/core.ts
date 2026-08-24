@@ -4379,6 +4379,21 @@ export const engagementThreadLinks = pgTable('engagement_thread_link', {
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+// 0225 — the engagement's staff-only team conversation (thread.kind =
+// 'internal'). A separate link table because everything that touches
+// engagement_thread_link assumes exactly one (client) thread per
+// engagement. Provisioned lazily on first use, not at engagement create.
+export const engagementInternalThreadLinks = pgTable('engagement_internal_thread_link', {
+  engagementId: uuid('engagement_id')
+    .primaryKey()
+    .references(() => engagements.id, { onDelete: 'cascade' }),
+  threadId: uuid('thread_id')
+    .notNull()
+    .unique()
+    .references(() => threads.id, { onDelete: 'cascade' }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const threadMembers = pgTable(
   'thread_member',
   {
