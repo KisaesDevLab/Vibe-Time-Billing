@@ -323,7 +323,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
         },
         {
           section: 'Billing & payments',
-          label: 'Statement',
+          label: 'Ledger',
           href: '/statement',
           icon: <FileText size={16} />,
           active: location.pathname.startsWith('/statement'),
