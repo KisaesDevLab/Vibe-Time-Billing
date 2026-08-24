@@ -40,6 +40,9 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import { isPayrollLocked } from '../payroll/lock';
+import { BANK_USAGE_CATEGORY, loadUserBankBalance } from '../payroll/balances';
+import { checkOverdraw, round2, type TimeOffBank } from '@vibe/core/payroll';
 
 export interface TimeEntryRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -397,6 +400,14 @@ export async function createTimeEntryCore(
       };
     }
   }
+  // 0226 — payroll lock: a LOCKED pay period freezes every entry dated
+  // inside it, for all users (distinct from billing locks).
+  if (await isPayrollLocked(deps.db, session.firmId, parsed.data.entryDate)) {
+    return {
+      status: 409,
+      body: { error: 'payroll_locked', entryDate: parsed.data.entryDate },
+    };
+  }
   const [client] = await deps.db
     .select()
     .from(clients)
@@ -447,13 +458,20 @@ export async function createTimeEntryCore(
   }
 
   let serviceLineId: string | null = null;
+  // 0226 — payroll category of the chosen work code; PTO/SICK/COMP_USED
+  // spend a bank and get an overdraw warning on the success body.
+  let payrollCategory: string | null = null;
   if (parsed.data.workCodeId) {
     const [wc] = await deps.db
-      .select({ serviceLineId: workCodes.serviceLineId })
+      .select({
+        serviceLineId: workCodes.serviceLineId,
+        payrollCategory: workCodes.payrollCategory,
+      })
       .from(workCodes)
       .where(eq(workCodes.id, parsed.data.workCodeId))
       .limit(1);
     serviceLineId = wc?.serviceLineId ?? null;
+    payrollCategory = wc?.payrollCategory ?? null;
   }
 
   const ruleCheck = await evaluateRequiredFieldRules(deps.db, session.firmId, {
@@ -771,6 +789,22 @@ export async function createTimeEntryCore(
     linkedMessages = n;
   }
 
+  // 0226 — warn (never block) when this entry overdraws its time-off
+  // bank. Balance is derived post-insert, so it already includes this
+  // entry's hours.
+  let payrollWarning: string | undefined;
+  const spentBank = (Object.keys(BANK_USAGE_CATEGORY) as TimeOffBank[]).find(
+    (b) => BANK_USAGE_CATEGORY[b] === payrollCategory,
+  );
+  if (spentBank) {
+    try {
+      const bal = await loadUserBankBalance(deps.db, session.firmId, session.appUserId, spentBank);
+      payrollWarning = checkOverdraw(spentBank, round2(bal.balanceHours)).warning;
+    } catch (err) {
+      logger.warn({ err }, 'payroll overdraw check failed');
+    }
+  }
+
   return {
     status: 201,
     body: {
@@ -780,6 +814,7 @@ export async function createTimeEntryCore(
       resolutionLevel: resolved.level,
       hourBankDebit,
       linkedMessages,
+      payrollWarning,
       // Effective progress status after this save (lets the form update
       // its local copy without a full reload).
       workflowState: statusChange?.to ?? eng.workflowState,
@@ -1619,6 +1654,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(409).json({ error: 'archived' });
         return;
       }
+      // 0226 — entries dated inside a LOCKED pay period are frozen.
+      if (await isPayrollLocked(deps.db, session.firmId, prior.entryDate)) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: prior.entryDate });
+        return;
+      }
       // 0208 — entries on the firm-administrative engagement stay
       // non-billable; refuse attempts to flip the flag back on.
       if (parsed.data.billableFlag === true) {
@@ -1784,6 +1824,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       }
       if (prior.status === 'ARCHIVED') {
         res.json({ ok: true, alreadyArchived: true });
+        return;
+      }
+      // 0226 — entries dated inside a LOCKED pay period are frozen.
+      if (await isPayrollLocked(deps.db, session.firmId, prior.entryDate)) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: prior.entryDate });
         return;
       }
       // R5-followup — back hours out of the retainer before archiving

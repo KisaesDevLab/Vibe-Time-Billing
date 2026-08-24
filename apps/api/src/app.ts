@@ -55,6 +55,8 @@ import { createAchVerifyPublicRouter } from './pay-public/ach-verify';
 import { createEngagementRecurrenceRouter } from './engagements/recurrence';
 import { createTimeEntryRouter } from './time-entries/routes';
 import { createTimerRouter } from './time-entries/timers';
+import { createPayrollRouter } from './payroll/routes';
+import { createTimeOffRouter } from './payroll/time-off';
 import { createExpensesRouter } from './expenses/routes';
 import { mountRetainerHealth, collectRetainerMetricsText } from './health/retainer-health';
 import { createPortalAuthRouter, type PortalRoutesDeps } from './auth/portal-routes';
@@ -895,6 +897,22 @@ export function createApp(deps: AppDeps): Express {
     sendEmail: deps.sendPortalEmail,
   });
   app.use('/api/staff/timers', auth.requireAuth, auth.requireCsrf, timerRouter);
+
+  // 0226 — payroll timekeeping: policies, balances, pay periods, review.
+  const payrollRouter = createPayrollRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+  });
+  app.use('/api/staff/payroll', auth.requireAuth, auth.requireCsrf, payrollRouter);
+
+  // 0226 — time-off requests (approval creates entries via the standard
+  // time-entry core, so it shares the time-entry deps).
+  const timeOffRouter = createTimeOffRouter({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    sendEmail: deps.sendPortalEmail,
+  });
+  app.use('/api/staff/time-off', auth.requireAuth, auth.requireCsrf, timeOffRouter);
 
   const expensesRouter = createExpensesRouter({
     db: deps.db,
