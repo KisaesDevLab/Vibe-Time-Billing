@@ -40,6 +40,14 @@ import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
+import {
+  dateIsPayrollLocked,
+  firstPayrollLockedDate,
+  isPayrollLocked,
+  loadPayrollLockedRanges,
+} from '../payroll/lock';
+import { BANK_USAGE_CATEGORY, loadUserBankBalance } from '../payroll/balances';
+import { checkOverdraw, round2, type TimeOffBank } from '@vibe/core/payroll';
 
 export interface TimeEntryRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -347,6 +355,11 @@ export async function createTimeEntryCore(
     payload: z.infer<typeof CreateSchema>;
     ip: string;
     userAgent: string | null;
+    /** 0226 — the time-off APPROVAL path sets this: an approved request
+     *  for dates older than the late-entry window must still land its
+     *  entries (the manager's sign-off IS the late-entry review). The
+     *  payroll lock is never bypassed. */
+    bypassLateEntryLockout?: boolean;
   },
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const { session } = args;
@@ -382,7 +395,7 @@ export async function createTimeEntryCore(
     .where(eq(firmSettings.firmId, session.firmId))
     .limit(1);
   const lockoutDays = fsLock?.lockoutDays ?? 14;
-  if (lockoutDays > 0) {
+  if (lockoutDays > 0 && !args.bypassLateEntryLockout) {
     const todayStr = new Date().toISOString().slice(0, 10);
     const cutoff = new Date(Date.now() - lockoutDays * 86_400_000).toISOString().slice(0, 10);
     if (parsed.data.entryDate < cutoff && parsed.data.entryDate <= todayStr) {
@@ -396,6 +409,14 @@ export async function createTimeEntryCore(
         },
       };
     }
+  }
+  // 0226 — payroll lock: a LOCKED pay period freezes every entry dated
+  // inside it, for all users (distinct from billing locks).
+  if (await isPayrollLocked(deps.db, session.firmId, parsed.data.entryDate)) {
+    return {
+      status: 409,
+      body: { error: 'payroll_locked', entryDate: parsed.data.entryDate },
+    };
   }
   const [client] = await deps.db
     .select()
@@ -447,13 +468,20 @@ export async function createTimeEntryCore(
   }
 
   let serviceLineId: string | null = null;
+  // 0226 — payroll category of the chosen work code; PTO/SICK/COMP_USED
+  // spend a bank and get an overdraw warning on the success body.
+  let payrollCategory: string | null = null;
   if (parsed.data.workCodeId) {
     const [wc] = await deps.db
-      .select({ serviceLineId: workCodes.serviceLineId })
+      .select({
+        serviceLineId: workCodes.serviceLineId,
+        payrollCategory: workCodes.payrollCategory,
+      })
       .from(workCodes)
       .where(eq(workCodes.id, parsed.data.workCodeId))
       .limit(1);
     serviceLineId = wc?.serviceLineId ?? null;
+    payrollCategory = wc?.payrollCategory ?? null;
   }
 
   const ruleCheck = await evaluateRequiredFieldRules(deps.db, session.firmId, {
@@ -771,6 +799,22 @@ export async function createTimeEntryCore(
     linkedMessages = n;
   }
 
+  // 0226 — warn (never block) when this entry overdraws its time-off
+  // bank. Balance is derived post-insert, so it already includes this
+  // entry's hours.
+  let payrollWarning: string | undefined;
+  const spentBank = (Object.keys(BANK_USAGE_CATEGORY) as TimeOffBank[]).find(
+    (b) => BANK_USAGE_CATEGORY[b] === payrollCategory,
+  );
+  if (spentBank) {
+    try {
+      const bal = await loadUserBankBalance(deps.db, session.firmId, session.appUserId, spentBank);
+      payrollWarning = checkOverdraw(spentBank, round2(bal.balanceHours)).warning;
+    } catch (err) {
+      logger.warn({ err }, 'payroll overdraw check failed');
+    }
+  }
+
   return {
     status: 201,
     body: {
@@ -780,6 +824,7 @@ export async function createTimeEntryCore(
       resolutionLevel: resolved.level,
       hourBankDebit,
       linkedMessages,
+      payrollWarning,
       // Effective progress status after this save (lets the form update
       // its local copy without a full reload).
       workflowState: statusChange?.to ?? eng.workflowState,
@@ -1619,6 +1664,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(409).json({ error: 'archived' });
         return;
       }
+      // 0226 — entries dated inside a LOCKED pay period are frozen.
+      if (await isPayrollLocked(deps.db, session.firmId, prior.entryDate)) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: prior.entryDate });
+        return;
+      }
       // 0208 — entries on the firm-administrative engagement stay
       // non-billable; refuse attempts to flip the flag back on.
       if (parsed.data.billableFlag === true) {
@@ -1786,6 +1836,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.json({ ok: true, alreadyArchived: true });
         return;
       }
+      // 0226 — entries dated inside a LOCKED pay period are frozen.
+      if (await isPayrollLocked(deps.db, session.firmId, prior.entryDate)) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: prior.entryDate });
+        return;
+      }
       // R5-followup — back hours out of the retainer before archiving
       // the entry so balance + status stay accurate. Best-effort; an
       // archive itself never blocks on retainer state.
@@ -1837,6 +1892,12 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         return;
       }
       const t = parsed.data.template;
+      // 0226 — bulk creation honors the payroll lock like single create.
+      const lockedDate = await firstPayrollLockedDate(deps.db, session.firmId, parsed.data.dates);
+      if (lockedDate) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: lockedDate });
+        return;
+      }
       const [eng] = await deps.db
         .select()
         .from(engagements)
@@ -1988,6 +2049,11 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         res.status(409).json({ error: 'locked' });
         return;
       }
+      // 0226 — entries dated inside a LOCKED pay period are frozen.
+      if (await isPayrollLocked(deps.db, session.firmId, prior.entryDate)) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: prior.entryDate });
+        return;
+      }
       // Validate the target engagement belongs to the same firm.
       const [target] = await deps.db
         .select({ id: engagements.id, clientId: engagements.clientId })
@@ -2078,6 +2144,12 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
       // twice. Remove it from the batch first.
       if (prior.billingBatchId) {
         res.status(409).json({ error: 'entry_in_billing_batch' });
+        return;
+      }
+      // 0226 — entries dated inside a LOCKED pay period are frozen (a
+      // split can re-bucket hours onto a PTO/Sick work code).
+      if (await isPayrollLocked(deps.db, session.firmId, prior.entryDate)) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: prior.entryDate });
         return;
       }
       const totalHours = splits.reduce((a, s) => a + s.hours, 0);
@@ -2177,10 +2249,16 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         .select()
         .from(timeEntries)
         .where(inArray(timeEntries.id, entryIds));
+      // 0226 — entries dated inside a LOCKED pay period are frozen.
+      const lockedRanges = await loadPayrollLockedRanges(deps.db, session.firmId);
       let transferred = 0;
       let skipped = 0;
       for (const prior of priors) {
         if (prior.lockedAt || prior.status === 'BILLED' || prior.status === 'LOCKED') {
+          skipped++;
+          continue;
+        }
+        if (dateIsPayrollLocked(lockedRanges, prior.entryDate)) {
           skipped++;
           continue;
         }
@@ -2266,8 +2344,19 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
     '/:id/write-off',
     requirePermission(deps, 'time_entry:update:any'),
     async (req: Request, res: Response) => {
+      const session = req.staffSession!;
       if (!deps.db) {
         res.json({ ok: true });
+        return;
+      }
+      // 0226 — entries dated inside a LOCKED pay period are frozen.
+      const [prior] = await deps.db
+        .select({ entryDate: timeEntries.entryDate })
+        .from(timeEntries)
+        .where(eq(timeEntries.id, req.params['id']!))
+        .limit(1);
+      if (prior && (await isPayrollLocked(deps.db, session.firmId, prior.entryDate))) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: prior.entryDate });
         return;
       }
       await deps.db
@@ -2389,12 +2478,33 @@ export function createTimeEntryRouter(deps: TimeEntryRoutesDeps): Router {
         status: status as 'DRAFT' | 'SUBMITTED' | 'LOCKED' | 'BILLED' | 'WRITTEN_OFF' | 'ARCHIVED',
       };
       if (status === 'LOCKED') patch['lockedAt'] = new Date();
+      // 0226 — entries dated inside a LOCKED pay period are frozen (a
+      // bulk ARCHIVE would silently remove hours from an exported
+      // payroll period). Skip those ids rather than failing the batch.
+      const session = req.staffSession!;
+      const lockedRanges = await loadPayrollLockedRanges(deps.db, session.firmId);
+      let allowedIds = ids;
+      let payrollSkipped = 0;
+      if (lockedRanges.length > 0) {
+        const priors = await deps.db
+          .select({ id: timeEntries.id, entryDate: timeEntries.entryDate })
+          .from(timeEntries)
+          .where(inArray(timeEntries.id, ids));
+        allowedIds = priors
+          .filter((p) => !dateIsPayrollLocked(lockedRanges, p.entryDate))
+          .map((p) => p.id);
+        payrollSkipped = priors.length - allowedIds.length;
+        if (allowedIds.length === 0) {
+          res.json({ ok: true, updated: 0, payrollSkipped });
+          return;
+        }
+      }
       const updated = await deps.db
         .update(timeEntries)
         .set(patch)
-        .where(inArray(timeEntries.id, ids))
+        .where(inArray(timeEntries.id, allowedIds))
         .returning({ id: timeEntries.id });
-      res.json({ ok: true, updated: updated.length });
+      res.json({ ok: true, updated: updated.length, payrollSkipped });
     },
   );
 

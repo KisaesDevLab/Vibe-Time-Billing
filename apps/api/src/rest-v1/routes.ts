@@ -182,6 +182,12 @@ export function createRestV1Router(deps: RestRoutesDeps): Router {
         res.status(400).json({ error: 'user_not_in_firm' });
         return;
       }
+      // 0226 — token writes honor the payroll lock like every other path.
+      const { isPayrollLocked } = await import('../payroll/lock');
+      if (await isPayrollLocked(deps.db, token.firmId, parsed.data.entryDate)) {
+        res.status(409).json({ error: 'payroll_locked', entryDate: parsed.data.entryDate });
+        return;
+      }
       const flags = tokenEntryFlags(eng, parsed.data.workCodeId);
       const [row] = await deps.db
         .insert(timeEntries)

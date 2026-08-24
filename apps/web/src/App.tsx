@@ -128,6 +128,11 @@ const SignatureDetailPage = lazyPage(
   'SignatureDetailPage',
 );
 const MyCalendarPage = lazyPage(() => import('./pages/MyCalendar'), 'MyCalendarPage');
+const TimeOffPage = lazyPage(() => import('./pages/TimeOff'), 'TimeOffPage');
+const PayrollReviewPage = lazyPage(
+  () => import('./pages/payroll/PayrollReview'),
+  'PayrollReviewPage',
+);
 // FilesPage v1 removed (Phase 0 of file-manager rebuild); v2 ships in Phase 10.
 const InvoiceDetailPage = lazyPage(() => import('./pages/InvoiceDetail'), 'InvoiceDetailPage');
 const InvoicesPage = lazyPage(() => import('./pages/Invoices'), 'InvoicesPage');
@@ -237,6 +242,8 @@ export function App(): JSX.Element {
                       element={<Navigate to="/appointments#review" replace />}
                     />
                     <Route path="/time" element={<TimeEntryPage />} />
+                    <Route path="/time-off" element={<TimeOffPage />} />
+                    <Route path="/payroll/review" element={<PayrollReviewPage />} />
                     <Route path="/tasks" element={<TasksPage />} />
                     <Route path="/billing/*" element={<BillingBatchesPage />} />
                     <Route path="/wip" element={<WipDashboardPage />} />
@@ -329,6 +336,8 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     // Tasks are client:read-gated server-side; keep nav + route in agreement.
     tasks: usePermission('client:read'),
     time: usePermission('time_entry:read:own'),
+    timeOff: usePermission('time_off:request:own'),
+    payroll: usePermission('payroll:period:read'),
     engagements: usePermission('engagement:read'),
     proposals: usePermission('proposal:read'),
     signatures: usePermission('proposal:read'),
@@ -448,8 +457,16 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
             label: 'Time',
             href: '/time',
             icon: <Clock size={16} />,
-            active: location.pathname.startsWith('/time'),
+            active: location.pathname === '/time',
             show: can.time,
+          },
+          {
+            section: 'Work',
+            label: 'Time off',
+            href: '/time-off',
+            icon: <CalendarDays size={16} />,
+            active: location.pathname.startsWith('/time-off'),
+            show: can.timeOff,
           },
           {
             section: 'Work',
@@ -613,6 +630,14 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
             icon: <ChartColumn size={16} />,
             active: location.pathname.startsWith('/reports'),
             show: can.reports,
+          },
+          {
+            section: 'Oversight',
+            label: 'Payroll review',
+            href: '/payroll/review',
+            icon: <Clock size={16} />,
+            active: location.pathname.startsWith('/payroll'),
+            show: can.payroll,
           },
           {
             section: 'Oversight',

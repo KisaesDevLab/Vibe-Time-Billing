@@ -41,6 +41,7 @@ import { WebhookKeysPage } from './WebhookKeys';
 import { NotificationsPage } from './Notifications';
 import { NotificationTemplatesPage } from './NotificationTemplates';
 import { OfficesPage } from './Offices';
+import { PayrollAdminPage } from './Payroll';
 import { PermissionMatrixPage } from './PermissionMatrix';
 import { RateCodesPage } from './RateCodes';
 import { RatesPage } from './Rates';
@@ -101,6 +102,7 @@ const GROUPS: Group[] = [
       { key: 'users', label: 'Users', href: '/admin/users' },
       { key: 'roles', label: 'Roles', href: '/admin/roles' },
       { key: 'perms', label: 'Permissions', href: '/admin/permissions' },
+      { key: 'payroll', label: 'Payroll', href: '/admin/payroll' },
     ],
   },
   {
@@ -338,6 +340,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="offices" element={<OfficesPage />} />
         <Route path="users" element={<UsersPage />} />
         <Route path="users/:id" element={<UserDetailPage />} />
+        <Route path="payroll" element={<PayrollAdminPage />} />
         <Route path="taxonomy/*" element={<TaxonomyPage />} />
         <Route path="engagement-statuses" element={<EngagementStatusesPage />} />
         <Route path="bulk-engagements" element={<EngagementCreatePage bulk />} />

@@ -304,6 +304,20 @@ Per the TB-standalone framing, the original addendum's plan to fold portal auth 
 
 *Append questions encountered during the build here. Format: phase, item, question, options considered, default chosen, why. Decisions accumulate over time; this is the running deferral log, not a blocker.*
 
+## Q61 — Payroll timekeeping: overtime_exempt default [payroll 0226]
+Context: migration 0226 adds `app_user.overtime_exempt`. Operator-locked requirements say exempt/non-exempt is a per-employee classification but did not specify the default for un-configured users.
+Assumed default: **`true` (exempt)** — no phantom OT appears on payroll reports until an admin explicitly marks staff non-exempt. Conservative for a CPA firm that is mostly salaried.
+Implication if wrong: a non-exempt employee left un-configured under-reports OT until the flag is set (visible on the UserDetail → Payroll tab).
+
+## Q62 — Payroll timekeeping: semi-monthly split [payroll 0226]
+Context: SEMI_MONTHLY pay periods are hard-coded 1–15 / 16–EOM (industry standard). Firms wanting e.g. 5th/20th splits would need an extra setting. Deferred.
+
+## Q63 — Payroll timekeeping: period unlock gating [payroll 0226]
+Context: `POST /payroll/periods/:id/unlock` is gated `payroll:period:manage` (partner) with a UI confirm, not step-up TOTP. If payroll locks should be as strict as billing locks, add the step-up gate later. Every unlock is audit-logged.
+
+## Q64 — Payroll timekeeping vs 0062's "no Benefits tab" note [payroll 0226]
+Context: migration 0062 documented that a Benefits tab / SSN were intentionally NOT built ("firms use external HR"). 0226 partially revisits this: payroll **time** (hours, OT classification, PTO/Sick/Comp accrual) is now in scope; wages, SSNs, and benefits remain external per the original decision.
+
 ## Q31 — File manager rebuild path [files phase 0]
 Context: `FILE_MANAGER_ADDENDUM.md` v1 specifies a B2-backed sentinel-bound file manager that fundamentally conflicts with the v1 implementation shipped under migrations 0037 + 0038 (`client_folder` hierarchical, `client_file` flat, no virtual-drive coexistence).
 Assumed default: Replace the existing implementation. Drop `client_folder`, `client_folder_template`, `client_file` and their code in Phase 0. Stub `apps/api/src/clients/files.ts` with `410 Gone` until Phase 8 reintroduces uploads against the new schema.

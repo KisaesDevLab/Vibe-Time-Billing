@@ -416,6 +416,27 @@ export const firmSettings = pgTable('firm_settings', {
   lateEntryAlertDays: integer('late_entry_alert_days').notNull().default(3),
   lateEntryLockoutDays: integer('late_entry_lockout_days').notNull().default(14),
 
+  // 0226 — payroll timekeeping. workweek start day 0=Sunday..6=Saturday
+  // (FLSA weekly-over-40 OT bucketing). anchor_date is a known period
+  // START for WEEKLY/BIWEEKLY; SEMI_MONTHLY is fixed 1–15/16–EOM and
+  // MONTHLY is the calendar month.
+  payrollEnabled: boolean('payroll_enabled').notNull().default(false),
+  payrollWorkweekStartDay: smallint('payroll_workweek_start_day').notNull().default(0),
+  payrollPeriodFrequency: text('payroll_period_frequency')
+    .$type<'WEEKLY' | 'BIWEEKLY' | 'SEMI_MONTHLY' | 'MONTHLY'>()
+    .notNull()
+    .default('BIWEEKLY'),
+  payrollPeriodAnchorDate: date('payroll_period_anchor_date'),
+  payrollHolidayDefaultHours: numeric('payroll_holiday_default_hours', {
+    precision: 4,
+    scale: 2,
+  })
+    .notNull()
+    .default('8'),
+  payrollCompOtMultiplier: numeric('payroll_comp_ot_multiplier', { precision: 3, scale: 2 })
+    .notNull()
+    .default('1.5'),
+
   // Default invoice numbering format
   invoiceNumberingPrefix: text('invoice_numbering_prefix').notNull().default('INV'),
 
@@ -733,6 +754,12 @@ export const appUsers = pgTable(
       .notNull()
       .default('40.00'),
 
+    // 0226 — payroll classification. overtime_exempt defaults true (no
+    // phantom OT until admin marks staff non-exempt); is_full_time gates
+    // PTO/Sick/Comp accrual — only full-timers accrue.
+    overtimeExempt: boolean('overtime_exempt').notNull().default(true),
+    isFullTime: boolean('is_full_time').notNull().default(true),
+
     // Phase 20 #8 — per-user billable target override. NULL = inherit
     // firm_settings.billable_target_hours_per_month.
     billableTargetHoursPerMonth: integer('billable_target_hours_per_month'),
@@ -905,6 +932,12 @@ export const workCodes = pgTable(
     key: text('key').notNull(), // e.g. "tax_prep", "audit_review"
     name: text('name').notNull(),
     billableDefault: boolean('billable_default').notNull().default(true),
+    // 0226 — payroll bucket for the code's hours. PTO/SICK/COMP_USED also
+    // deduct from that bank's balance (usage is derived, never mirrored).
+    payrollCategory: text('payroll_category')
+      .$type<'REGULAR' | 'PTO' | 'SICK' | 'HOLIDAY' | 'COMP_USED' | 'UNPAID'>()
+      .notNull()
+      .default('REGULAR'),
     descriptionTemplate: text('description_template'),
     status: entityStatus('status').notNull().default('ACTIVE'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
