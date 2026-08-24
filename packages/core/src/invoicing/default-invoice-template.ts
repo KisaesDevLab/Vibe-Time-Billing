@@ -12,7 +12,7 @@
 // Bump DEFAULT_INVOICE_TEMPLATE_VERSION when the shipped default
 // changes, so the editor can offer "reset to latest default".
 
-export const DEFAULT_INVOICE_TEMPLATE_VERSION = '1';
+export const DEFAULT_INVOICE_TEMPLATE_VERSION = '2';
 
 export const DEFAULT_INVOICE_BODY_HTML = `<!doctype html>
 <html lang="en">
@@ -23,15 +23,23 @@ export const DEFAULT_INVOICE_BODY_HTML = `<!doctype html>
 <body>
 <div class="page">
 
-  <!-- ============ LETTERHEAD ============ -->
+  <!-- ============ LETTERHEAD (pay QR top-right) ============ -->
   <div class="letterhead">
-    {{#if firm.logo_url}}
-    <div class="logo"><img src="{{ firm.logo_url }}" alt="{{ firm.name }}"></div>
-    {{/if}}
-    <div class="biz">
-      <div class="biz-name">{{ firm.name }}</div>
-      {{#if firm.address}}<div class="biz-addr">{{ firm.address }}</div>{{/if}}
+    <div class="letterhead-left">
+      {{#if firm.logo_url}}
+      <div class="logo"><img src="{{ firm.logo_url }}" alt="{{ firm.name }}"></div>
+      {{/if}}
+      <div class="biz">
+        <div class="biz-name">{{ firm.name }}</div>
+        {{#if firm.address}}<div class="biz-addr">{{ firm.address }}</div>{{/if}}
+      </div>
     </div>
+    {{#if invoice.pay_qr}}
+    <div class="paybox">
+      <div class="payqr">{{{ invoice.pay_qr }}}</div>
+      <div class="paymsg"><strong>Scan to pay online</strong><br>No login required.</div>
+    </div>
+    {{/if}}
   </div>
 
   <!-- ============ INVOICE HEADER ============ -->
@@ -86,18 +94,8 @@ export const DEFAULT_INVOICE_BODY_HTML = `<!doctype html>
 
   <div class="spacer"></div>
 
-  <!-- ============ BOTTOM: pay QR + dunning + footer ============ -->
+  <!-- ============ BOTTOM: dunning + footer ============ -->
   <div class="bottom">
-    {{#if invoice.pay_qr}}
-    <div class="paybox">
-      <div class="payqr">{{{ invoice.pay_qr }}}</div>
-      <div class="paymsg">
-        <strong>Scan to pay online</strong><br>
-        No login required.<br>
-        <span class="payurl">{{ invoice.pay_url }}</span>
-      </div>
-    </div>
-    {{/if}}
     {{#if dunning}}<div class="dunning">{{{ dunning }}}</div>{{/if}}
     {{#if invoice_footer}}<div class="invoice-footer">{{{ invoice_footer }}}</div>{{/if}}
   </div>
@@ -133,12 +131,19 @@ html, body {
 }
 
 /* ---------- LETTERHEAD ---------- */
+/* Firm block left, pay-QR top-right; no rule below (the single rule
+   sits after the client/meta header, matching the letter layout). */
 .letterhead {
   display: flex;
   align-items: flex-start;
+  justify-content: space-between;
   gap: 18px;
   padding-bottom: 10px;
-  border-bottom: 2px solid var(--accent);
+}
+.letterhead-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
 }
 .letterhead .logo img {
   max-height: 90px;
@@ -146,6 +151,9 @@ html, body {
   display: block;
 }
 .letterhead .biz { padding-top: 2px; }
+.paybox { text-align: center; }
+.paybox .payqr img { display: block; width: 72px; height: 72px; margin: 0 auto 4px; }
+.paybox .paymsg { font-size: 11px; line-height: 1.45; }
 .biz .biz-name {
   font-family: Arial, Helvetica, sans-serif;
   font-size: 22px;
@@ -208,22 +216,15 @@ hr.rule { border: none; border-top: 1px solid var(--rule); margin: 0 0 6px; }
 .spacer { flex: 1 1 auto; min-height: 40px; }
 
 /* ---------- BOTTOM ---------- */
-.bottom { margin-top: auto; }
-.paybox {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 0 14px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid #ccc;
+.bottom {
+  margin-top: auto;
+  border-top: 1px solid var(--rule);
+  padding-top: 10px;
 }
-.paybox .payqr img { display: block; width: 110px; height: 110px; }
-.paybox .paymsg { font-size: 12px; line-height: 1.5; }
-.paybox .paymsg .payurl { font-size: 10px; color: #555; word-break: break-all; }
 .dunning {
-  font-size: 13px;
+  font-size: 11px;
   line-height: 1.4;
-  font-weight: 700;
+  font-style: italic;
   margin-bottom: 14px;
 }
 .invoice-footer {
