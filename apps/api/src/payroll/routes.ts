@@ -135,10 +135,65 @@ export async function ensurePayPeriods(
     addDays(today, 45),
   );
   if (ranges.length === 0) return;
+  // A frequency/anchor change leaves old-scheme rows behind (the unique
+  // key is firm_id + start_date only, so ON CONFLICT keeps a stale
+  // end_date, and orphaned starts overlap the new tiling). Reconcile:
+  // drop OPEN periods in the window that don't match the current scheme.
+  // LOCKED periods are history and are never touched.
+  const windowStart = addDays(today, -90);
+  const valid = new Set(ranges.map((r) => `${r.start}|${r.end}`));
+  const existing = await db
+    .select({ id: payPeriods.id, startDate: payPeriods.startDate, endDate: payPeriods.endDate })
+    .from(payPeriods)
+    .where(
+      and(
+        eq(payPeriods.firmId, firmId),
+        eq(payPeriods.status, 'OPEN'),
+        gte(payPeriods.startDate, windowStart),
+      ),
+    );
+  const stale = existing.filter((p) => !valid.has(`${p.startDate}|${p.endDate}`)).map((p) => p.id);
+  if (stale.length > 0) {
+    await db.delete(payPeriods).where(inArray(payPeriods.id, stale));
+  }
   await db
     .insert(payPeriods)
     .values(ranges.map((r) => ({ firmId, startDate: r.start, endDate: r.end })))
     .onConflictDoNothing();
+}
+
+/**
+ * Period rows for review/exports. LOCKED periods serve the totals frozen
+ * into pay_period_employee.totals_snapshot at lock time (0227), so later
+ * changes to work-code categories, exempt/full-time flags, standard
+ * hours, or the workweek setting can't rewrite an approved-and-paid
+ * period. OPEN periods (and pre-0227 locked rows with no snapshot)
+ * compute live.
+ */
+export async function loadPeriodEmployeeRows(
+  db: Database,
+  firmId: string,
+  period: { id: string; startDate: string; endDate: string; status: string },
+): Promise<EmployeePeriodRow[]> {
+  if (period.status === 'LOCKED') {
+    const rows = await db
+      .select()
+      .from(payPeriodEmployees)
+      .where(eq(payPeriodEmployees.payPeriodId, period.id));
+    const snaps = rows.filter((r) => r.totalsSnapshot != null);
+    if (snaps.length > 0) {
+      return snaps
+        .map((r) => ({
+          ...(r.totalsSnapshot as unknown as EmployeePeriodRow),
+          compConvertedHours: Number(r.compConvertedHours),
+          approvedAt: r.approvedAt ? r.approvedAt.toISOString() : null,
+          approvedByAppUserId: r.approvedByAppUserId,
+        }))
+        .sort((a, b) => a.fullName.localeCompare(b.fullName));
+    }
+  }
+  const config = await loadPayrollConfig(db, firmId);
+  return computePeriodReview(db, firmId, { start: period.startDate, end: period.endDate }, config);
 }
 
 export interface EmployeePeriodRow {
@@ -695,7 +750,18 @@ export function createPayrollRouter(deps: PayrollRoutesDeps): Router {
         return;
       }
       const balances = await loadBalances(deps.db, session.firmId, [session.appUserId]);
-      res.json({ banks: balances.get(session.appUserId) ?? [] });
+      // standardHoursPerWeek rides along so the Time Off request form
+      // prefills day rows at the user's real daily hours (÷5), not a
+      // flat 8h that over-requests for part-time staff.
+      const [me] = await deps.db
+        .select({ standardHoursPerWeek: appUsers.standardHoursPerWeek })
+        .from(appUsers)
+        .where(eq(appUsers.id, session.appUserId))
+        .limit(1);
+      res.json({
+        banks: balances.get(session.appUserId) ?? [],
+        standardHoursPerWeek: Number(me?.standardHoursPerWeek ?? 40),
+      });
     },
   );
 
@@ -825,12 +891,7 @@ export function createPayrollRouter(deps: PayrollRoutesDeps): Router {
         return;
       }
       const config = await loadPayrollConfig(deps.db, session.firmId);
-      const employees = await computePeriodReview(
-        deps.db,
-        session.firmId,
-        { start: period.startDate, end: period.endDate },
-        config,
-      );
+      const employees = await loadPeriodEmployeeRows(deps.db, session.firmId, period);
       res.json({ period, config, employees });
     },
   );
@@ -922,6 +983,17 @@ export function createPayrollRouter(deps: PayrollRoutesDeps): Router {
             eq(payPeriodEmployees.appUserId, req.params['userId']!),
           ),
         );
+      // Revoking a payroll approval is exactly the mutation a dispute
+      // will ask about — audit it like its siblings.
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'pay_period_employee',
+        entityId: period.id,
+        actorAppUserId: session.appUserId,
+        after: { approved: false, appUserId: req.params['userId'] },
+        ip: clientIp(req),
+        userAgent: req.headers['user-agent'] ?? null,
+      });
       res.json({ ok: true });
     },
   );
@@ -954,6 +1026,22 @@ export function createPayrollRouter(deps: PayrollRoutesDeps): Router {
       }
       const config = await loadPayrollConfig(deps.db, session.firmId);
       const userId = req.params['userId']!;
+      // Validate against the employee's actual remaining OT for this
+      // period (already net of prior conversions) — a typo or a client
+      // retry after a timeout must not credit phantom comp hours into
+      // the append-only ledger.
+      const rows = await computePeriodReview(
+        deps.db,
+        session.firmId,
+        { start: period.startDate, end: period.endDate },
+        config,
+      );
+      const employee = rows.find((r) => r.appUserId === userId);
+      const remainingOt = employee?.otHours ?? 0;
+      if (parsed.data.otHours > remainingOt + 0.001) {
+        res.status(400).json({ error: 'exceeds_remaining_ot', remainingOt });
+        return;
+      }
       const compHours = round2(parsed.data.otHours * config.compOtMultiplier);
       await deps.db.transaction(async (tx) => {
         await tx
@@ -1012,10 +1100,39 @@ export function createPayrollRouter(deps: PayrollRoutesDeps): Router {
         res.status(409).json({ error: 'already_locked' });
         return;
       }
-      await deps.db
-        .update(payPeriods)
-        .set({ status: 'LOCKED', lockedAt: new Date(), lockedByAppUserId: session.appUserId })
-        .where(eq(payPeriods.id, period.id));
+      // 0227 — freeze the per-employee totals at lock time. Review and
+      // exports for a LOCKED period read this snapshot, so later config
+      // edits (work-code categories, exempt flags, workweek) can't
+      // rewrite what was approved and paid.
+      const config = await loadPayrollConfig(deps.db, session.firmId);
+      const snapshotRows = await computePeriodReview(
+        deps.db,
+        session.firmId,
+        { start: period.startDate, end: period.endDate },
+        config,
+      );
+      await deps.db.transaction(async (tx) => {
+        for (const row of snapshotRows) {
+          const { approvedAt, approvedByAppUserId, ...totals } = row;
+          void approvedAt;
+          void approvedByAppUserId;
+          await tx
+            .insert(payPeriodEmployees)
+            .values({
+              payPeriodId: period.id,
+              appUserId: row.appUserId,
+              totalsSnapshot: totals,
+            })
+            .onConflictDoUpdate({
+              target: [payPeriodEmployees.payPeriodId, payPeriodEmployees.appUserId],
+              set: { totalsSnapshot: totals, updatedAt: new Date() },
+            });
+        }
+        await tx
+          .update(payPeriods)
+          .set({ status: 'LOCKED', lockedAt: new Date(), lockedByAppUserId: session.appUserId })
+          .where(eq(payPeriods.id, period.id));
+      });
       await emitAudit(deps.db, {
         action: 'UPDATE',
         entityType: 'pay_period',

@@ -9,17 +9,10 @@ import { and, eq, inArray, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import { timeEntries, timeOffLedger, workCodes } from '@vibe/db/schema';
-import { computeBalance } from '@vibe/core/payroll';
+import { BANK_USAGE_CATEGORY, BANKS, computeBalance } from '@vibe/core/payroll';
 import type { TimeOffBank } from '@vibe/core/payroll';
 
-export const BANKS: readonly TimeOffBank[] = ['PTO', 'SICK', 'COMP'];
-
-/** work_code.payroll_category value that spends each bank. */
-export const BANK_USAGE_CATEGORY: Record<TimeOffBank, string> = {
-  PTO: 'PTO',
-  SICK: 'SICK',
-  COMP: 'COMP_USED',
-};
+export { BANK_USAGE_CATEGORY, BANKS };
 
 export interface BankBalance {
   bank: TimeOffBank;

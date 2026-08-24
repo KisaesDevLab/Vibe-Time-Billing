@@ -46,7 +46,17 @@ export async function runPayrollCarryover(
   let forfeits = 0;
   for (const a of assignments) {
     if (a.policy.carryoverCapHours == null) continue;
-    const balance = await bankBalance(db, a.firmId, a.appUserId, a.policy.bank);
+    // Balance AS OF Dec 31 of the closed year — never the live balance,
+    // which on Jan 1 already contains the new year's annual grant (the
+    // daily accrual job runs before this one) and would wrongly forfeit
+    // part of the fresh grant.
+    const balance = await bankBalance(
+      db,
+      a.firmId,
+      a.appUserId,
+      a.policy.bank,
+      `${closedYear}-12-31`,
+    );
     const forfeit = computeCarryoverForfeit(balance, Number(a.policy.carryoverCapHours));
     if (forfeit >= 0) continue;
     const inserted = await db

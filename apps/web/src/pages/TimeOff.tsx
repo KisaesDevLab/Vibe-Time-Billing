@@ -89,6 +89,7 @@ export function TimeOffPage(): JSX.Element {
   const canApprove = usePermission('time_off:approve');
   const [tab, setTab] = useState<'mine' | 'approvals'>('mine');
   const [banks, setBanks] = useState<BankBalance[]>([]);
+  const [standardHoursPerWeek, setStandardHoursPerWeek] = useState(40);
   const [mine, setMine] = useState<TimeOffRequest[]>([]);
   const [pending, setPending] = useState<TimeOffRequest[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -106,10 +107,13 @@ export function TimeOffPage(): JSX.Element {
   const load = useCallback(async (): Promise<void> => {
     try {
       const [bal, reqs] = await Promise.all([
-        api<{ banks: BankBalance[] }>('/api/staff/payroll/balances/me'),
+        api<{ banks: BankBalance[]; standardHoursPerWeek?: number }>(
+          '/api/staff/payroll/balances/me',
+        ),
         api<{ items: TimeOffRequest[] }>('/api/staff/time-off/requests?scope=mine'),
       ]);
       setBanks(bal.banks ?? []);
+      setStandardHoursPerWeek(bal.standardHoursPerWeek || 40);
       setMine(reqs.items ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'failed');
@@ -136,9 +140,14 @@ export function TimeOffPage(): JSX.Element {
   }, [loadPending]);
 
   // Regenerate default day rows when the range changes (unless edited).
+  // Prefill matches the server default: standard weekly hours ÷ 5.
   useEffect(() => {
-    if (!daysDirty) setDayRows(weekdayRows(startDate, endDate, 8));
-  }, [startDate, endDate, daysDirty]);
+    if (!daysDirty) {
+      setDayRows(
+        weekdayRows(startDate, endDate, Math.round((standardHoursPerWeek / 5) * 100) / 100 || 8),
+      );
+    }
+  }, [startDate, endDate, daysDirty, standardHoursPerWeek]);
 
   const totalHours = useMemo(() => dayRows.reduce((s, d) => s + (d.hours || 0), 0), [dayRows]);
   const projected = useMemo(() => {

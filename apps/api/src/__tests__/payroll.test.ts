@@ -488,3 +488,236 @@ describe('period review', () => {
     expect(me2.actualWorkedHours).toBe(45);
   });
 });
+
+// ---------------------------------------------------------------------
+// Code-review regression fixes
+// ---------------------------------------------------------------------
+
+describe('payroll lock covers every mutation path', () => {
+  async function lockToday(): Promise<void> {
+    await h.db.insert(payPeriods).values({
+      firmId: seed.firmId,
+      startDate: TODAY,
+      endDate: TODAY,
+      status: 'LOCKED',
+      lockedAt: new Date(),
+    });
+  }
+
+  it('bulk-from-template refuses dates inside a locked period', async () => {
+    await lockToday();
+    const r = await invoke(
+      timeRouter(),
+      'post',
+      '/bulk-from-template',
+      req({
+        template: { engagementId: seed.engagementId, hours: 2 },
+        dates: [TODAY],
+      }),
+    );
+    expect(r.statusCode).toBe(409);
+    expect((r.jsonBody as { error: string }).error).toBe('payroll_locked');
+  });
+
+  it('bulk-status skips (never archives) entries dated in a locked period', async () => {
+    const create = await invoke(
+      timeRouter(),
+      'post',
+      '/',
+      req({ engagementId: seed.engagementId, entryDate: TODAY, hours: 2 }),
+    );
+    const entryId = (create.jsonBody as { id: string }).id;
+    await lockToday();
+    const r = await invoke(
+      timeRouter(),
+      'post',
+      '/bulk-status',
+      req({ ids: [entryId], status: 'ARCHIVED' }, {}, approverId),
+    );
+    expect(r.statusCode).toBe(200);
+    expect((r.jsonBody as { updated: number }).updated).toBe(0);
+    expect((r.jsonBody as { payrollSkipped: number }).payrollSkipped).toBe(1);
+    const [row] = await h.db.select().from(timeEntries).where(eq(timeEntries.id, entryId));
+    expect(row!.status).not.toBe('ARCHIVED');
+  });
+
+  it('split and write-off refuse entries dated in a locked period', async () => {
+    const create = await invoke(
+      timeRouter(),
+      'post',
+      '/',
+      req({ engagementId: seed.engagementId, entryDate: TODAY, hours: 2 }),
+    );
+    const entryId = (create.jsonBody as { id: string }).id;
+    await lockToday();
+    const split = await invoke(
+      timeRouter(),
+      'post',
+      '/:id/split',
+      req({ splits: [{ hours: 1 }, { hours: 1 }] }, { id: entryId }, approverId),
+    );
+    expect(split.statusCode).toBe(409);
+    expect((split.jsonBody as { error: string }).error).toBe('payroll_locked');
+    const wo = await invoke(
+      timeRouter(),
+      'post',
+      '/:id/write-off',
+      req({}, { id: entryId }, approverId),
+    );
+    expect(wo.statusCode).toBe(409);
+    expect((wo.jsonBody as { error: string }).error).toBe('payroll_locked');
+  });
+});
+
+describe('time-off approval of old dates', () => {
+  it('approval bypasses the late-entry lockout (the sign-off IS the review)', async () => {
+    // 30 days back — far outside the default 14-day window.
+    const oldDay = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    const create = await invoke(
+      timeOffRouter(),
+      'post',
+      '/requests',
+      req({
+        kind: 'SICK',
+        startDate: oldDay,
+        endDate: oldDay,
+        days: [{ day: oldDay, hours: 8 }],
+      }),
+    );
+    expect(create.statusCode).toBe(201);
+    const requestId = (create.jsonBody as { id: string }).id;
+    const approve = await invoke(
+      timeOffRouter(),
+      'post',
+      '/requests/:id/approve',
+      req({}, { id: requestId }, approverId),
+    );
+    expect(approve.statusCode).toBe(200);
+    expect((approve.jsonBody as { entriesCreated: number }).entriesCreated).toBe(1);
+  });
+});
+
+describe('convert-comp validation', () => {
+  it('rejects converting more OT than the employee actually has', async () => {
+    // No OT at all → any conversion is rejected.
+    const [period] = await h.db
+      .insert(payPeriods)
+      .values({ firmId: seed.firmId, startDate: TODAY, endDate: TODAY })
+      .returning({ id: payPeriods.id });
+    const r = await invoke(
+      payrollRouter(),
+      'post',
+      '/periods/:id/employees/:userId/convert-comp',
+      req({ otHours: 50 }, { id: period!.id, userId: seed.appUserId }, approverId),
+    );
+    expect(r.statusCode).toBe(400);
+    expect((r.jsonBody as { error: string }).error).toBe('exceeds_remaining_ot');
+  });
+});
+
+describe('lock snapshots period totals', () => {
+  it('a locked period is immune to later work-code category changes', async () => {
+    await h.db
+      .update(appUsers)
+      .set({ overtimeExempt: false })
+      .where(eq(appUsers.id, seed.appUserId));
+    // 8h logged today with the SICK code.
+    await invoke(
+      timeRouter(),
+      'post',
+      '/',
+      req({ engagementId: seed.engagementId, workCodeId: sickCodeId, entryDate: TODAY, hours: 8 }),
+    );
+    const [period] = await h.db
+      .insert(payPeriods)
+      .values({ firmId: seed.firmId, startDate: TODAY, endDate: TODAY })
+      .returning({ id: payPeriods.id });
+    const lock = await invoke(
+      payrollRouter(),
+      'post',
+      '/periods/:id/lock',
+      req({}, { id: period!.id }, approverId),
+    );
+    expect(lock.statusCode).toBe(200);
+    const before = await invoke(
+      payrollRouter(),
+      'get',
+      '/periods/:id/review',
+      req({}, { id: period!.id }, approverId),
+    );
+    const rowBefore = (
+      before.jsonBody as { employees: Array<{ appUserId: string; sickHours: number }> }
+    ).employees.find((e) => e.appUserId === seed.appUserId)!;
+    expect(rowBefore.sickHours).toBe(8);
+
+    // Recategorize the sick code AFTER lock — the frozen period must not move.
+    await h.db
+      .update(workCodes)
+      .set({ payrollCategory: 'REGULAR' })
+      .where(eq(workCodes.id, sickCodeId));
+    const after = await invoke(
+      payrollRouter(),
+      'get',
+      '/periods/:id/review',
+      req({}, { id: period!.id }, approverId),
+    );
+    const rowAfter = (
+      after.jsonBody as { employees: Array<{ appUserId: string; sickHours: number }> }
+    ).employees.find((e) => e.appUserId === seed.appUserId)!;
+    expect(rowAfter.sickHours).toBe(8);
+  });
+});
+
+describe('carryover uses the year-end balance', () => {
+  it('does not forfeit the new year annual grant written before it runs', async () => {
+    const { runPayrollCarryover } = await import('../../../worker/src/jobs/payroll-carryover');
+    const [policy] = await h.db
+      .insert(accrualPolicies)
+      .values({
+        firmId: seed.firmId,
+        bank: 'PTO',
+        name: 'Granted PTO',
+        method: 'ANNUAL_GRANT',
+        annualGrantHours: '80',
+        annualGrantTiming: 'CALENDAR_YEAR',
+        carryoverCapHours: '40',
+      })
+      .returning({ id: accrualPolicies.id });
+    await h.db.insert(accrualPolicyAssignments).values({
+      firmId: seed.firmId,
+      appUserId: seed.appUserId,
+      policyId: policy!.id,
+      bank: 'PTO',
+      effectiveDate: '2026-01-01',
+    });
+    // Balance exactly at the 40h cap on Dec 31 → nothing to forfeit.
+    await h.db.insert(timeOffLedger).values({
+      firmId: seed.firmId,
+      appUserId: seed.appUserId,
+      bank: 'PTO',
+      entryDate: '2026-12-31',
+      deltaHours: '40',
+      reason: 'ADJUSTMENT',
+      note: 'year-end balance',
+    });
+    // The new year's grant lands first (accrual job runs at 02:10).
+    await h.db.insert(timeOffLedger).values({
+      firmId: seed.firmId,
+      appUserId: seed.appUserId,
+      bank: 'PTO',
+      entryDate: '2027-01-01',
+      deltaHours: '80',
+      reason: 'GRANT',
+      periodKey: 'ANNUAL:2027',
+      note: 'Annual grant',
+    });
+    const run = await runPayrollCarryover(h.db, log, '2027-01-01');
+    // 40h at year end is within the cap — no forfeit, grant untouched.
+    expect(run.forfeits).toBe(0);
+    const rows = await h.db
+      .select()
+      .from(timeOffLedger)
+      .where(eq(timeOffLedger.reason, 'CARRYOVER_FORFEIT'));
+    expect(rows.length).toBe(0);
+  });
+});

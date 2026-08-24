@@ -24,6 +24,7 @@ import {
 } from '@vibe/db/schema';
 import {
   addDays,
+  BANK_USAGE_CATEGORY,
   computeAnnualGrant,
   computePeriodAccrual,
   generatePayPeriods,
@@ -34,12 +35,6 @@ import {
 } from '@vibe/core/payroll';
 
 import type { Logger } from 'pino';
-
-const BANK_USAGE_CATEGORY: Record<TimeOffBank, 'PTO' | 'SICK' | 'COMP_USED'> = {
-  PTO: 'PTO',
-  SICK: 'SICK',
-  COMP: 'COMP_USED',
-};
 
 function policyInput(p: typeof accrualPolicies.$inferSelect): AccrualPolicyInput {
   return {
@@ -56,33 +51,42 @@ function policyInput(p: typeof accrualPolicies.$inferSelect): AccrualPolicyInput
   };
 }
 
+/**
+ * Ledger credits − derived usage. `asOf` (inclusive, on entry_date)
+ * lets the carryover job compute the balance AS OF Dec 31 — excluding
+ * the new year's annual grant, which the daily accrual job may have
+ * written minutes earlier on Jan 1 (accrual ledger rows carry the
+ * period end as entry_date; grants and manual rows carry their write
+ * date).
+ */
 export async function bankBalance(
   db: Database,
   firmId: string,
   appUserId: string,
   bank: TimeOffBank,
+  asOf?: string,
 ): Promise<number> {
+  const creditConds = [
+    eq(timeOffLedger.firmId, firmId),
+    eq(timeOffLedger.appUserId, appUserId),
+    eq(timeOffLedger.bank, bank),
+  ];
+  if (asOf) creditConds.push(lte(timeOffLedger.entryDate, asOf));
   const [credit] = await db
     .select({ total: sql<string>`COALESCE(SUM(${timeOffLedger.deltaHours}), 0)` })
     .from(timeOffLedger)
-    .where(
-      and(
-        eq(timeOffLedger.firmId, firmId),
-        eq(timeOffLedger.appUserId, appUserId),
-        eq(timeOffLedger.bank, bank),
-      ),
-    );
+    .where(and(...creditConds));
+  const usageConds = [
+    eq(timeEntries.appUserId, appUserId),
+    ne(timeEntries.status, 'ARCHIVED'),
+    eq(workCodes.payrollCategory, BANK_USAGE_CATEGORY[bank]),
+  ];
+  if (asOf) usageConds.push(lte(timeEntries.entryDate, asOf));
   const [used] = await db
     .select({ total: sql<string>`COALESCE(SUM(${timeEntries.hours}), 0)` })
     .from(timeEntries)
     .innerJoin(workCodes, eq(workCodes.id, timeEntries.workCodeId))
-    .where(
-      and(
-        eq(timeEntries.appUserId, appUserId),
-        ne(timeEntries.status, 'ARCHIVED'),
-        eq(workCodes.payrollCategory, BANK_USAGE_CATEGORY[bank]),
-      ),
-    );
+    .where(and(...usageConds));
   return Number(credit?.total ?? 0) - Number(used?.total ?? 0);
 }
 

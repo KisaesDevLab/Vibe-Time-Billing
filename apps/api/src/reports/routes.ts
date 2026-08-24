@@ -3191,11 +3191,12 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
   } | null> {
     const db = deps.db!;
     const { payPeriods: pp } = await import('@vibe/db/schema');
-    const { sql: drz } = await import('drizzle-orm');
-    const { computePeriodReview, loadPayrollConfig } = await import('../payroll/routes');
+    const { sql: drz, desc: drzDesc } = await import('drizzle-orm');
+    const { loadPeriodEmployeeRows } = await import('../payroll/routes');
     const periodId = typeof req.query['periodId'] === 'string' ? req.query['periodId'] : null;
     // Viewer path: ?date=YYYY-MM-DD selects the period containing it
-    // (default: today).
+    // (default: today). Deterministic when a stale locked period from an
+    // old frequency scheme overlaps a current one: latest start wins.
     const dateParam =
       typeof req.query['date'] === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query['date'])
         ? req.query['date']
@@ -3216,15 +3217,11 @@ export function createReportRouter(deps: ReportRoutesDeps): Router {
               drz`${pp.endDate} >= ${dateParam}::date`,
             ),
           )
+          .orderBy(drzDesc(pp.startDate))
           .limit(1);
     if (!period) return null;
-    const config = await loadPayrollConfig(db, firmId);
-    const employees = await computePeriodReview(
-      db,
-      firmId,
-      { start: period.startDate, end: period.endDate },
-      config,
-    );
+    // Snapshot-aware: LOCKED periods return the totals frozen at lock.
+    const employees = await loadPeriodEmployeeRows(db, firmId, period);
     return { period, employees };
   }
 

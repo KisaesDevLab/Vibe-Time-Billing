@@ -228,6 +228,11 @@ async function dispatch(
         .where(and(eq(appUsers.id, parsed.appUserId), eq(appUsers.firmId, token.firmId)))
         .limit(1);
       if (!assignee) throw new Error('user_not_in_firm');
+      // 0226 — token writes honor the payroll lock like every other path.
+      const { isPayrollLocked } = await import('../payroll/lock');
+      if (await isPayrollLocked(deps.db, token.firmId, parsed.entryDate)) {
+        throw new Error('payroll_locked');
+      }
       const flags = tokenEntryFlags(eng, parsed.workCodeId);
       const [row] = await deps.db
         .insert(timeEntries)

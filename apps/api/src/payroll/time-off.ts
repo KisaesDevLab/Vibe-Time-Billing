@@ -19,12 +19,10 @@ import {
   appUsers,
   clients,
   engagements,
-  roles,
   staffNotifications,
   timeEntries,
   timeOffRequestDays,
   timeOffRequests,
-  userRoles,
   workCodes,
 } from '@vibe/db/schema';
 import { checkOverdraw, round2, usageAllowed, type TimeOffBank } from '@vibe/core/payroll';
@@ -126,19 +124,22 @@ async function notifyUsers(
   }
 }
 
-/** Users holding a role whose template includes time_off:approve. */
-async function loadApproverIds(db: Database, firmId: string): Promise<string[]> {
-  const rows = await db
-    .select({ appUserId: userRoles.appUserId })
-    .from(userRoles)
-    .innerJoin(roles, eq(roles.id, userRoles.roleId))
-    .where(
-      and(
-        eq(roles.firmId, firmId),
-        inArray(sql`lower(${roles.name})`, ['partner', 'manager', 'admin']),
-      ),
-    );
-  return [...new Set(rows.map((r) => r.appUserId))];
+/**
+ * Users who actually hold time_off:approve — resolved through the RBAC
+ * layer (role templates + per-firm permission-matrix overrides), not a
+ * hardcoded role list, so custom grants/revokes are honored.
+ */
+async function loadApproverIds(deps: TimeOffRoutesDeps, firmId: string): Promise<string[]> {
+  if (!deps.db) return [];
+  const users = await deps.db
+    .select({ id: appUsers.id })
+    .from(appUsers)
+    .where(and(eq(appUsers.firmId, firmId), eq(appUsers.status, 'ACTIVE')));
+  const out: string[] = [];
+  for (const u of users) {
+    if (await userHasPermission(deps, u.id, 'time_off:approve')) out.push(u.id);
+  }
+  return out;
 }
 
 export function createTimeOffRouter(deps: TimeOffRoutesDeps): Router {
@@ -220,7 +221,7 @@ export function createTimeOffRouter(deps: TimeOffRoutesDeps): Router {
         userAgent: req.headers['user-agent'] ?? null,
       });
 
-      const approvers = (await loadApproverIds(deps.db, session.firmId)).filter(
+      const approvers = (await loadApproverIds(deps, session.firmId)).filter(
         (id) => id !== session.appUserId,
       );
       const [requester] = await deps.db
@@ -425,16 +426,27 @@ export function createTimeOffRouter(deps: TimeOffRoutesDeps): Router {
         res.status(409).json({ error: 'firm_admin_engagement_missing' });
         return;
       }
-      const [wc] = await deps.db
-        .select({ id: workCodes.id })
+      // Resolve the work code by payroll CATEGORY (the durable contract;
+      // a firm may have renamed/recreated the seeded codes). The seeded
+      // key wins when several codes share the category.
+      const kindCategory: Record<string, 'PTO' | 'SICK' | 'COMP_USED' | 'UNPAID'> = {
+        PTO: 'PTO',
+        SICK: 'SICK',
+        COMP: 'COMP_USED',
+        UNPAID: 'UNPAID',
+      };
+      const candidates = await deps.db
+        .select({ id: workCodes.id, key: workCodes.key })
         .from(workCodes)
         .where(
           and(
             eq(workCodes.firmId, session.firmId),
-            eq(workCodes.key, KIND_WORK_CODE_KEY[request.kind]!),
+            eq(workCodes.payrollCategory, kindCategory[request.kind]!),
+            eq(workCodes.status, 'ACTIVE'),
           ),
-        )
-        .limit(1);
+        );
+      const wc =
+        candidates.find((c) => c.key === KIND_WORK_CODE_KEY[request.kind]) ?? candidates[0];
       if (!wc) {
         res.status(409).json({ error: 'payroll_work_code_missing', kind: request.kind });
         return;
@@ -466,6 +478,11 @@ export function createTimeOffRouter(deps: TimeOffRoutesDeps): Router {
           },
           ip: clientIp(req),
           userAgent: req.headers['user-agent'] ?? null,
+          // The approval itself is the late-entry review — a request
+          // covering days older than the lockout window (long sick
+          // leave, or one that sat pending) must still be approvable.
+          // Payroll locks still apply.
+          bypassLateEntryLockout: true,
         });
         const entryId = typeof result.body['id'] === 'string' ? result.body['id'] : null;
         if (result.status !== 201 || !entryId) {

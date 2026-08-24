@@ -10,6 +10,7 @@ import {
   date,
   index,
   integer,
+  jsonb,
   numeric,
   pgTable,
   text,
@@ -191,6 +192,9 @@ export const payPeriodEmployees = pgTable(
     compConvertedHours: numeric('comp_converted_hours', { precision: 6, scale: 2 })
       .notNull()
       .default('0'),
+    // 0227 — per-employee totals frozen at period lock; LOCKED periods
+    // serve review/exports from this instead of recomputing live.
+    totalsSnapshot: jsonb('totals_snapshot').$type<Record<string, unknown> | null>(),
     note: text('note').notNull().default(''),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

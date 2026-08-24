@@ -463,6 +463,14 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runPayrollAccrual(db, logger);
     logger.info({ jobId: job.id, ...result }, 'payroll-accrual complete');
+    // Self-heal: the carryover cron fires only on Jan 1 — if the
+    // appliance was off that day the forfeit would be skipped for the
+    // whole year. Re-run it (idempotent via 'CY:<year>' period keys)
+    // from every January daily tick.
+    if (new Date().getUTCMonth() === 0) {
+      const carry = await runPayrollCarryover(db, logger);
+      logger.info({ jobId: job.id, ...carry }, 'payroll-carryover (january catch-up) complete');
+    }
   },
   'payroll-carryover': async (job) => {
     if (!db) {

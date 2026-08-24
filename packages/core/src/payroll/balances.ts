@@ -14,6 +14,17 @@ export const BANK_LABELS: Record<TimeOffBank, string> = {
   COMP: 'Comp time',
 };
 
+export const BANKS: readonly TimeOffBank[] = ['PTO', 'SICK', 'COMP'];
+
+/** work_code.payroll_category value that spends each bank. The single
+ *  source of truth — API balance queries and the worker accrual sweep
+ *  both derive usage through this map. */
+export const BANK_USAGE_CATEGORY: Record<TimeOffBank, 'PTO' | 'SICK' | 'COMP_USED'> = {
+  PTO: 'PTO',
+  SICK: 'SICK',
+  COMP: 'COMP_USED',
+};
+
 export function computeBalance(ledgerTotal: number, usedHours: number): number {
   return round2(ledgerTotal - usedHours);
 }

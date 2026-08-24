@@ -95,11 +95,11 @@ describe('attributePeriodTotals', () => {
     expect(a.regularHours + a.otHours + b.regularHours + b.otHours).toBe(94);
   });
 
-  it('a workweek straddling INTO the period does not attribute its OT here', () => {
-    // Week Feb 16–22 ends in the second half; hours logged Feb 13 belong
-    // to the week ending Feb 15 which ends in period A.
+  it('OT hours land in the period where they were worked, even when the week ends later', () => {
+    // Week Mon Feb 23 – Sun Mar 1 ends in the March period, but all 48
+    // hours were worked Feb 23–26: the 8 OT hours (cumulative crosses 40
+    // during Feb 26) belong to the February period.
     const daily: Record<string, number> = {
-      // Week Mon Feb 23 – Sun Mar 1 ends in March period.
       '2026-02-23': 12,
       '2026-02-24': 12,
       '2026-02-25': 12,
@@ -113,9 +113,87 @@ describe('attributePeriodTotals', () => {
       standardHoursPerWeek: 40,
       frequency: 'SEMI_MONTHLY',
     });
-    // 48 worked in-period, but the week ends Mar 1 → OT attributed to March.
-    expect(feb2.otHours).toBe(0);
+    expect(feb2.otHours).toBe(8);
+    expect(feb2.regularHours).toBe(40);
     expect(feb2.actualWorkedHours).toBe(48);
+    // And the March period gets nothing from this week.
+    const mar1 = attributePeriodTotals({
+      period: { start: '2026-03-01', end: '2026-03-15' },
+      dailyWorkedHours: daily,
+      workweekStartDay: 1,
+      overtimeExempt: false,
+      standardHoursPerWeek: 40,
+      frequency: 'SEMI_MONTHLY',
+    });
+    expect(mar1.otHours).toBe(0);
+    expect(mar1.regularHours).toBe(0);
+  });
+
+  it('regression: no double pay when a week straddles and all hours sit in the earlier period', () => {
+    // 50h worked Feb 24–28 (week ends Mar 1, zero March hours). The old
+    // week-end attribution paid 50 regular in Feb AND 10 OT in Mar (60h
+    // paid for 50 worked). Now: Feb = 40 regular + 10 OT, Mar = 0.
+    const daily: Record<string, number> = {
+      '2026-02-24': 10,
+      '2026-02-25': 10,
+      '2026-02-26': 10,
+      '2026-02-27': 10,
+      '2026-02-28': 10,
+    };
+    const feb = attributePeriodTotals({
+      period: { start: '2026-02-16', end: '2026-02-28' },
+      dailyWorkedHours: daily,
+      workweekStartDay: 1,
+      overtimeExempt: false,
+      standardHoursPerWeek: 40,
+      frequency: 'SEMI_MONTHLY',
+    });
+    const mar = attributePeriodTotals({
+      period: { start: '2026-03-01', end: '2026-03-15' },
+      dailyWorkedHours: daily,
+      workweekStartDay: 1,
+      overtimeExempt: false,
+      standardHoursPerWeek: 40,
+      frequency: 'SEMI_MONTHLY',
+    });
+    expect(feb).toEqual({ actualWorkedHours: 50, regularHours: 40, otHours: 10 });
+    expect(mar).toEqual({ actualWorkedHours: 0, regularHours: 0, otHours: 0 });
+    // Paid hours across periods equal hours worked.
+    expect(feb.regularHours + feb.otHours + mar.regularHours + mar.otHours).toBe(50);
+  });
+
+  it('OT spanning the boundary splits by where the OT hours were worked', () => {
+    // Week Mon Feb 23 – Sun Mar 1: 9h/day Feb 23–27 (45 cum by Fri), 9h
+    // Sat Feb 28 (54), 9h Sun Mar 1 (63). Threshold crossed during Feb 27
+    // → OT: 5h Feb 27 + 9h Feb 28 (period A) + 9h Mar 1 (period B).
+    const daily: Record<string, number> = {
+      '2026-02-23': 9,
+      '2026-02-24': 9,
+      '2026-02-25': 9,
+      '2026-02-26': 9,
+      '2026-02-27': 9,
+      '2026-02-28': 9,
+      '2026-03-01': 9,
+    };
+    const a = attributePeriodTotals({
+      period: { start: '2026-02-16', end: '2026-02-28' },
+      dailyWorkedHours: daily,
+      workweekStartDay: 1,
+      overtimeExempt: false,
+      standardHoursPerWeek: 40,
+      frequency: 'SEMI_MONTHLY',
+    });
+    const b = attributePeriodTotals({
+      period: { start: '2026-03-01', end: '2026-03-15' },
+      dailyWorkedHours: daily,
+      workweekStartDay: 1,
+      overtimeExempt: false,
+      standardHoursPerWeek: 40,
+      frequency: 'SEMI_MONTHLY',
+    });
+    expect(a).toEqual({ actualWorkedHours: 54, regularHours: 40, otHours: 14 });
+    expect(b).toEqual({ actualWorkedHours: 9, regularHours: 0, otHours: 9 });
+    expect(a.regularHours + a.otHours + b.regularHours + b.otHours).toBe(63);
   });
 
   it('exempt: standard hours as regular, actual carried separately, no OT', () => {

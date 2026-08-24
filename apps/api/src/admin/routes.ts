@@ -549,6 +549,10 @@ export function createAdminRouter(deps: AdminRoutesDeps): Router {
           defaultOfficeId: appUsers.defaultOfficeId,
           standardHoursPerWeek: appUsers.standardHoursPerWeek,
           billableTargetHoursPerMonth: appUsers.billableTargetHoursPerMonth,
+          // 0226 — payroll classification (the UserDetail Payroll tab
+          // reads these back; without them the toggles always show true).
+          overtimeExempt: appUsers.overtimeExempt,
+          isFullTime: appUsers.isFullTime,
           totpEnrolledAt: appUsers.totpEnrolledAt,
           // 0062 — profile expansion fields
           displayId: appUsers.displayId,

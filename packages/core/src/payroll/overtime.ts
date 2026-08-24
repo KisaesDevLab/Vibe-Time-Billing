@@ -1,16 +1,20 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
-// Weekly-over-40 overtime (FLSA) for non-exempt staff, and the
-// period-total attribution rule: a workweek's OT belongs in full to the
-// pay period in which the workweek ENDS (standard payroll practice; no
-// pro-ration). A period's Regular is its in-period worked hours minus
-// the OT attributed to it, clamped at 0 for the rare straddle where a
-// workweek's hours land mostly in the prior period.
+// Weekly-over-40 overtime (FLSA) for non-exempt staff. OT hours are the
+// chronological TAIL of the workweek — the hours worked after the week's
+// cumulative total crosses 40 — and each OT hour is attributed to the
+// pay period containing the day it was actually worked. This keeps
+// regular + OT across periods exactly equal to hours worked even when a
+// workweek straddles a period boundary (a week-end attribution would pay
+// the straddling hours once at 1.0x in the earlier period and again at
+// 1.5x in the later one). Payroll for a period is run after the period
+// ends, by which point any straddling week is complete, so the split is
+// computable at review time.
 
 import type { IsoDate } from '@vibe/types';
 
 import { round2 } from './dates';
-import { type PeriodRange, workweekStartFor, workweeksEndingInRange } from './pay-periods';
+import { type PeriodRange, workweekStartFor } from './pay-periods';
 import type { PayPeriodFrequency } from './pay-periods';
 
 export const OT_WEEKLY_THRESHOLD = 40;
@@ -50,12 +54,44 @@ function addDays6(start: IsoDate): IsoDate {
   return new Date(t).toISOString().slice(0, 10);
 }
 
+/**
+ * Per-day OT hours: walk each workweek's days in date order, accumulate
+ * worked hours, and mark the portion of each day past the 40h cumulative
+ * threshold as OT. A day's OT never exceeds its worked hours, so
+ * (worked − OT) per period can never go negative.
+ */
+export function computeDailyOtHours(
+  dailyWorkedHours: Record<IsoDate, number>,
+  workweekStartDay: number,
+): Record<IsoDate, number> {
+  const byWeek = new Map<IsoDate, Array<[IsoDate, number]>>();
+  for (const [day, hours] of Object.entries(dailyWorkedHours)) {
+    if (!hours) continue;
+    const ws = workweekStartFor(day, workweekStartDay);
+    const list = byWeek.get(ws) ?? [];
+    list.push([day, hours]);
+    byWeek.set(ws, list);
+  }
+  const otByDay: Record<IsoDate, number> = {};
+  for (const days of byWeek.values()) {
+    days.sort(([a], [b]) => (a < b ? -1 : 1));
+    let cum = 0;
+    for (const [day, hours] of days) {
+      const before = cum;
+      cum += hours;
+      const ot = Math.min(hours, Math.max(0, cum - Math.max(OT_WEEKLY_THRESHOLD, before)));
+      if (ot > 0) otByDay[day] = round2(ot);
+    }
+  }
+  return otByDay;
+}
+
 export interface PeriodAttributionInput {
   period: PeriodRange;
   /**
-   * Worked (REGULAR) hours per day. Must cover every workweek that ends
-   * inside the period — i.e. start at least 6 days before period.start —
-   * or straddling weeks under-count their OT.
+   * Worked (REGULAR) hours per day. Must cover every workweek that
+   * OVERLAPS the period — i.e. span from 6 days before period.start to
+   * 6 days after period.end — or straddling weeks under-count their OT.
    */
   dailyWorkedHours: Record<IsoDate, number>;
   workweekStartDay: number;
@@ -69,7 +105,7 @@ export interface PeriodTotals {
   actualWorkedHours: number;
   /** Pay-basis regular hours (exempt: standard; non-exempt: worked − OT). */
   regularHours: number;
-  /** OT of workweeks ending inside the period. Always 0 for exempt. */
+  /** OT hours worked on days inside the period. Always 0 for exempt. */
   otHours: number;
 }
 
@@ -106,16 +142,15 @@ export function attributePeriodTotals(input: PeriodAttributionInput): PeriodTota
     };
   }
 
-  const weeks = computeWeeklyOvertime(dailyWorkedHours, workweekStartDay);
-  const ending = new Set(
-    workweeksEndingInRange(period.start, period.end, workweekStartDay).map((w) => w.start),
-  );
+  const otByDay = computeDailyOtHours(dailyWorkedHours, workweekStartDay);
   const otHours = round2(
-    weeks.filter((w) => ending.has(w.start)).reduce((sum, w) => sum + w.otHours, 0),
+    Object.entries(otByDay)
+      .filter(([d]) => d >= period.start && d <= period.end)
+      .reduce((sum, [, h]) => sum + h, 0),
   );
   return {
     actualWorkedHours,
-    regularHours: round2(Math.max(0, actualWorkedHours - otHours)),
+    regularHours: round2(actualWorkedHours - otHours),
     otHours,
   };
 }
