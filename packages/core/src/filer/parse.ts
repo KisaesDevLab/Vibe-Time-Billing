@@ -61,7 +61,7 @@ export function detectYearAnywhere(filename: string, opts: ParseOptions = {}): n
   return detectYear(stem, now);
 }
 
-function splitExt(filename: string): { stem: string; ext: string | null } {
+export function splitExt(filename: string): { stem: string; ext: string | null } {
   const dot = filename.lastIndexOf('.');
   if (dot <= 0 || dot === filename.length - 1) return { stem: filename, ext: null };
   return { stem: filename.slice(0, dot), ext: filename.slice(dot + 1).toLowerCase() };

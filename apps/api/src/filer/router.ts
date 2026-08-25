@@ -27,6 +27,7 @@
 import express, { type Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -48,11 +49,18 @@ import {
   type StorageClient,
 } from '@vibe/storage';
 
-import { evaluateRules, resolveYearSubfolder } from '@vibe/core/filer';
+import { evaluateRules, joinTargetPath, resolveYearSubfolder } from '@vibe/core/filer';
 
+import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { resolveClientFolders } from '../clients/folder-templates';
-import { INBOX_PREFIX, ZIP_IMPORT_PREFIX, loadActiveRules, matchClientByIdSubstring } from './scan';
+import {
+  INBOX_PREFIX,
+  ZIP_IMPORT_PREFIX,
+  loadActiveRules,
+  loadK1Config,
+  matchClientByIdSubstring,
+} from './scan';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { scanInbox } from './scan';
@@ -86,11 +94,18 @@ const ReviewSchema = z.object({
   flagFormCode: z.string().max(40).nullable().optional(),
   flagTaxYear: z.number().int().min(1900).max(2999).nullable().optional(),
   included: z.boolean().optional(),
+  // 0229 — K-1 recipient verification (verify / search / dismiss).
+  k1MatchedClient: z.string().uuid().nullable().optional(),
+  k1Status: z.enum(['suggested', 'confirmed', 'dismissed']).nullable().optional(),
+  k1OverrideFolder: z.string().max(512).nullable().optional(),
 });
 
 const ProfileSchema = z.object({
   name: z.string().min(1).max(120),
   isActive: z.boolean().optional(),
+  // 0229 — destination for K-1 recipient copies.
+  k1TargetPath: z.string().max(512).optional(),
+  k1YearBehavior: z.enum(['none', 'current_only', 'current_and_next', 'previous']).optional(),
 });
 const RuleSchema = z.object({
   profileId: z.string().uuid(),
@@ -105,6 +120,9 @@ const RuleSchema = z.object({
   notes: z.string().max(2000).nullable().optional(),
 });
 const RulePatchSchema = RuleSchema.partial().omit({ profileId: true });
+
+// 0229 — second clients join for the K-1 recipient suggestion.
+const k1Client = alias(clients, 'k1_client');
 
 export function createFilerRouter(deps: FilerRoutesDeps): Router {
   const router = express.Router();
@@ -211,9 +229,23 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         flagFormCode: inboxItems.flagFormCode,
         flagTaxYear: inboxItems.flagTaxYear,
         included: inboxItems.included,
+        k1RecipientName: inboxItems.k1RecipientName,
+        k1MatchedClient: inboxItems.k1MatchedClient,
+        k1ClientName: k1Client.name,
+        k1ClientExternalId: k1Client.externalId,
+        k1MatchScore: inboxItems.k1MatchScore,
+        k1Status: inboxItems.k1Status,
+        k1OverrideFolder: inboxItems.k1OverrideFolder,
       })
       .from(inboxItems)
       .leftJoin(clients, eq(clients.id, inboxItems.matchedClient))
+      .leftJoin(
+        // Firm predicate on the join: a cross-firm uuid (blocked at PATCH
+        // now, but rows could predate that) must never leak another
+        // firm's client name into this firm's inbox.
+        k1Client,
+        and(eq(k1Client.id, inboxItems.k1MatchedClient), eq(k1Client.firmId, session.firmId)),
+      )
       .where(eq(inboxItems.firmId, session.firmId))
       .orderBy(desc(inboxItems.discoveredAt));
     res.json({ items: rows });
@@ -261,6 +293,106 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
       return;
     }
+    // 0229 — client-assignment invariants are validated against the
+    // RESULTING row state (incoming value ?? current), so a primary
+    // reassignment cannot smuggle in matchedClient === k1MatchedClient
+    // and a simultaneous patch is never compared against stale values.
+    // Clearing operations (dismiss, k1 client → null) always succeed.
+    const touchesClients =
+      parsed.data.matchedClient !== undefined ||
+      parsed.data.k1MatchedClient !== undefined ||
+      parsed.data.k1Status !== undefined;
+    if (touchesClients) {
+      const [current] = await deps.db
+        .select({
+          matchedClient: inboxItems.matchedClient,
+          k1MatchedClient: inboxItems.k1MatchedClient,
+          k1Status: inboxItems.k1Status,
+        })
+        .from(inboxItems)
+        .where(and(eq(inboxItems.id, req.params['id']!), eq(inboxItems.firmId, session.firmId)))
+        .limit(1);
+      if (!current) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Firm scoping: the FKs reference the GLOBAL client table, so an
+      // arbitrary UUID must be proven to belong to this firm (a cross-firm
+      // id would otherwise leak that client's name via the inbox join).
+      const firmClient = async (id: string): Promise<boolean> => {
+        const [c] = await deps
+          .db!.select({ id: clients.id })
+          .from(clients)
+          .where(and(eq(clients.id, id), eq(clients.firmId, session.firmId)))
+          .limit(1);
+        return Boolean(c);
+      };
+      if (parsed.data.matchedClient != null && !(await firmClient(parsed.data.matchedClient))) {
+        res.status(400).json({ error: 'client_not_found' });
+        return;
+      }
+      // A recipient without a bound folder would wedge at commit — the
+      // same gate the scan suggestions apply.
+      const k1Fileable = async (id: string): Promise<boolean> => {
+        const [bound] = await deps
+          .db!.select({ id: clientFolders.id })
+          .from(clientFolders)
+          .where(and(eq(clientFolders.clientId, id), eq(clientFolders.firmId, session.firmId)))
+          .limit(1);
+        return Boolean(bound);
+      };
+      if (parsed.data.k1MatchedClient != null) {
+        if (!(await firmClient(parsed.data.k1MatchedClient))) {
+          res.status(400).json({ error: 'k1_client_not_found' });
+          return;
+        }
+        if (!(await k1Fileable(parsed.data.k1MatchedClient))) {
+          res.status(400).json({ error: 'k1_client_folder_unbound' });
+          return;
+        }
+      }
+      // Picking a K-1 client via search implies confirmation; clearing it
+      // reverts to 'suggested' unless the patch says otherwise.
+      if (parsed.data.k1MatchedClient != null && parsed.data.k1Status === undefined) {
+        parsed.data.k1Status = 'confirmed';
+      }
+      if (parsed.data.k1MatchedClient === null && parsed.data.k1Status === undefined) {
+        parsed.data.k1Status = 'suggested';
+      }
+      const resultingK1Client =
+        parsed.data.k1MatchedClient !== undefined
+          ? parsed.data.k1MatchedClient
+          : current.k1MatchedClient;
+      const resultingK1Status =
+        parsed.data.k1Status !== undefined ? parsed.data.k1Status : current.k1Status;
+      const resultingMatched =
+        parsed.data.matchedClient !== undefined ? parsed.data.matchedClient : current.matchedClient;
+      if (resultingK1Status === 'confirmed') {
+        if (resultingK1Client == null) {
+          res.status(400).json({ error: 'k1_client_required' });
+          return;
+        }
+        if (resultingK1Client === resultingMatched) {
+          res.status(400).json({ error: 'k1_same_as_entity' });
+          return;
+        }
+        // Confirming a STORED suggestion (Verify sends only k1Status) must
+        // re-validate the resulting client too — its folder binding may
+        // have been removed since the scan (review finding).
+        if (parsed.data.k1MatchedClient == null && !(await k1Fileable(resultingK1Client))) {
+          res.status(400).json({ error: 'k1_client_folder_unbound' });
+          return;
+        }
+      } else if (
+        resultingK1Status === 'suggested' &&
+        resultingK1Client != null &&
+        resultingK1Client === resultingMatched
+      ) {
+        // A mere suggestion coinciding with a primary reassignment is
+        // cleared rather than blocking the reassignment.
+        parsed.data.k1MatchedClient = null;
+      }
+    }
     const set: Record<string, unknown> = { reviewedBy: session.appUserId, updatedAt: new Date() };
     for (const k of [
       'reviewAction',
@@ -270,6 +402,9 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       'flagFormCode',
       'flagTaxYear',
       'included',
+      'k1MatchedClient',
+      'k1Status',
+      'k1OverrideFolder',
     ] as const) {
       if (parsed.data[k] !== undefined) set[k] = parsed.data[k];
     }
@@ -308,8 +443,7 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
           recompute['suggestedPath'] = null;
           recompute['matchStatus'] = 'year_needed';
         } else {
-          recompute['suggestedPath'] =
-            `${rule.targetPath}${rule.targetPath && !rule.targetPath.endsWith('/') ? '/' : ''}${yearSub}`;
+          recompute['suggestedPath'] = joinTargetPath(rule.targetPath, yearSub);
           if (row.matchStatus === 'year_needed' || row.matchStatus === 'unparseable') {
             recompute['matchStatus'] = 'matched';
           }
@@ -322,6 +456,27 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         .update(inboxItems)
         .set(recompute)
         .where(and(eq(inboxItems.id, row.id), eq(inboxItems.firmId, session.firmId)));
+    }
+    // 0229 — K-1 verification decides which client folder receives a copy
+    // of a tax document: who confirmed/dismissed it must be recoverable
+    // (CLAUDE.md non-negotiable #1). Metadata only, never document content.
+    if (touchesClients) {
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'inbox_item',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          k1Review: true,
+          ...(parsed.data.k1Status !== undefined ? { k1Status: parsed.data.k1Status } : {}),
+          ...(parsed.data.k1MatchedClient !== undefined
+            ? { k1MatchedClient: parsed.data.k1MatchedClient }
+            : {}),
+          ...(parsed.data.k1OverrideFolder !== undefined
+            ? { k1OverrideFolder: parsed.data.k1OverrideFolder }
+            : {}),
+        },
+      }).catch(() => undefined);
     }
     res.json({ ok: true });
   });
@@ -578,16 +733,32 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_payload' });
         return;
       }
-      if (parsed.data.name !== undefined) {
+      const set: Record<string, unknown> = {};
+      if (parsed.data.name !== undefined) set['name'] = parsed.data.name;
+      if (parsed.data.k1TargetPath !== undefined) set['k1TargetPath'] = parsed.data.k1TargetPath;
+      if (parsed.data.k1YearBehavior !== undefined) {
+        set['k1YearBehavior'] = parsed.data.k1YearBehavior;
+      }
+      if (Object.keys(set).length > 0) {
         await deps.db
           .update(inboxRoutingProfiles)
-          .set({ name: parsed.data.name })
+          .set(set)
           .where(
             and(
               eq(inboxRoutingProfiles.id, req.params['id']!),
               eq(inboxRoutingProfiles.firmId, session.firmId),
             ),
           );
+        // The K-1 destination config controls where recipient copies land.
+        if (set['k1TargetPath'] !== undefined || set['k1YearBehavior'] !== undefined) {
+          await emitAudit(deps.db, {
+            action: 'UPDATE',
+            entityType: 'inbox_routing_profile',
+            entityId: req.params['id']!,
+            actorAppUserId: session.appUserId,
+            after: set,
+          }).catch(() => undefined);
+        }
       }
       if (parsed.data.isActive) await activateProfile(deps.db, session.firmId, req.params['id']!);
       res.json({ ok: true });
@@ -785,11 +956,15 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       return;
     }
     const batchId = randomUUID();
+    // 0229 — resolve the K-1 destination once per batch (consistent even
+    // if the profile is edited mid-batch; one query instead of N).
+    const k1Config = await loadK1Config(deps.db, session.firmId);
     for (const r of routable) {
       await enqueueFilerRoute({
         firmId: session.firmId,
         actorId: session.appUserId,
         batchId,
+        k1Config,
         itemId: r.id,
       });
     }
@@ -809,6 +984,7 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         at: sql<string>`MAX(${inboxRoutingLog.createdAt})`,
         total: sql<number>`COUNT(*)::int`,
         filed: sql<number>`COUNT(*) FILTER (WHERE ${inboxRoutingLog.action} IN ('filed','tax_flagged'))::int`,
+        k1: sql<number>`COUNT(*) FILTER (WHERE ${inboxRoutingLog.action} = 'k1_recipient')::int`,
         reversed: sql<number>`COUNT(*) FILTER (WHERE ${inboxRoutingLog.status} = 'reversed')::int`,
       })
       .from(inboxRoutingLog)
@@ -859,7 +1035,7 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
             eq(inboxRoutingLog.firmId, session.firmId),
             eq(inboxRoutingLog.batchId, req.params['batchId']!),
             eq(inboxRoutingLog.status, 'success'),
-            inArray(inboxRoutingLog.action, ['filed', 'tax_flagged']),
+            inArray(inboxRoutingLog.action, ['filed', 'tax_flagged', 'k1_recipient']),
           ),
         );
       for (const r of rows) {
@@ -898,6 +1074,32 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // GET /k1-recipients — clients a K-1 recipient copy may actually be
+  // filed to: ACTIVE and folder-bound, the same gate k1Candidates applies
+  // to scan suggestions and PATCH applies to picks. The general client
+  // picker lists everyone, so offering it here produced 400s on unbound
+  // picks with no way to tell which clients were eligible (review finding).
+  router.get('/k1-recipients', requirePermission(deps, 'storage:folder:view'), async (req, res) => {
+    const session = req.staffSession!;
+    if (!deps.db) {
+      res.json({ items: [] });
+      return;
+    }
+    const rows = await deps.db
+      .select({ id: clients.id, name: clients.name, externalId: clients.externalId })
+      .from(clients)
+      .innerJoin(clientFolders, eq(clientFolders.clientId, clients.id))
+      .where(
+        and(
+          eq(clients.firmId, session.firmId),
+          eq(clients.status, 'ACTIVE'),
+          eq(clientFolders.firmId, session.firmId),
+        ),
+      )
+      .orderBy(clients.name);
+    res.json({ items: rows });
+  });
+
   // GET /clients/:clientId/folders — the client's known folder paths
   // for the inbox target-folder dropdown: every distinct subfolder that
   // already holds a file, plus the (possibly empty) top-level skeleton

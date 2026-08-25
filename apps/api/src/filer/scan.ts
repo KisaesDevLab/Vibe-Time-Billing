@@ -6,7 +6,7 @@
 // active routing profile, and upserts inbox_items — preserving any
 // in-progress review state on re-scan.
 
-import { and, eq, inArray, notInArray } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -18,10 +18,17 @@ import {
 } from '@vibe/db/schema';
 import { jaroWinkler, normalizeNameString, type StorageClient } from '@vibe/storage';
 import {
+  DEFAULT_K1_TARGET_PATH,
+  DEFAULT_K1_YEAR_BEHAVIOR,
+  clientNameVariants,
   detectYearAnywhere,
   evaluateRules,
+  joinTargetPath,
   parseFilename,
+  parseK1Recipient,
   resolveYearSubfolder,
+  type K1Recipient,
+  type K1RouteConfig,
   type RoutingRule,
 } from '@vibe/core/filer';
 
@@ -33,6 +40,10 @@ export const ZIP_IMPORT_PREFIX = `${INBOX_PREFIX}_imports/`;
 const PLACEHOLDER = '.bzEmpty';
 const FUZZY_THRESHOLD = 0.95;
 const ID_MISMATCH_THRESHOLD = 0.6; // id hit but name this dissimilar → name_mismatch
+// K-1 recipient suggestions are ALWAYS verified by staff before filing,
+// so a looser threshold than the primary 0.95 is safe — a decent guess
+// beats no suggestion.
+const K1_FUZZY_SUGGEST_THRESHOLD = 0.85;
 
 export type MatchStatus =
   | 'matched'
@@ -183,14 +194,11 @@ export function matchObject(
           : 'matched';
   } else if (parsed.name) {
     // 2. Name fuzzy ≥ 95%.
-    const target = normalizeNameString(parsed.name);
-    let best: { c: ClientLite; score: number } | null = null;
-    for (const c of clientList) {
-      const score = jaroWinkler(target, normalizeNameString(c.name));
-      if (!best || score > best.score) best = { c, score };
-    }
+    const best = bestFuzzy(normalizeNameString(parsed.name), clientList, (c) => [
+      normalizeNameString(c.name),
+    ]);
     if (best && best.score >= FUZZY_THRESHOLD) {
-      client = best.c;
+      client = best.item;
       status = client.status !== 'ACTIVE' ? 'inactive' : 'fuzzy';
     }
   }
@@ -216,7 +224,7 @@ export function matchObject(
         suggestedRule: rule.id,
       };
     }
-    suggestedPath = `${rule.targetPath}${rule.targetPath && !rule.targetPath.endsWith('/') ? '/' : ''}${yearSub}`;
+    suggestedPath = joinTargetPath(rule.targetPath, yearSub);
   }
 
   return {
@@ -226,6 +234,74 @@ export function matchObject(
     suggestedRule: rule?.id ?? null,
     suggestedPath,
   };
+}
+
+export interface K1MatchResult {
+  matchedClient: string | null;
+  score: number | null;
+}
+
+export interface K1Candidate {
+  id: string;
+  /** clientNameVariants(name), pre-normalized — computed once per scan. */
+  normalizedVariants: string[];
+}
+
+/**
+ * 0229 — the clients a K-1 recipient suggestion may point at: ACTIVE and
+ * folder-bound only, the same gates the primary matcher applies before a
+ * client is fileable (review finding — an unbound suggestion would fail
+ * at commit time). Variant expansion + normalization happen here, once
+ * per scan, instead of per object x per client.
+ */
+export function k1Candidates(clientList: ClientLite[], boundClientIds: Set<string>): K1Candidate[] {
+  return clientList
+    .filter((c) => c.status === 'ACTIVE' && boundClientIds.has(c.id))
+    .map((c) => ({
+      id: c.id,
+      normalizedVariants: clientNameVariants(c.name).map((v) => normalizeNameString(v)),
+    }));
+}
+
+/** Best jaro-winkler score over candidate name lists — the ONE fuzzy loop
+ *  both the primary name match and the K-1 recipient match run through. */
+function bestFuzzy<T>(
+  normalizedTarget: string,
+  items: readonly T[],
+  namesOf: (item: T) => readonly string[],
+): { item: T; score: number } | null {
+  let best: { item: T; score: number } | null = null;
+  for (const item of items) {
+    for (const name of namesOf(item)) {
+      const score = jaroWinkler(normalizedTarget, name);
+      if (!best || score > best.score) best = { item, score };
+    }
+  }
+  return best;
+}
+
+/**
+ * 0229 — K-1 recipient suggestion, name-only. The filename gives the
+ * recipient as `First Last` while client records are mostly stored
+ * `Last, First [& Spouse]`, so each candidate carries pre-normalized
+ * variants (one per spouse) and the best variant score wins. The
+ * primary-matched entity is always excluded — a recipient copy never
+ * files back into the entity's own folder. Pure; exposed for tests.
+ */
+export function matchK1Recipient(
+  rec: K1Recipient,
+  candidates: K1Candidate[],
+  primaryClientId: string | null,
+): K1MatchResult {
+  const best = bestFuzzy(
+    normalizeNameString(rec.recipientName),
+    candidates.filter((c) => c.id !== primaryClientId),
+    (c) => c.normalizedVariants,
+  );
+  if (best && best.score >= K1_FUZZY_SUGGEST_THRESHOLD) {
+    return { matchedClient: best.item.id, score: best.score };
+  }
+  return { matchedClient: null, score: null };
 }
 
 export interface ScanResult {
@@ -257,6 +333,31 @@ export async function loadActiveRules(db: Database, firmId: string): Promise<Rou
     isTaxReturn: r.isTaxReturn,
     enabled: r.enabled,
   }));
+}
+
+/**
+ * 0229 — destination config for K-1 recipient copies, from the active
+ * routing profile. Defaults apply when no profile is active. The shape
+ * lives in @vibe/core/filer (K1RouteConfig) so the loader, the commit
+ * payload, and the route worker cannot drift.
+ */
+export async function loadK1Config(db: Database, firmId: string): Promise<K1RouteConfig> {
+  const [profile] = await db
+    .select({
+      k1TargetPath: inboxRoutingProfiles.k1TargetPath,
+      k1YearBehavior: inboxRoutingProfiles.k1YearBehavior,
+    })
+    .from(inboxRoutingProfiles)
+    .where(and(eq(inboxRoutingProfiles.firmId, firmId), eq(inboxRoutingProfiles.isActive, true)))
+    .limit(1);
+  if (!profile)
+    return { targetPath: DEFAULT_K1_TARGET_PATH, yearBehavior: DEFAULT_K1_YEAR_BEHAVIOR };
+  return {
+    targetPath: profile.k1TargetPath,
+    // reason: the text column is constrained to the YearBehavior values by
+    // the DB CHECK (0229), invisible to the type system here.
+    yearBehavior: profile.k1YearBehavior as RoutingRule['yearBehavior'],
+  };
 }
 
 export async function scanInbox(
@@ -294,12 +395,35 @@ export async function scanInbox(
 
   const rules = await loadActiveRules(db, firmId);
 
+  // 0229 — a staff-confirmed/dismissed K-1 decision survives re-scan.
+  // The decision lives ENTIRELY in the upsert's SQL CASE, evaluated
+  // against the row's LIVE state — no prefetched snapshot to go stale
+  // (a Dismiss→Restore racing the scan used to null the suggestion
+  // because the snapshot and the CASE disagreed — review finding).
+  // A CONFIRMED recipient that the re-matched primary would alias is
+  // NOT kept: that state is invalid (the worker refuses it), so the row
+  // falls back to a fresh suggestion, which excludes the entity.
+  const candidates = k1Candidates(clientList, boundIds);
+
   let matched = 0;
   const liveKeys: string[] = [];
   for (const obj of objects) {
     liveKeys.push(obj.key);
     const m = matchObject(obj.name, clientList, rules, boundIds, now);
     if (m.matchStatus === 'matched' || m.matchStatus === 'fuzzy') matched += 1;
+    const k1 = parseK1Recipient(obj.name);
+    const k1m = k1 ? matchK1Recipient(k1, candidates, m.matchedClient) : null;
+    const k1Keep = sql`(
+      ${inboxItems.k1Status} = 'dismissed'
+      OR (${inboxItems.k1Status} = 'confirmed'
+          AND ${inboxItems.k1MatchedClient} IS DISTINCT FROM ${m.matchedClient}::uuid)
+    )`;
+    const k1Fields = {
+      k1RecipientName: k1?.recipientName ?? null,
+      k1MatchedClient: k1m?.matchedClient ?? null,
+      k1MatchScore: k1m?.score ?? null,
+      k1Status: k1 ? ('suggested' as const) : null,
+    };
     await db
       .insert(inboxItems)
       .values({
@@ -315,10 +439,13 @@ export async function scanInbox(
         matchedClient: m.matchedClient,
         suggestedRule: m.suggestedRule,
         suggestedPath: m.suggestedPath,
+        ...k1Fields,
       })
       .onConflictDoUpdate({
         target: [inboxItems.firmId, inboxItems.objectKey],
         // Recompute parse/match on every scan; never clobber review state.
+        // K-1 suggestion columns refresh only while the LIVE row is still
+        // undecided — the CASE reads the target row, not a snapshot.
         set: {
           originalName: obj.name,
           sizeBytes: obj.size,
@@ -330,6 +457,10 @@ export async function scanInbox(
           matchedClient: m.matchedClient,
           suggestedRule: m.suggestedRule,
           suggestedPath: m.suggestedPath,
+          k1RecipientName: sql`CASE WHEN ${k1Keep} THEN ${inboxItems.k1RecipientName} ELSE ${k1Fields.k1RecipientName} END`,
+          k1MatchedClient: sql`CASE WHEN ${k1Keep} THEN ${inboxItems.k1MatchedClient} ELSE ${k1Fields.k1MatchedClient}::uuid END`,
+          k1MatchScore: sql`CASE WHEN ${k1Keep} THEN ${inboxItems.k1MatchScore} ELSE ${k1Fields.k1MatchScore}::real END`,
+          k1Status: sql`CASE WHEN ${k1Keep} THEN ${inboxItems.k1Status} ELSE ${k1Fields.k1Status} END`,
           updatedAt: now,
         },
       });

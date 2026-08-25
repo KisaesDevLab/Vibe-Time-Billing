@@ -38,6 +38,7 @@ import {
 } from '@vibe/storage';
 import { storage as coreStorage } from '@vibe/core';
 
+import { storageKeyTaken } from '../files/storage-key';
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { resolveClientFolders } from './folder-templates';
@@ -292,10 +293,7 @@ export function mountFileRoutes(router: Router, deps: FileRoutesDeps): void {
       const subfolder = normalizeSubfolder(parsed.data.subfolderPath, parsed.data.category);
       const safeFilename = sanitizeForWindows(parsed.data.originalFilename);
       const desired = enforceKeyByteCap(joinPath(folder.storagePath, subfolder, safeFilename));
-      const storageKey = await resolveCollision(
-        desired,
-        async (k) => (await storage.head(k)) !== null,
-      );
+      const storageKey = await resolveCollision(desired, storageKeyTaken(deps.db, storage, firmId));
 
       const visibilityRules = await loadFirmVisibilityRules(deps.db, firmId);
       const visibility =
@@ -404,10 +402,7 @@ export function mountFileRoutes(router: Router, deps: FileRoutesDeps): void {
       const subfolder = normalizeSubfolder(parsed.data.subfolderPath, parsed.data.category);
       const safeFilename = sanitizeForWindows(parsed.data.originalFilename);
       const desired = enforceKeyByteCap(joinPath(folder.storagePath, subfolder, safeFilename));
-      const storageKey = await resolveCollision(
-        desired,
-        async (k) => (await storage.head(k)) !== null,
-      );
+      const storageKey = await resolveCollision(desired, storageKeyTaken(deps.db, storage, firmId));
 
       const visibilityRules = await loadFirmVisibilityRules(deps.db, firmId);
       const visibility =

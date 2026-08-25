@@ -19,6 +19,7 @@ import {
   type StorageClient,
 } from '@vibe/storage';
 
+import { storageKeyTaken } from './storage-key';
 import { emitAudit } from '../auth/audit';
 import { loadClientFolder } from '../clients/files';
 import { logger } from '../logger';
@@ -106,7 +107,7 @@ export async function renameFile(
 
   const desired = enforceKeyByteCap(joinPath(folder.storagePath, file.subfolderPath, safeName));
   try {
-    const newKey = await resolveCollision(desired, async (k) => (await storage.head(k)) !== null);
+    const newKey = await resolveCollision(desired, storageKeyTaken(db, storage, input.firmId));
     const { etag } = await storage.copy(file.storageKey, newKey);
     await storage.delete(file.storageKey);
     await db

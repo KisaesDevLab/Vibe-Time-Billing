@@ -10,6 +10,7 @@ import { and, eq, sql } from 'drizzle-orm';
 
 import type { StorageClient } from '@vibe/storage';
 import {
+  auditLog,
   clientFolders,
   files,
   inboxItems,
@@ -17,7 +18,7 @@ import {
   inboxRoutingProfiles,
 } from '@vibe/db/schema';
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import { scanInbox, matchObject } from '../filer/scan';
+import { scanInbox, matchObject, matchK1Recipient, k1Candidates } from '../filer/scan';
 import { createFilerRouter } from '../filer/router';
 import { runFilerRoute } from '../../../worker/src/jobs/filer-route';
 
@@ -437,6 +438,634 @@ describe('inbox upload route', () => {
     expect(empty.status).toBe(400);
 
     expect(keys()).toHaveLength(0);
+  });
+});
+
+// ── 0229 — K-1 recipient secondary match ────────────────────────────────
+
+const K1_NAME = 'Test Client Co_123456_2025_1120S_K1_Package_Joe Black_9911_PARK.pdf';
+const K1_KEY = `Inbox/${K1_NAME}`;
+
+/** Second client (the K-1 recipient) with a bound folder. */
+async function seedRecipient(firmId: string, entityClientId: string): Promise<string> {
+  // reason (for the casts below): db.execute returns an untyped result;
+  // the rows shape is fixed by the RETURNING clause — same idiom as
+  // seedMinimalFirm in the pglite harness.
+  const r = await harness.db.execute(
+    sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+        SELECT firm_id, 'Black, Joe & Jane', partner_in_charge_id, office_id
+        FROM client WHERE id = ${entityClientId} RETURNING id`,
+  );
+  const recipientId = (r as unknown as { rows: { id: string }[] }).rows[0]!.id;
+  await harness.db.insert(clientFolders).values({
+    firmId,
+    clientId: recipientId,
+    storagePath: 'Black Joe/',
+  });
+  return recipientId;
+}
+
+describe('matchK1Recipient (pure)', () => {
+  const list = [
+    { id: 'entity', name: 'Parkway, LLC', externalId: 'PARK', status: 'ACTIVE' },
+    { id: 'joe', name: 'Black, Joe & Jane', externalId: '6111', status: 'ACTIVE' },
+    { id: 'other', name: 'Wilson, Ted', externalId: '7222', status: 'ACTIVE' },
+  ];
+  const allBound = new Set(['entity', 'joe', 'other']);
+  const candidates = k1Candidates(list, allBound);
+
+  it('matches First Last against a Last, First & Spouse record', () => {
+    const r = matchK1Recipient({ recipientName: 'Joe Black', raw: '' }, candidates, 'entity');
+    expect(r.matchedClient).toBe('joe');
+    expect(r.score).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it('matches the spouse variant', () => {
+    const r = matchK1Recipient({ recipientName: 'Jane Black', raw: '' }, candidates, 'entity');
+    expect(r.matchedClient).toBe('joe');
+  });
+
+  it('never suggests the primary-matched entity', () => {
+    const r = matchK1Recipient({ recipientName: 'Parkway', raw: '' }, candidates, 'entity');
+    expect(r.matchedClient).not.toBe('entity');
+  });
+
+  it('below threshold → null result', () => {
+    const r = matchK1Recipient({ recipientName: 'Zed Quux', raw: '' }, candidates, 'entity');
+    expect(r.matchedClient).toBeNull();
+    expect(r.score).toBeNull();
+  });
+
+  // Review finding: a suggestion must be fileable — inactive and
+  // folder-unbound clients are excluded up front.
+  it('k1Candidates drops inactive and unbound clients', () => {
+    const withInactive = [
+      ...list,
+      { id: 'gone', name: 'Black, Joe', externalId: '9999', status: 'INACTIVE' },
+    ];
+    const cands = k1Candidates(withInactive, new Set(['entity', 'joe'])); // 'other' unbound
+    expect(cands.map((c) => c.id).sort()).toEqual(['entity', 'joe']);
+    const r = matchK1Recipient({ recipientName: 'Ted Wilson', raw: '' }, cands, 'entity');
+    expect(r.matchedClient).toBeNull(); // unbound Wilson not suggestible
+  });
+});
+
+describe('scanInbox — K-1 suggestions', () => {
+  it('persists the recipient suggestion columns', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [row] = await harness.db.select().from(inboxItems).where(eq(inboxItems.firmId, f.firmId));
+    expect(row!.matchedClient).toBe(f.clientId); // primary entity match intact
+    expect(row!.k1RecipientName).toBe('Joe Black');
+    expect(row!.k1MatchedClient).toBe(recipientId);
+    expect(row!.k1Status).toBe('suggested');
+    expect(row!.k1MatchScore).toBeGreaterThanOrEqual(0.85);
+  });
+
+  it('re-scan refreshes suggested but preserves confirmed/dismissed', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed' })
+      .where(eq(inboxItems.firmId, f.firmId));
+    await scanInbox(harness.db, storage, f.firmId);
+    const [row] = await harness.db.select().from(inboxItems).where(eq(inboxItems.firmId, f.firmId));
+    expect(row!.k1Status).toBe('confirmed'); // preserved
+    expect(row!.k1MatchedClient).toBe(recipientId);
+  });
+
+  it('non-K-1 filenames leave the k1 columns null', async () => {
+    const f = await setup();
+    const { storage } = fakeStorage(['Inbox/Test Client Co_123456_2024-1040.pdf']);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [row] = await harness.db.select().from(inboxItems).where(eq(inboxItems.firmId, f.firmId));
+    expect(row!.k1RecipientName).toBeNull();
+    expect(row!.k1Status).toBeNull();
+  });
+});
+
+describe('PATCH /inbox/:id — K-1 verification rules', () => {
+  function buildApp(firmId: string, appUserId: string): express.Express {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      (req as unknown as { staffSession: unknown }).staffSession = { firmId, appUserId };
+      next();
+    });
+    app.use(
+      '/api/staff/filer',
+      createFilerRouter({
+        db: harness.db,
+        storage: fakeStorage([]).storage,
+        fakeUserRoles: new Map([[appUserId, ['admin']]]),
+      }),
+    );
+    return app;
+  }
+
+  it('search implies confirmed; entity self-target and confirm-without-client are rejected', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    // Clear the suggestion so the picks below start from nothing.
+    await harness.db
+      .update(inboxItems)
+      .set({ k1MatchedClient: null, k1MatchScore: null })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    const app = buildApp(f.firmId, f.appUserId);
+
+    // Confirm without a recipient client → 400.
+    const noClient = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1Status: 'confirmed' });
+    expect(noClient.status).toBe(400);
+    expect(noClient.body.error).toBe('k1_client_required');
+
+    // Picking the entity itself → 400.
+    const selfPick = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: f.clientId });
+    expect(selfPick.status).toBe(400);
+    expect(selfPick.body.error).toBe('k1_same_as_entity');
+
+    // Picking the recipient via search implies confirmation.
+    const pick = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: recipientId });
+    expect(pick.status).toBe(200);
+    const [after] = await harness.db.select().from(inboxItems).where(eq(inboxItems.id, item!.id));
+    expect(after!.k1MatchedClient).toBe(recipientId);
+    expect(after!.k1Status).toBe('confirmed');
+  });
+
+  // Second-review findings: firm scoping, resulting-state invariants,
+  // clear-to-suggested, and the never-dead-end Dismiss.
+  it('rejects cross-firm and folder-unbound recipients', async () => {
+    const f = await setup();
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    const app = buildApp(f.firmId, f.appUserId);
+
+    // A syntactically valid uuid from nowhere (or another firm) → 400.
+    const foreign = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: '00000000-0000-4000-8000-00000000dead' });
+    expect(foreign.status).toBe(400);
+    expect(foreign.body.error).toBe('k1_client_not_found');
+
+    // Same-firm client without a bound folder → 400 (it could not file).
+    const r = await harness.db.execute(
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          SELECT firm_id, 'Unbound, Ulla', partner_in_charge_id, office_id
+          FROM client WHERE id = ${f.clientId} RETURNING id`,
+    );
+    const unboundId = (r as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const unbound = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: unboundId });
+    expect(unbound.status).toBe(400);
+    expect(unbound.body.error).toBe('k1_client_folder_unbound');
+  });
+
+  it('primary reassignment cannot alias a confirmed recipient; Dismiss never dead-ends', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    const app = buildApp(f.firmId, f.appUserId);
+
+    await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: recipientId }); // confirmed
+
+    // Reassigning the PRIMARY client to the confirmed recipient → 400
+    // (the resulting state would silently skip the copy at commit).
+    const alias = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ matchedClient: recipientId });
+    expect(alias.status).toBe(400);
+    expect(alias.body.error).toBe('k1_same_as_entity');
+
+    // Simultaneous patch to the same client → 400 too (resulting-state
+    // comparison, not the stale stored value).
+    const both = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ matchedClient: recipientId, k1MatchedClient: recipientId });
+    expect(both.status).toBe(400);
+
+    // Dismiss always succeeds, even from awkward states.
+    const dismiss = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1Status: 'dismissed' });
+    expect(dismiss.status).toBe(200);
+
+    // Clearing the recipient reverts to 'suggested' — never a
+    // confirmed-without-client row.
+    await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: recipientId });
+    const clear = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: null });
+    expect(clear.status).toBe(200);
+    const [after] = await harness.db.select().from(inboxItems).where(eq(inboxItems.id, item!.id));
+    expect(after!.k1MatchedClient).toBeNull();
+    expect(after!.k1Status).toBe('suggested');
+  });
+
+  it('confirming a STORED suggestion re-validates the recipient is still fileable', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    expect(item!.k1MatchedClient).toBe(recipientId); // suggested by the scan
+    // The recipient's folder binding is removed after the scan.
+    await harness.db.delete(clientFolders).where(eq(clientFolders.clientId, recipientId));
+
+    // Verify sends ONLY k1Status — it must still re-check the stored client.
+    const res = await request(buildApp(f.firmId, f.appUserId))
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1Status: 'confirmed' });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('k1_client_folder_unbound');
+  });
+
+  it('K-1 review decisions write an audit row', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    await request(buildApp(f.firmId, f.appUserId))
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: recipientId });
+    const rows = await harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.entityType, 'inbox_item'));
+    expect(rows).toHaveLength(1);
+    expect((rows[0]!.afterJson as { k1Review?: boolean }).k1Review).toBe(true);
+  });
+
+  it('GET /k1-recipients lists only ACTIVE, folder-bound clients', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    // An unbound client and an inactive bound one must not be offered.
+    await harness.db.execute(
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          SELECT firm_id, 'Unbound, Ulla', partner_in_charge_id, office_id
+          FROM client WHERE id = ${f.clientId}`,
+    );
+    const res = await request(buildApp(f.firmId, f.appUserId)).get(
+      '/api/staff/filer/k1-recipients',
+    );
+    expect(res.status).toBe(200);
+    const ids = (res.body.items as Array<{ id: string }>).map((c) => c.id).sort();
+    expect(ids).toEqual([f.clientId, recipientId].sort());
+  });
+});
+
+describe('scanInbox — K-1 alias break', () => {
+  it('a confirmed recipient the re-matched primary would alias falls back to a fresh suggestion', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    // Confirm the recipient, then make the PRIMARY match resolve to that
+    // same client (as a rename/id backfill would).
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: recipientId, matchedClient: recipientId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    // Free the id from the entity BEFORE giving it to the recipient
+    // (firm-unique), then re-scan: the primary now matches the recipient.
+    await harness.db.execute(sql`UPDATE client SET external_id = NULL WHERE id = ${f.clientId}`);
+    await harness.db.execute(
+      sql`UPDATE client SET external_id = '123456' WHERE id = ${recipientId}`,
+    );
+    await scanInbox(harness.db, storage, f.firmId);
+
+    const [row] = await harness.db.select().from(inboxItems).where(eq(inboxItems.firmId, f.firmId));
+    // The invalid aliased state is gone: never confirmed-onto-the-entity.
+    expect(row!.matchedClient === row!.k1MatchedClient && row!.k1Status === 'confirmed').toBe(
+      false,
+    );
+  });
+});
+
+describe('route + undo — K-1 recipient copy', () => {
+  it('confirmed recipient gets an additional copy; k1-only undo removes just that copy', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage, keys } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: recipientId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+
+    const batchId = '00000000-0000-4000-8000-0000000000dd';
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId,
+      itemId: item!.id,
+    });
+
+    // Source gone; primary copy in the entity folder; recipient copy at
+    // the default Income Tax/{year}/ destination (no active profile).
+    const live = keys();
+    expect(live).not.toContain(K1_KEY);
+    const stripped = 'Test Client Co_2025_1120S_K1_Package_Joe Black_9911_PARK.pdf';
+    expect(live).toContain(`Test Client Co/${stripped}`);
+    expect(live).toContain(`Black Joe/Income Tax/2025/${stripped}`);
+
+    const logRows = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(eq(inboxRoutingLog.batchId, batchId));
+    expect(logRows).toHaveLength(2);
+    const k1Log = logRows.find((l) => l.action === 'k1_recipient');
+    expect(k1Log).toBeDefined();
+    expect(k1Log!.clientId).toBe(recipientId);
+    expect(k1Log!.status).toBe('success');
+
+    // Undo just the K-1 leg: recipient copy removed, primary copy stays,
+    // nothing reappears in the inbox.
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'undo',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      logId: k1Log!.id,
+    });
+    const afterUndo = keys();
+    expect(afterUndo).not.toContain(`Black Joe/Income Tax/2025/${stripped}`);
+    expect(afterUndo).toContain(`Test Client Co/${stripped}`);
+    expect(afterUndo).not.toContain(K1_KEY);
+    const remaining = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    expect(remaining).toHaveLength(0);
+    const [reversed] = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(eq(inboxRoutingLog.id, k1Log!.id));
+    expect(reversed!.status).toBe('reversed');
+  });
+
+  it('retry after a logged primary performs only the K-1 leg', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage, keys } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: recipientId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+
+    // Simulate a crash after the primary copy + log but before the K-1
+    // leg: pre-insert the primary success log for this batch/source.
+    const batchId = '00000000-0000-4000-8000-0000000000ee';
+    await harness.db.insert(inboxRoutingLog).values({
+      batchId,
+      firmId: f.firmId,
+      objectKeyFrom: item!.objectKey,
+      objectKeyTo: 'Test Client Co/already-filed.pdf',
+      clientId: f.clientId,
+      action: 'filed',
+      userId: f.appUserId,
+      status: 'success',
+    });
+
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId,
+      itemId: item!.id,
+    });
+
+    // Only the recipient copy was made (no second primary copy), the
+    // source is cleaned up, and both success logs exist.
+    const live = keys();
+    const stripped = 'Test Client Co_2025_1120S_K1_Package_Joe Black_9911_PARK.pdf';
+    expect(live).toContain(`Black Joe/Income Tax/2025/${stripped}`);
+    expect(live).not.toContain(`Test Client Co/${stripped}`);
+    expect(live).not.toContain(K1_KEY);
+    const logRows = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(eq(inboxRoutingLog.batchId, batchId));
+    expect(logRows.map((l) => l.action).sort()).toEqual(['filed', 'k1_recipient']);
+  });
+
+  // Second-review findings: a failing K-1 leg must never wedge the item.
+  it('an unbound recipient fail-logs the K-1 leg and still completes cleanup', async () => {
+    const f = await setup();
+    // Recipient client with NO clientFolders binding (predates the PATCH
+    // gate, or the binding was removed later).
+    const r = await harness.db.execute(
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          SELECT firm_id, 'Black, Joe', partner_in_charge_id, office_id
+          FROM client WHERE id = ${f.clientId} RETURNING id`,
+    );
+    const unboundId = (r as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const { storage, keys } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: unboundId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+
+    const batchId = '00000000-0000-4000-8000-0000000000f1';
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId,
+      itemId: item!.id,
+    });
+
+    // Primary filed, source cleaned up, inbox row gone — no wedge, no
+    // duplicate primary on a re-commit; the K-1 leg is a VISIBLE error.
+    const stripped = 'Test Client Co_2025_1120S_K1_Package_Joe Black_9911_PARK.pdf';
+    expect(keys()).toContain(`Test Client Co/${stripped}`);
+    expect(keys()).not.toContain(K1_KEY);
+    const remaining = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    expect(remaining).toHaveLength(0);
+    const logRows = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(eq(inboxRoutingLog.batchId, batchId));
+    const k1Fail = logRows.find((l) => l.action === 'failed');
+    expect(k1Fail).toBeDefined();
+    expect(k1Fail!.status).toBe('error');
+    expect(k1Fail!.error).toBe('k1_client_folder_not_bound');
+  });
+
+  it('undoing only the primary remembers the live recipient copy, so a re-commit cannot duplicate it', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage, keys } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: recipientId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+
+    const batchA = '00000000-0000-4000-8000-0000000000f2';
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId: batchA,
+      itemId: item!.id,
+    });
+    const [primaryLog] = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(and(eq(inboxRoutingLog.batchId, batchA), eq(inboxRoutingLog.action, 'filed')));
+
+    // Undo ONLY the primary: source restored, recipient copy stays live.
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'undo',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      logId: primaryLog!.id,
+    });
+    expect(keys()).toContain(K1_KEY);
+
+    // The recreated stub REMEMBERS the live recipient copy as dismissed,
+    // and a re-scan preserves that decision — staff are not offered a
+    // one-click Verify that would stack a second copy.
+    const [stub] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    expect(stub!.k1Status).toBe('dismissed');
+    expect(stub!.k1MatchedClient).toBe(recipientId);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [rescanned] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    expect(rescanned!.k1Status).toBe('dismissed');
+
+    // Committing the restored item again files ONLY the primary.
+    const batchB = '00000000-0000-4000-8000-0000000000f3';
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId: batchB,
+      itemId: rescanned!.id,
+    });
+    const stripped = 'Test Client Co_2025_1120S_K1_Package_Joe Black_9911_PARK.pdf';
+    const recipientCopies = keys().filter((k) => k.startsWith('Black Joe/Income Tax/2025/'));
+    expect(recipientCopies).toEqual([`Black Joe/Income Tax/2025/${stripped}`]);
+    const batchBLogs = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(eq(inboxRoutingLog.batchId, batchB));
+    expect(batchBLogs.map((l) => l.action)).toEqual(['filed']);
+  });
+
+  it('a re-exported same-named package still files to the recipient (no cross-batch suppression)', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage, keys } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: recipientId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId: '00000000-0000-4000-8000-0000000000f4',
+      itemId: item!.id,
+    });
+
+    // An AMENDED package arrives later under the SAME filename.
+    await storage.put(K1_KEY, Buffer.from('amended'));
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: recipientId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item2] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    const batchB = '00000000-0000-4000-8000-0000000000f5';
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId: batchB,
+      itemId: item2!.id,
+    });
+
+    // The amended copy reaches the recipient (collision-renamed), and the
+    // batch logs it — a cross-batch guard would have dropped it silently.
+    const recipientCopies = keys().filter((k) => k.startsWith('Black Joe/Income Tax/2025/'));
+    expect(recipientCopies).toHaveLength(2);
+    const batchBLogs = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(eq(inboxRoutingLog.batchId, batchB));
+    expect(batchBLogs.map((l) => l.action).sort()).toEqual(['filed', 'k1_recipient']);
   });
 });
 

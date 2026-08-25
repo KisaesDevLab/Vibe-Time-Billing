@@ -22,6 +22,7 @@ import {
 import { storage as coreStorage } from '@vibe/core';
 
 import { emitAudit } from '../auth/audit';
+import { storageKeyTaken } from '../files/storage-key';
 
 // Folder helpers inlined (not imported from ./files) so this module — used
 // by the worker filer-route job — stays free of the Express/RBAC graph.
@@ -113,7 +114,7 @@ export async function fileExistingObjectIntoClientFolder(
   const subfolder = normalizeSubfolderPath(args.subfolderPath);
   const safeFilename = sanitizeForWindows(args.originalFilename);
   const desired = enforceKeyByteCap(joinPath(folder.storagePath, subfolder, safeFilename));
-  const storageKey = await resolveCollision(desired, async (k) => (await storage.head(k)) !== null);
+  const storageKey = await resolveCollision(desired, storageKeyTaken(db, storage, args.firmId));
 
   let etag: string;
   try {
@@ -202,11 +203,12 @@ export async function fileBytesIntoClientFolder(
   const safeFilename = sanitizeForWindows(args.originalFilename);
   const desired = enforceKeyByteCap(joinPath(folder.storagePath, subfolder, safeFilename));
 
+  const taken = storageKeyTaken(db, storage, args.firmId);
   let storageKey = desired;
   if (args.onCollision === 'skip') {
-    if ((await storage.head(desired)) !== null) return { ok: false, code: 'exists' };
+    if (await taken(desired)) return { ok: false, code: 'exists' };
   } else {
-    storageKey = await resolveCollision(desired, async (k) => (await storage.head(k)) !== null);
+    storageKey = await resolveCollision(desired, taken);
   }
 
   let etag: string;

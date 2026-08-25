@@ -17,6 +17,7 @@ import {
 } from '@vibe/storage';
 import { storage as coreStorage } from '@vibe/core';
 
+import { storageKeyTaken } from '../files/storage-key';
 import { emitAudit } from '../auth/audit';
 import {
   loadClientFolder,
@@ -62,7 +63,7 @@ export async function createFileInClientFolder(
   const subfolder = normalizeSubfolder(args.subfolderPath, args.category);
   const safeFilename = sanitizeForWindows(args.originalFilename);
   const desired = enforceKeyByteCap(joinPath(folder.storagePath, subfolder, safeFilename));
-  const storageKey = await resolveCollision(desired, async (k) => (await storage.head(k)) !== null);
+  const storageKey = await resolveCollision(desired, storageKeyTaken(db, storage, args.firmId));
 
   const visibilityRules = await loadFirmVisibilityRules(db, args.firmId);
   const visibility =

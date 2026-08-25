@@ -63,3 +63,27 @@ export function resolveYearSubfolder(
   const y = behavior === 'previous' ? parsedYear - 1 : parsedYear;
   return `${y}/`;
 }
+
+/**
+ * Join a rule/profile target path with a resolveYearSubfolder result.
+ * The single shape both the primary destination (scan suggestedPath /
+ * router recompute) and the K-1 recipient copy use — one site to fix
+ * when the path convention changes.
+ */
+export function joinTargetPath(targetPath: string, yearSub: string): string {
+  return `${targetPath}${targetPath && !targetPath.endsWith('/') ? '/' : ''}${yearSub}`;
+}
+
+// 0229 — defaults for the K-1 recipient-copy destination. The migration
+// and drizzle schema column defaults mirror these literals (SQL cannot
+// import them); the web UI placeholder does import them.
+export const DEFAULT_K1_TARGET_PATH = 'Income Tax';
+export const DEFAULT_K1_YEAR_BEHAVIOR: YearBehavior = 'current_only';
+
+/** 0229 — the K-1 recipient-copy destination config, shared by the
+ *  loader (api), the commit payload (queue), and the route worker so the
+ *  shape (and the typed yearBehavior) exists exactly once. */
+export interface K1RouteConfig {
+  targetPath: string;
+  yearBehavior: YearBehavior;
+}
