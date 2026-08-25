@@ -11,7 +11,19 @@ import IORedis from 'ioredis';
 export const FILER_ROUTE_QUEUE = 'filer-route';
 
 export type FilerRouteJob =
-  | { kind: 'route'; firmId: string; actorId: string; batchId: string; itemId: string }
+  | {
+      kind: 'route';
+      firmId: string;
+      actorId: string;
+      batchId: string;
+      itemId: string;
+      /**
+       * 0229 — K-1 recipient-copy destination, resolved ONCE at commit so
+       * the whole batch files consistently even if the profile is edited
+       * mid-batch. Older queued jobs without it fall back to a live load.
+       */
+      k1Config?: { targetPath: string; yearBehavior: string };
+    }
   | { kind: 'undo'; firmId: string; actorId: string; logId: string };
 
 let queue: Queue<FilerRouteJob> | null = null;
@@ -36,6 +48,7 @@ export async function enqueueFilerRoute(job: {
   actorId: string;
   batchId: string;
   itemId: string;
+  k1Config?: { targetPath: string; yearBehavior: string };
 }): Promise<void> {
   await getFilerQueue().add(
     'route',

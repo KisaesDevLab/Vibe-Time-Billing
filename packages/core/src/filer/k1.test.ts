@@ -45,6 +45,19 @@ describe('parseK1Recipient', () => {
       'Joe Black',
     );
   });
+
+  // Second-review finding: an upper-cased SURNAME must not be eaten as an
+  // entity id, and mixed alphanumeric ids strip case-insensitively.
+  it('does not strip an all-caps surname of 5+ letters', () => {
+    expect(parseK1Recipient('E_2025_1120S_K1_Package_Joe_BLACK_6111.pdf')?.recipientName).toBe(
+      'Joe BLACK',
+    );
+  });
+  it('strips alphanumeric ids regardless of case, short caps codes like PARK', () => {
+    expect(
+      parseK1Recipient('E_2025_1120S_K1_Package_Joe Black_alle1234_PARK.pdf')?.recipientName,
+    ).toBe('Joe Black');
+  });
 });
 
 describe('clientNameVariants', () => {
@@ -55,6 +68,18 @@ describe('clientNameVariants', () => {
   it('expands spouse names on & and "and"', () => {
     expect(clientNameVariants('Black, Joe & Jane')).toEqual(['Joe Black', 'Jane Black']);
     expect(clientNameVariants('Black, Joe and Jane')).toEqual(['Joe Black', 'Jane Black']);
+  });
+
+  it('collapses spouse markers that name nobody (sibling-grammar parity)', () => {
+    expect(clientNameVariants('Black, Joe and family')).toEqual(['Joe Black']);
+    expect(clientNameVariants('Black, Joe & spouse')).toEqual(['Joe Black']);
+    expect(clientNameVariants('Black, Joe and wife')).toEqual(['Joe Black']);
+  });
+
+  it('recognizes the wider business-suffix list', () => {
+    expect(clientNameVariants('Parkway, PLLC')).toEqual(['Parkway, PLLC']);
+    expect(clientNameVariants('Acme, LP')).toEqual(['Acme, LP']);
+    expect(clientNameVariants('Summit, Incorporated')).toEqual(['Summit, Incorporated']);
   });
 
   it('preserves middle initials', () => {

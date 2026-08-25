@@ -16,11 +16,20 @@ import type { Logger } from 'pino';
 import type { Database } from '@vibe/db';
 import { inboxItems, inboxRoutingLog, files, taxReturns } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
+import {
+  joinTargetPath,
+  resolveYearSubfolder,
+  stripIdSegment,
+  type YearBehavior,
+} from '@vibe/core/filer';
 
+// Cross-app imports follow the established worker pattern (see the ~30
+// existing ../../../api/src imports); shared-package extraction is a
+// separate refactor.
+import { emitAudit } from '../../../api/src/auth/audit';
 import { fileExistingObjectIntoClientFolder } from '../../../api/src/clients/file-existing';
 import { createTaxReturnFromFileCore } from '../../../api/src/tax-returns/intake-core';
 import { loadK1Config } from '../../../api/src/filer/scan';
-import { resolveYearSubfolder, stripIdSegment } from '@vibe/core/filer';
 
 const TAX_RETURN_SUBFOLDER = 'Tax Returns/';
 
@@ -31,6 +40,9 @@ export interface FilerRouteJob {
   batchId?: string;
   itemId?: string;
   logId?: string;
+  /** 0229 — K-1 destination resolved at commit (batch-consistent); older
+   *  queued jobs without it fall back to a live profile load. */
+  k1Config?: { targetPath: string; yearBehavior: string };
 }
 
 export async function runFilerRoute(
@@ -64,16 +76,20 @@ async function runRoute(
 
   // 0229 — a staff-confirmed K-1 recipient gets an additional copy of
   // the PDF into their own folder, in this same job, before the inbox
-  // source is deleted.
+  // source is deleted. A row confirmed but no longer eligible (recipient
+  // equals the entity after a primary re-match, or FK-nulled client) is
+  // surfaced as a visible failed log, never silently skipped.
+  const k1Confirmed = item.k1Status === 'confirmed';
   const needsK1 =
-    item.k1Status === 'confirmed' &&
-    item.k1MatchedClient != null &&
-    item.k1MatchedClient !== item.matchedClient;
+    k1Confirmed && item.k1MatchedClient != null && item.k1MatchedClient !== item.matchedClient;
 
   // Idempotency: a prior attempt may have copied + logged but not yet
   // cleaned up. Success logs are discriminated by action so a logged
   // primary copy doesn't suppress a still-pending K-1 recipient copy
-  // (and vice versa) on retry.
+  // (and vice versa) on retry. The primary guard stays batch-scoped
+  // (pre-existing semantics); the K-1 guard is CROSS-batch for the same
+  // recipient, so undoing just the primary row and re-committing cannot
+  // stack a second recipient copy beside the still-live first one.
   const priorLogs = await db
     .select({ id: inboxRoutingLog.id, action: inboxRoutingLog.action })
     .from(inboxRoutingLog)
@@ -86,11 +102,32 @@ async function runRoute(
       ),
     );
   const priorPrimary = priorLogs.find((l) => l.action !== 'k1_recipient');
-  const priorK1 = priorLogs.find((l) => l.action === 'k1_recipient');
+  const priorK1 = needsK1
+    ? await db
+        .select({ id: inboxRoutingLog.id })
+        .from(inboxRoutingLog)
+        .where(
+          and(
+            eq(inboxRoutingLog.firmId, job.firmId),
+            eq(inboxRoutingLog.objectKeyFrom, item.objectKey),
+            eq(inboxRoutingLog.action, 'k1_recipient'),
+            eq(inboxRoutingLog.status, 'success'),
+            eq(inboxRoutingLog.clientId, item.k1MatchedClient!),
+          ),
+        )
+        .limit(1)
+        .then((r) => r[0])
+    : undefined;
   if (priorPrimary) {
     // 'skipped' means the source was already gone — no K-1 copy possible.
     if (needsK1 && !priorK1 && priorPrimary.action !== 'skipped') {
-      await routeK1Copy(db, storage, log, job, item);
+      // Crash window: primary logged, source may already be deleted.
+      const sourceHead = await storage.head(item.objectKey);
+      if (sourceHead) {
+        await routeK1Copy(db, storage, log, job, item);
+      } else {
+        await k1FailLog(db, job, item, 'k1_source_missing');
+      }
     }
     await storage.delete(item.objectKey).catch(() => undefined);
     await db.delete(inboxItems).where(eq(inboxItems.id, item.id));
@@ -180,8 +217,18 @@ async function runRoute(
 
   // K-1 recipient copy — after the primary log (so a crash here retries
   // only this leg) and before the source delete (so the copy has a source).
-  if (needsK1) {
+  // Failures fail-log and fall through to cleanup: the primary already
+  // filed, and blocking cleanup would wedge the item into duplicate
+  // primary copies on re-commit (review finding).
+  if (needsK1 && !priorK1) {
     await routeK1Copy(db, storage, log, job, item);
+  } else if (k1Confirmed && !needsK1) {
+    await k1FailLog(
+      db,
+      job,
+      item,
+      item.k1MatchedClient == null ? 'k1_client_missing' : 'k1_same_as_entity',
+    );
   }
 
   // Delete the inbox original, then drop the workqueue row.
@@ -198,9 +245,12 @@ async function runRoute(
 
 /**
  * 0229 — file the K-1 recipient's copy. Destination comes from the
- * per-row override or the active profile's K-1 config. Throws on copy
- * failure so BullMQ retries; the action-discriminated idempotency guard
- * makes the retry re-run only this leg.
+ * per-row override (nullish check — an explicit '' means client root,
+ * mirroring the primary leg's override semantics) or the batch's
+ * commit-time config. Failures NEVER throw: the primary success log is
+ * already written, and a throwing leg would block cleanup and turn
+ * re-commits into duplicate primary copies — instead a visible
+ * 'failed' log row is written and the caller proceeds to cleanup.
  */
 async function routeK1Copy(
   db: Database,
@@ -210,8 +260,15 @@ async function routeK1Copy(
   item: typeof inboxItems.$inferSelect,
 ): Promise<void> {
   let subfolder = item.k1OverrideFolder;
-  if (!subfolder) {
-    const cfg = await loadK1Config(db, job.firmId);
+  if (subfolder == null) {
+    const cfg = job.k1Config
+      ? // reason: the payload value came from loadK1Config, whose column is
+        // CHECK-constrained to the YearBehavior union (0229).
+        {
+          targetPath: job.k1Config.targetPath,
+          yearBehavior: job.k1Config.yearBehavior as YearBehavior,
+        }
+      : await loadK1Config(db, job.firmId);
     const yearSub = resolveYearSubfolder(item.overrideYear ?? item.parsedYear, cfg.yearBehavior);
     if (yearSub === null) {
       // Year required but none parsed — file at the base path rather
@@ -219,7 +276,7 @@ async function routeK1Copy(
       log.warn({ itemId: item.id }, 'filer: k1 copy has no year; filing at base path');
       subfolder = cfg.targetPath;
     } else {
-      subfolder = `${cfg.targetPath}${cfg.targetPath && !cfg.targetPath.endsWith('/') ? '/' : ''}${yearSub}`;
+      subfolder = joinTargetPath(cfg.targetPath, yearSub);
     }
   }
 
@@ -235,7 +292,9 @@ async function routeK1Copy(
     source: 'filer',
   });
   if (!filed.ok) {
-    throw new Error(`filer k1 recipient copy failed: ${filed.code}`);
+    log.warn({ itemId: item.id, code: filed.code }, 'filer: k1 recipient copy failed');
+    await k1FailLog(db, job, item, `k1_${filed.code}`);
+    return;
   }
 
   await db.insert(inboxRoutingLog).values({
@@ -249,6 +308,25 @@ async function routeK1Copy(
     routedFileId: filed.fileId,
     userId: job.actorId,
     status: 'success',
+  });
+}
+
+/** Visible 'failed' history row for a K-1 leg that could not file. */
+async function k1FailLog(
+  db: Database,
+  job: FilerRouteJob,
+  item: typeof inboxItems.$inferSelect,
+  error: string,
+): Promise<void> {
+  await db.insert(inboxRoutingLog).values({
+    batchId: job.batchId!,
+    firmId: job.firmId,
+    objectKeyFrom: item.objectKey,
+    clientId: item.k1MatchedClient,
+    action: 'failed',
+    userId: job.actorId,
+    status: 'error',
+    error,
   });
 }
 
@@ -295,13 +373,22 @@ async function runUndo(
       log.warn({ err, logId: row.id }, 'filer undo: k1 copy delete failed');
       return;
     }
-    if (row.routedFileId) {
-      await db.update(files).set({ deletedAt: new Date() }).where(eq(files.id, row.routedFileId));
-    }
-    await db
-      .update(inboxRoutingLog)
-      .set({ status: 'reversed' })
-      .where(eq(inboxRoutingLog.id, row.id));
+    await db.transaction(async (tx) => {
+      if (row.routedFileId) {
+        await tx.update(files).set({ deletedAt: new Date() }).where(eq(files.id, row.routedFileId));
+      }
+      await tx
+        .update(inboxRoutingLog)
+        .set({ status: 'reversed' })
+        .where(eq(inboxRoutingLog.id, row.id));
+    });
+    await emitAudit(db, {
+      action: 'UPDATE',
+      entityType: 'file',
+      entityId: row.routedFileId,
+      actorAppUserId: job.actorId,
+      after: { k1UndoRevert: true, logId: row.id, objectKey: row.objectKeyTo },
+    }).catch(() => undefined);
     return;
   }
 

@@ -49,11 +49,17 @@ import {
   type StorageClient,
 } from '@vibe/storage';
 
-import { evaluateRules, resolveYearSubfolder } from '@vibe/core/filer';
+import { evaluateRules, joinTargetPath, resolveYearSubfolder } from '@vibe/core/filer';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { resolveClientFolders } from '../clients/folder-templates';
-import { INBOX_PREFIX, ZIP_IMPORT_PREFIX, loadActiveRules, matchClientByIdSubstring } from './scan';
+import {
+  INBOX_PREFIX,
+  ZIP_IMPORT_PREFIX,
+  loadActiveRules,
+  loadK1Config,
+  matchClientByIdSubstring,
+} from './scan';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { scanInbox } from './scan';
@@ -232,7 +238,13 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       })
       .from(inboxItems)
       .leftJoin(clients, eq(clients.id, inboxItems.matchedClient))
-      .leftJoin(k1Client, eq(k1Client.id, inboxItems.k1MatchedClient))
+      .leftJoin(
+        // Firm predicate on the join: a cross-firm uuid (blocked at PATCH
+        // now, but rows could predate that) must never leak another
+        // firm's client name into this firm's inbox.
+        k1Client,
+        and(eq(k1Client.id, inboxItems.k1MatchedClient), eq(k1Client.firmId, session.firmId)),
+      )
       .where(eq(inboxItems.firmId, session.firmId))
       .orderBy(desc(inboxItems.discoveredAt));
     res.json({ items: rows });
@@ -280,15 +292,21 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
       return;
     }
-    // 0229 — K-1 field rules need the current row (verify against the
-    // primary client, confirm requires a recipient client).
-    const touchesK1 =
-      parsed.data.k1MatchedClient !== undefined || parsed.data.k1Status !== undefined;
-    if (touchesK1) {
+    // 0229 — client-assignment invariants are validated against the
+    // RESULTING row state (incoming value ?? current), so a primary
+    // reassignment cannot smuggle in matchedClient === k1MatchedClient
+    // and a simultaneous patch is never compared against stale values.
+    // Clearing operations (dismiss, k1 client → null) always succeed.
+    const touchesClients =
+      parsed.data.matchedClient !== undefined ||
+      parsed.data.k1MatchedClient !== undefined ||
+      parsed.data.k1Status !== undefined;
+    if (touchesClients) {
       const [current] = await deps.db
         .select({
           matchedClient: inboxItems.matchedClient,
           k1MatchedClient: inboxItems.k1MatchedClient,
+          k1Status: inboxItems.k1Status,
         })
         .from(inboxItems)
         .where(and(eq(inboxItems.id, req.params['id']!), eq(inboxItems.firmId, session.firmId)))
@@ -297,21 +315,76 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         res.status(404).json({ error: 'not_found' });
         return;
       }
-      // Picking a client via search implies confirmation.
+      // Firm scoping: the FKs reference the GLOBAL client table, so an
+      // arbitrary UUID must be proven to belong to this firm (a cross-firm
+      // id would otherwise leak that client's name via the inbox join).
+      const firmClient = async (id: string): Promise<boolean> => {
+        const [c] = await deps
+          .db!.select({ id: clients.id })
+          .from(clients)
+          .where(and(eq(clients.id, id), eq(clients.firmId, session.firmId)))
+          .limit(1);
+        return Boolean(c);
+      };
+      if (parsed.data.matchedClient != null && !(await firmClient(parsed.data.matchedClient))) {
+        res.status(400).json({ error: 'client_not_found' });
+        return;
+      }
+      if (parsed.data.k1MatchedClient != null) {
+        if (!(await firmClient(parsed.data.k1MatchedClient))) {
+          res.status(400).json({ error: 'k1_client_not_found' });
+          return;
+        }
+        // A recipient without a bound folder would wedge at commit — the
+        // same gate the scan suggestions apply.
+        const [bound] = await deps.db
+          .select({ id: clientFolders.id })
+          .from(clientFolders)
+          .where(
+            and(
+              eq(clientFolders.clientId, parsed.data.k1MatchedClient),
+              eq(clientFolders.firmId, session.firmId),
+            ),
+          )
+          .limit(1);
+        if (!bound) {
+          res.status(400).json({ error: 'k1_client_folder_unbound' });
+          return;
+        }
+      }
+      // Picking a K-1 client via search implies confirmation; clearing it
+      // reverts to 'suggested' unless the patch says otherwise.
       if (parsed.data.k1MatchedClient != null && parsed.data.k1Status === undefined) {
         parsed.data.k1Status = 'confirmed';
       }
-      const effectiveK1Client =
+      if (parsed.data.k1MatchedClient === null && parsed.data.k1Status === undefined) {
+        parsed.data.k1Status = 'suggested';
+      }
+      const resultingK1Client =
         parsed.data.k1MatchedClient !== undefined
           ? parsed.data.k1MatchedClient
           : current.k1MatchedClient;
-      if (effectiveK1Client != null && effectiveK1Client === current.matchedClient) {
-        res.status(400).json({ error: 'k1_same_as_entity' });
-        return;
-      }
-      if (parsed.data.k1Status === 'confirmed' && effectiveK1Client == null) {
-        res.status(400).json({ error: 'k1_client_required' });
-        return;
+      const resultingK1Status =
+        parsed.data.k1Status !== undefined ? parsed.data.k1Status : current.k1Status;
+      const resultingMatched =
+        parsed.data.matchedClient !== undefined ? parsed.data.matchedClient : current.matchedClient;
+      if (resultingK1Status === 'confirmed') {
+        if (resultingK1Client == null) {
+          res.status(400).json({ error: 'k1_client_required' });
+          return;
+        }
+        if (resultingK1Client === resultingMatched) {
+          res.status(400).json({ error: 'k1_same_as_entity' });
+          return;
+        }
+      } else if (
+        resultingK1Status === 'suggested' &&
+        resultingK1Client != null &&
+        resultingK1Client === resultingMatched
+      ) {
+        // A mere suggestion coinciding with a primary reassignment is
+        // cleared rather than blocking the reassignment.
+        parsed.data.k1MatchedClient = null;
       }
     }
     const set: Record<string, unknown> = { reviewedBy: session.appUserId, updatedAt: new Date() };
@@ -364,8 +437,7 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
           recompute['suggestedPath'] = null;
           recompute['matchStatus'] = 'year_needed';
         } else {
-          recompute['suggestedPath'] =
-            `${rule.targetPath}${rule.targetPath && !rule.targetPath.endsWith('/') ? '/' : ''}${yearSub}`;
+          recompute['suggestedPath'] = joinTargetPath(rule.targetPath, yearSub);
           if (row.matchStatus === 'year_needed' || row.matchStatus === 'unparseable') {
             recompute['matchStatus'] = 'matched';
           }
@@ -847,11 +919,15 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       return;
     }
     const batchId = randomUUID();
+    // 0229 — resolve the K-1 destination once per batch (consistent even
+    // if the profile is edited mid-batch; one query instead of N).
+    const k1Config = await loadK1Config(deps.db, session.firmId);
     for (const r of routable) {
       await enqueueFilerRoute({
         firmId: session.firmId,
         actorId: session.appUserId,
         batchId,
+        k1Config,
         itemId: r.id,
       });
     }

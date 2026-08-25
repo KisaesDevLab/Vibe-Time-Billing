@@ -41,6 +41,8 @@ import {
   tokens,
 } from '@vibe/ui';
 
+import { DEFAULT_K1_TARGET_PATH } from '@vibe/core/filer';
+
 import { api, getCsrfToken } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
@@ -462,8 +464,10 @@ function InboxTab(): JSX.Element {
   const flaggedCount = commitTargets.filter(
     (r) => r.reviewAction === 'flag_tax' || r.reviewAction === 'file_flag_tax',
   ).length;
+  // Mirrors the worker's needsK1 guard exactly — the dialog must never
+  // promise a recipient copy the worker would refuse.
   const k1Count = commitTargets.filter(
-    (r) => r.k1Status === 'confirmed' && r.k1MatchedClient,
+    (r) => r.k1Status === 'confirmed' && r.k1MatchedClient && r.k1MatchedClient !== r.matchedClient,
   ).length;
   const folderCount = new Set(
     commitTargets.map((r) => r.suggestedPath ?? r.overrideFolder ?? '(client root)'),
@@ -994,6 +998,87 @@ function K1RecipientControls({
     flexWrap: 'wrap',
   };
 
+  // One flat mode per render — each state renders from its own branch
+  // instead of a nested ternary chain (review cleanup).
+  const mode = searching ? 'searching' : (row.k1Status ?? 'suggested');
+
+  function body(): JSX.Element {
+    switch (mode) {
+      case 'searching':
+        return (
+          <div style={{ ...actionRow, minWidth: 220 }}>
+            <div style={{ flex: 1, minWidth: 180 }}>
+              <Combobox
+                ariaLabel={`Pick K-1 recipient client for ${row.originalName}`}
+                clearable
+                value={row.k1MatchedClient ?? ''}
+                onChange={(v) => {
+                  // '' (the clear button) clears the pick — the server
+                  // reverts the status to 'suggested'.
+                  onPatch({ k1MatchedClient: v || null });
+                  setSearching(false);
+                }}
+                options={options}
+                placeholder="Pick recipient client…"
+              />
+            </div>
+            <Button size="sm" variant="ghost" onClick={() => setSearching(false)}>
+              Cancel
+            </Button>
+          </div>
+        );
+      case 'confirmed':
+        return (
+          <div style={actionRow}>
+            <Pill tone="success">✓ {row.k1ClientName ?? 'recipient'}</Pill>
+            <Button size="sm" variant="ghost" onClick={() => setSearching(true)}>
+              Change
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'dismissed' })}>
+              Dismiss
+            </Button>
+          </div>
+        );
+      case 'dismissed':
+        return (
+          <div style={actionRow}>
+            <span style={muted}>K-1 copy dismissed</span>
+            <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'suggested' })}>
+              Restore
+            </Button>
+          </div>
+        );
+      default: // 'suggested'
+        return (
+          <div style={actionRow}>
+            {row.k1MatchedClient ? (
+              <>
+                <span style={{ fontSize: 12 }}>{row.k1ClientName}</span>
+                {row.k1MatchScore != null && (
+                  <Pill tone="warning">{Math.round(row.k1MatchScore * 100)}%</Pill>
+                )}
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => onPatch({ k1Status: 'confirmed' })}
+                >
+                  Verify
+                </Button>
+              </>
+            ) : (
+              <span style={muted}>no match</span>
+            )}
+            <Button size="sm" variant="ghost" onClick={() => setSearching(true)}>
+              Search
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'dismissed' })}>
+              Dismiss
+            </Button>
+          </div>
+        );
+    }
+  }
+
   return (
     <div
       style={{
@@ -1007,70 +1092,7 @@ function K1RecipientControls({
       <div style={muted}>
         K-1 recipient: <strong style={{ color: tokens.color.text }}>{row.k1RecipientName}</strong>
       </div>
-
-      {searching ? (
-        <div style={{ ...actionRow, minWidth: 220 }}>
-          <div style={{ flex: 1, minWidth: 180 }}>
-            <Combobox
-              ariaLabel={`Pick K-1 recipient client for ${row.originalName}`}
-              clearable
-              value={row.k1MatchedClient ?? ''}
-              onChange={(v) => {
-                if (v) onPatch({ k1MatchedClient: v, k1Status: 'confirmed' });
-                setSearching(false);
-              }}
-              options={options}
-              placeholder="Pick recipient client…"
-            />
-          </div>
-          <Button size="sm" variant="ghost" onClick={() => setSearching(false)}>
-            Cancel
-          </Button>
-        </div>
-      ) : row.k1Status === 'confirmed' ? (
-        <div style={actionRow}>
-          <Pill tone="success">✓ {row.k1ClientName ?? 'recipient'}</Pill>
-          <Button size="sm" variant="ghost" onClick={() => setSearching(true)}>
-            Change
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'dismissed' })}>
-            Dismiss
-          </Button>
-        </div>
-      ) : row.k1Status === 'dismissed' ? (
-        <div style={actionRow}>
-          <span style={muted}>K-1 copy dismissed</span>
-          <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'suggested' })}>
-            Restore
-          </Button>
-        </div>
-      ) : (
-        <div style={actionRow}>
-          {row.k1MatchedClient ? (
-            <>
-              <span style={{ fontSize: 12 }}>{row.k1ClientName}</span>
-              {row.k1MatchScore != null && (
-                <Pill tone="warning">{Math.round(row.k1MatchScore * 100)}%</Pill>
-              )}
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => onPatch({ k1Status: 'confirmed' })}
-              >
-                Verify
-              </Button>
-            </>
-          ) : (
-            <span style={muted}>no match</span>
-          )}
-          <Button size="sm" variant="ghost" onClick={() => setSearching(true)}>
-            Search
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'dismissed' })}>
-            Dismiss
-          </Button>
-        </div>
-      )}
+      {body()}
     </div>
   );
 }
@@ -1904,9 +1926,9 @@ function RulesTab(): JSX.Element {
                 key={`k1-path-${selectedProfile.id}`}
                 aria-label="K-1 recipient target path"
                 defaultValue={selectedProfile.k1TargetPath}
-                placeholder="Income Tax"
+                placeholder={DEFAULT_K1_TARGET_PATH}
                 onBlur={(e) => {
-                  const v = e.target.value.trim() || 'Income Tax';
+                  const v = e.target.value.trim() || DEFAULT_K1_TARGET_PATH;
                   if (v !== selectedProfile.k1TargetPath) void patchK1Config({ k1TargetPath: v });
                 }}
                 style={{ ...controlStyle, width: 200 }}

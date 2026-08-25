@@ -113,7 +113,22 @@ export async function fileExistingObjectIntoClientFolder(
   const subfolder = normalizeSubfolderPath(args.subfolderPath);
   const safeFilename = sanitizeForWindows(args.originalFilename);
   const desired = enforceKeyByteCap(joinPath(folder.storagePath, subfolder, safeFilename));
-  const storageKey = await resolveCollision(desired, async (k) => (await storage.head(k)) !== null);
+  // Collision check consults the DB as well as B2: files_firm_storage_key_uk
+  // is NOT partial, so a soft-deleted row (e.g. a routed copy that was
+  // undone) still owns its key — without this, re-filing the same name
+  // after an undo crashes on the unique index instead of renaming.
+  const storageKey = await resolveCollision(
+    desired,
+    async (k) =>
+      (await storage.head(k)) !== null ||
+      (
+        await db
+          .select({ id: files.id })
+          .from(files)
+          .where(and(eq(files.firmId, args.firmId), eq(files.storageKey, k)))
+          .limit(1)
+      ).length > 0,
+  );
 
   let etag: string;
   try {

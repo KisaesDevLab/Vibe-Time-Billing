@@ -21,9 +21,26 @@ export interface K1Recipient {
 // literally named "K1 Package LLC" must not shift the split).
 const K1_MARKER = /K-?1[ _]Package_/gi;
 
-/** Numeric run (>=3) or short all-caps alphanumeric token — id-shaped. */
+/**
+ * Entity-id-shaped trailing token. Three shapes, deliberately narrow so an
+ * upper-cased SURNAME is not eaten (review finding — "Joe_BLACK_6111" must
+ * keep BLACK):
+ *  - numeric run (>=3 digits): "6111", "123456"
+ *  - alphanumeric WITH a digit (case-insensitive): "ALLE1234", "AWS9001"
+ *  - short pure-alpha ALL-CAPS (2–4 chars): "PARK" — UltraTax letter codes
+ *    are short; surnames of 5+ caps (BLACK, SMITH) survive. A ≤4-letter
+ *    all-caps surname with no other trailing ids is the accepted rare
+ *    false positive of this heuristic.
+ * Lowercase pure-alpha tokens are never treated as ids: a lowercase entity
+ * code left on the name only depresses the fuzzy score (no suggestion —
+ * staff use Search), which is safer than eating a name particle.
+ */
 function isIdLikeToken(token: string): boolean {
-  return /^\d{3,}$/.test(token) || /^[A-Z0-9]{2,12}$/.test(token);
+  return (
+    /^\d{3,}$/.test(token) ||
+    (/^[A-Za-z0-9]{2,12}$/.test(token) && /\d/.test(token)) ||
+    /^[A-Z]{2,4}$/.test(token)
+  );
 }
 
 /**
@@ -55,14 +72,26 @@ export function parseK1Recipient(filename: string): K1Recipient | null {
   return { recipientName, raw };
 }
 
+// Grammar kept in sync with the repo's other name matchers (review
+// finding: three sibling grammars had drifted at birth). Suffix list
+// mirrors packages/storage/src/normalize.ts BUSINESS_SUFFIXES; the
+// spouse markers mirror packages/core/src/storage/onboarding.ts
+// SPOUSE_MARKERS ("and family/wife/husband/spouse" name nobody — they
+// collapse rather than expand). @vibe/core cannot import @vibe/storage,
+// so the lists live here with this pointer instead of a shared module.
+const ENTITY_SUFFIX_RE =
+  /^(llc|l\.l\.c\.|pllc|inc\.?|incorporated|ltd\.?|limited|llp|l\.l\.p\.|lp|lllp|pc|p\.c\.|pa|p\.a\.|ps|corp\.?|corporation|co\.?|company)$/i;
+const SPOUSE_COLLAPSE_RE = /\s*(?:&\s*spouse|\band\s+(?:family|wife|husband|spouse))\b\s*$/i;
+
 /**
  * Expand a stored client name into name variants comparable with the
  * `First Last` names UltraTax writes into filenames. Client records are
  * mostly `Last, First` and may include a spouse:
- *   "Black, Joe"        → ["Joe Black"]
- *   "Black, Joe & Jane" → ["Joe Black", "Jane Black"]
- *   "Parkway, LLC"      → ["Parkway, LLC"]  (suffix, not a given name)
- *   no comma            → [name] as-is
+ *   "Black, Joe"            → ["Joe Black"]
+ *   "Black, Joe & Jane"     → ["Joe Black", "Jane Black"]
+ *   "Black, Joe and family" → ["Joe Black"]  (marker names nobody)
+ *   "Parkway, LLC"          → ["Parkway, LLC"]  (suffix, not a given name)
+ *   no comma                → [name] as-is
  */
 export function clientNameVariants(name: string): string[] {
   const trimmed = name.trim();
@@ -70,17 +99,14 @@ export function clientNameVariants(name: string): string[] {
   if (comma <= 0 || comma === trimmed.length - 1) return [trimmed];
 
   const last = trimmed.slice(0, comma).trim();
-  const givenPart = trimmed.slice(comma + 1).trim();
+  const givenPart = trimmed
+    .slice(comma + 1)
+    .trim()
+    .replace(SPOUSE_COLLAPSE_RE, '');
   if (last.length === 0 || givenPart.length === 0) return [trimmed];
 
   // Entity suffixes after the comma ("Parkway, LLC") are not given names.
-  if (
-    /^(llc|l\.l\.c\.|inc\.?|ltd\.?|llp|l\.l\.p\.|pc|p\.c\.|pa|p\.a\.|corp\.?|co\.?)$/i.test(
-      givenPart,
-    )
-  ) {
-    return [trimmed];
-  }
+  if (ENTITY_SUFFIX_RE.test(givenPart)) return [trimmed];
 
   const givens = givenPart
     .split(/\s*(?:&|\band\b)\s*/i)

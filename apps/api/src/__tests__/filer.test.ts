@@ -17,7 +17,7 @@ import {
   inboxRoutingProfiles,
 } from '@vibe/db/schema';
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
-import { scanInbox, matchObject, matchK1Recipient } from '../filer/scan';
+import { scanInbox, matchObject, matchK1Recipient, k1Candidates } from '../filer/scan';
 import { createFilerRouter } from '../filer/router';
 import { runFilerRoute } from '../../../worker/src/jobs/filer-route';
 
@@ -447,6 +447,9 @@ const K1_KEY = `Inbox/${K1_NAME}`;
 
 /** Second client (the K-1 recipient) with a bound folder. */
 async function seedRecipient(firmId: string, entityClientId: string): Promise<string> {
+  // reason (for the casts below): db.execute returns an untyped result;
+  // the rows shape is fixed by the RETURNING clause — same idiom as
+  // seedMinimalFirm in the pglite harness.
   const r = await harness.db.execute(
     sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
         SELECT firm_id, 'Black, Joe & Jane', partner_in_charge_id, office_id
@@ -467,27 +470,42 @@ describe('matchK1Recipient (pure)', () => {
     { id: 'joe', name: 'Black, Joe & Jane', externalId: '6111', status: 'ACTIVE' },
     { id: 'other', name: 'Wilson, Ted', externalId: '7222', status: 'ACTIVE' },
   ];
+  const allBound = new Set(['entity', 'joe', 'other']);
+  const candidates = k1Candidates(list, allBound);
 
   it('matches First Last against a Last, First & Spouse record', () => {
-    const r = matchK1Recipient({ recipientName: 'Joe Black', raw: '' }, list, 'entity');
+    const r = matchK1Recipient({ recipientName: 'Joe Black', raw: '' }, candidates, 'entity');
     expect(r.matchedClient).toBe('joe');
     expect(r.score).toBeGreaterThanOrEqual(0.85);
   });
 
   it('matches the spouse variant', () => {
-    const r = matchK1Recipient({ recipientName: 'Jane Black', raw: '' }, list, 'entity');
+    const r = matchK1Recipient({ recipientName: 'Jane Black', raw: '' }, candidates, 'entity');
     expect(r.matchedClient).toBe('joe');
   });
 
   it('never suggests the primary-matched entity', () => {
-    const r = matchK1Recipient({ recipientName: 'Parkway', raw: '' }, list, 'entity');
+    const r = matchK1Recipient({ recipientName: 'Parkway', raw: '' }, candidates, 'entity');
     expect(r.matchedClient).not.toBe('entity');
   });
 
   it('below threshold → null result', () => {
-    const r = matchK1Recipient({ recipientName: 'Zed Quux', raw: '' }, list, 'entity');
+    const r = matchK1Recipient({ recipientName: 'Zed Quux', raw: '' }, candidates, 'entity');
     expect(r.matchedClient).toBeNull();
     expect(r.score).toBeNull();
+  });
+
+  // Review finding: a suggestion must be fileable — inactive and
+  // folder-unbound clients are excluded up front.
+  it('k1Candidates drops inactive and unbound clients', () => {
+    const withInactive = [
+      ...list,
+      { id: 'gone', name: 'Black, Joe', externalId: '9999', status: 'INACTIVE' },
+    ];
+    const cands = k1Candidates(withInactive, new Set(['entity', 'joe'])); // 'other' unbound
+    expect(cands.map((c) => c.id).sort()).toEqual(['entity', 'joe']);
+    const r = matchK1Recipient({ recipientName: 'Ted Wilson', raw: '' }, cands, 'entity');
+    expect(r.matchedClient).toBeNull(); // unbound Wilson not suggestible
   });
 });
 
@@ -587,6 +605,89 @@ describe('PATCH /inbox/:id — K-1 verification rules', () => {
     const [after] = await harness.db.select().from(inboxItems).where(eq(inboxItems.id, item!.id));
     expect(after!.k1MatchedClient).toBe(recipientId);
     expect(after!.k1Status).toBe('confirmed');
+  });
+
+  // Second-review findings: firm scoping, resulting-state invariants,
+  // clear-to-suggested, and the never-dead-end Dismiss.
+  it('rejects cross-firm and folder-unbound recipients', async () => {
+    const f = await setup();
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    const app = buildApp(f.firmId, f.appUserId);
+
+    // A syntactically valid uuid from nowhere (or another firm) → 400.
+    const foreign = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: '00000000-0000-4000-8000-00000000dead' });
+    expect(foreign.status).toBe(400);
+    expect(foreign.body.error).toBe('k1_client_not_found');
+
+    // Same-firm client without a bound folder → 400 (it could not file).
+    const r = await harness.db.execute(
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          SELECT firm_id, 'Unbound, Ulla', partner_in_charge_id, office_id
+          FROM client WHERE id = ${f.clientId} RETURNING id`,
+    );
+    const unboundId = (r as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const unbound = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: unboundId });
+    expect(unbound.status).toBe(400);
+    expect(unbound.body.error).toBe('k1_client_folder_unbound');
+  });
+
+  it('primary reassignment cannot alias a confirmed recipient; Dismiss never dead-ends', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    const app = buildApp(f.firmId, f.appUserId);
+
+    await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: recipientId }); // confirmed
+
+    // Reassigning the PRIMARY client to the confirmed recipient → 400
+    // (the resulting state would silently skip the copy at commit).
+    const alias = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ matchedClient: recipientId });
+    expect(alias.status).toBe(400);
+    expect(alias.body.error).toBe('k1_same_as_entity');
+
+    // Simultaneous patch to the same client → 400 too (resulting-state
+    // comparison, not the stale stored value).
+    const both = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ matchedClient: recipientId, k1MatchedClient: recipientId });
+    expect(both.status).toBe(400);
+
+    // Dismiss always succeeds, even from awkward states.
+    const dismiss = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1Status: 'dismissed' });
+    expect(dismiss.status).toBe(200);
+
+    // Clearing the recipient reverts to 'suggested' — never a
+    // confirmed-without-client row.
+    await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: recipientId });
+    const clear = await request(app)
+      .patch(`/api/staff/filer/inbox/${item!.id}`)
+      .send({ k1MatchedClient: null });
+    expect(clear.status).toBe(200);
+    const [after] = await harness.db.select().from(inboxItems).where(eq(inboxItems.id, item!.id));
+    expect(after!.k1MatchedClient).toBeNull();
+    expect(after!.k1Status).toBe('suggested');
   });
 });
 
@@ -704,6 +805,124 @@ describe('route + undo — K-1 recipient copy', () => {
       .from(inboxRoutingLog)
       .where(eq(inboxRoutingLog.batchId, batchId));
     expect(logRows.map((l) => l.action).sort()).toEqual(['filed', 'k1_recipient']);
+  });
+
+  // Second-review findings: a failing K-1 leg must never wedge the item.
+  it('an unbound recipient fail-logs the K-1 leg and still completes cleanup', async () => {
+    const f = await setup();
+    // Recipient client with NO clientFolders binding (predates the PATCH
+    // gate, or the binding was removed later).
+    const r = await harness.db.execute(
+      sql`INSERT INTO client (firm_id, name, partner_in_charge_id, office_id)
+          SELECT firm_id, 'Black, Joe', partner_in_charge_id, office_id
+          FROM client WHERE id = ${f.clientId} RETURNING id`,
+    );
+    const unboundId = (r as unknown as { rows: { id: string }[] }).rows[0]!.id;
+    const { storage, keys } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: unboundId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+
+    const batchId = '00000000-0000-4000-8000-0000000000f1';
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId,
+      itemId: item!.id,
+    });
+
+    // Primary filed, source cleaned up, inbox row gone — no wedge, no
+    // duplicate primary on a re-commit; the K-1 leg is a VISIBLE error.
+    const stripped = 'Test Client Co_2025_1120S_K1_Package_Joe Black_9911_PARK.pdf';
+    expect(keys()).toContain(`Test Client Co/${stripped}`);
+    expect(keys()).not.toContain(K1_KEY);
+    const remaining = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    expect(remaining).toHaveLength(0);
+    const logRows = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(eq(inboxRoutingLog.batchId, batchId));
+    const k1Fail = logRows.find((l) => l.action === 'failed');
+    expect(k1Fail).toBeDefined();
+    expect(k1Fail!.status).toBe('error');
+    expect(k1Fail!.error).toBe('k1_client_folder_not_bound');
+  });
+
+  it('undoing only the primary and re-committing does not duplicate the recipient copy', async () => {
+    const f = await setup();
+    const recipientId = await seedRecipient(f.firmId, f.clientId);
+    const { storage, keys } = fakeStorage([K1_KEY]);
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: recipientId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+
+    const batchA = '00000000-0000-4000-8000-0000000000f2';
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId: batchA,
+      itemId: item!.id,
+    });
+    const [primaryLog] = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(and(eq(inboxRoutingLog.batchId, batchA), eq(inboxRoutingLog.action, 'filed')));
+
+    // Undo ONLY the primary: source restored, recipient copy stays live.
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'undo',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      logId: primaryLog!.id,
+    });
+    expect(keys()).toContain(K1_KEY);
+
+    // Staff re-confirm on the restored stub and commit under a NEW batch.
+    await scanInbox(harness.db, storage, f.firmId);
+    await harness.db
+      .update(inboxItems)
+      .set({ k1Status: 'confirmed', k1MatchedClient: recipientId })
+      .where(eq(inboxItems.firmId, f.firmId));
+    const [item2] = await harness.db
+      .select()
+      .from(inboxItems)
+      .where(eq(inboxItems.firmId, f.firmId));
+    const batchB = '00000000-0000-4000-8000-0000000000f3';
+    await runFilerRoute(harness.db, storage, log, {
+      kind: 'route',
+      firmId: f.firmId,
+      actorId: f.appUserId,
+      batchId: batchB,
+      itemId: item2!.id,
+    });
+
+    // Exactly ONE recipient copy exists (cross-batch guard) and batch B
+    // wrote no second k1 log.
+    const stripped = 'Test Client Co_2025_1120S_K1_Package_Joe Black_9911_PARK.pdf';
+    const recipientCopies = keys().filter((k) => k.startsWith('Black Joe/Income Tax/2025/'));
+    expect(recipientCopies).toEqual([`Black Joe/Income Tax/2025/${stripped}`]);
+    const batchBLogs = await harness.db
+      .select()
+      .from(inboxRoutingLog)
+      .where(eq(inboxRoutingLog.batchId, batchB));
+    expect(batchBLogs.map((l) => l.action)).toEqual(['filed']);
   });
 });
 
