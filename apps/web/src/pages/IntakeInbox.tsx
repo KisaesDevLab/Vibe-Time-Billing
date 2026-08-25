@@ -42,6 +42,12 @@ interface FileItem {
   byteSize: number;
   kind: string;
   scanStatus: string;
+  aiLabelStatus: 'pending' | 'labeled' | 'failed' | 'skipped';
+  aiDocType: string | null;
+  aiTaxYear: number | null;
+  aiIssuer: string | null;
+  aiSuggestedName: string | null;
+  aiConfidence: number | null;
 }
 
 interface Suggestion {
@@ -99,6 +105,19 @@ export function IntakeInboxPage(): JSX.Element {
       setError((err as ApiError).message);
     }
   }, []);
+
+  // 0230 — while any file is still "AI labeling…", re-fetch the open
+  // session every 5 s (without the blank-out openSession does) so labels
+  // appear as the API-side consumer finishes them.
+  useEffect(() => {
+    if (!selected || !detail?.files.some((f) => f.aiLabelStatus === 'pending')) return;
+    const t = setInterval(() => {
+      void api<Detail>(`/api/staff/intake/sessions/${selected}`)
+        .then((d) => setDetail(d))
+        .catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(t);
+  }, [selected, detail]);
 
   useEffect(() => {
     if (!clientQuery.trim()) {
@@ -351,6 +370,43 @@ export function IntakeInboxPage(): JSX.Element {
                             ({(f.byteSize / 1024).toFixed(0)} KB
                             {f.kind === 'scan' ? ', assembled' : ''})
                           </span>
+                          {f.aiLabelStatus === 'labeled' && (
+                            <span
+                              title={
+                                (f.aiSuggestedName ? `Suggested: ${f.aiSuggestedName}` : '') +
+                                (f.aiConfidence != null
+                                  ? ` (${Math.round(f.aiConfidence * 100)}%)`
+                                  : '')
+                              }
+                              style={{
+                                display: 'inline-block',
+                                marginLeft: 6,
+                                padding: '1px 6px',
+                                fontSize: 11,
+                                borderRadius: 999,
+                                border: `1px solid ${tokens.color.border}`,
+                                color: tokens.color.textMuted,
+                                background: tokens.color.surface,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              ✦{' '}
+                              {[f.aiDocType, f.aiTaxYear, f.aiIssuer]
+                                .filter((v) => v != null && v !== '')
+                                .join(' · ')}
+                            </span>
+                          )}
+                          {f.aiLabelStatus === 'pending' && (
+                            <span
+                              style={{
+                                marginLeft: 6,
+                                fontSize: 11,
+                                color: tokens.color.textMuted,
+                              }}
+                            >
+                              AI labeling…
+                            </span>
+                          )}
                         </span>
                         <a
                           href={`${base}?inline=1`}

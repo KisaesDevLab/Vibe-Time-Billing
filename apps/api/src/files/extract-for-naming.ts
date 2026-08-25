@@ -43,6 +43,19 @@ export const NAMING_IMAGE_MIMES = new Set<AiAttachment['mimeType']>([
   'image/webp',
 ]);
 
+// Phone photos: converted to JPEG (heic-convert, WASM libheif) before the
+// vision pass — providers don't accept HEIC directly.
+export const HEIC_MIMES = new Set(['image/heic', 'image/heif', 'image/heic-sequence']);
+
+/** HEIC/HEIF sniff: ISO-BMFF ftyp box with an heic-family brand. */
+export function looksLikeHeic(body: Buffer, mimeType: string | null | undefined): boolean {
+  if (HEIC_MIMES.has((mimeType ?? '').toLowerCase())) return true;
+  if (body.byteLength < 12) return false;
+  if (body.toString('ascii', 4, 8) !== 'ftyp') return false;
+  const brand = body.toString('ascii', 8, 12).toLowerCase();
+  return ['heic', 'heix', 'heif', 'hevc', 'mif1', 'msf1'].includes(brand);
+}
+
 export function namingStrategyFor(
   mimeType: string | null | undefined,
   sizeBytes: number | null | undefined,
@@ -53,7 +66,9 @@ export function namingStrategyFor(
     return 'metadata';
   }
   if (mime === 'application/pdf') return 'pdf_text';
-  if (NAMING_IMAGE_MIMES.has(mime as AiAttachment['mimeType'])) return 'image';
+  if (NAMING_IMAGE_MIMES.has(mime as AiAttachment['mimeType']) || HEIC_MIMES.has(mime)) {
+    return 'image';
+  }
   return 'metadata';
 }
 
@@ -78,9 +93,26 @@ export async function extractForNaming(
   mimeType: string | null | undefined,
   opts: { textPages?: number; rasterPages?: number; maxDim?: number } = {},
 ): Promise<ExtractResult> {
-  const mime = (mimeType ?? '').toLowerCase();
+  let mime = (mimeType ?? '').toLowerCase();
 
   if (body.byteLength > NAMING_MAX_BYTES) return { images: [], strategy: 'metadata' };
+
+  // HEIC/HEIF (iPhone photos) → JPEG so the vision provider can read it.
+  if (looksLikeHeic(body, mime)) {
+    try {
+      const { default: heicConvert } = await import('heic-convert');
+      const jpeg = await heicConvert({ buffer: toUint8(body), format: 'JPEG', quality: 0.8 });
+      const converted = Buffer.from(jpeg);
+      if (converted.byteLength > NAMING_MAX_ATTACH_BYTES) {
+        return { images: [], strategy: 'metadata' };
+      }
+      body = converted;
+      mime = 'image/jpeg';
+    } catch (err) {
+      logger.warn({ err }, 'extract-for-naming: heic conversion failed');
+      return { images: [], strategy: 'metadata' };
+    }
+  }
 
   if (NAMING_IMAGE_MIMES.has(mime as AiAttachment['mimeType'])) {
     return {

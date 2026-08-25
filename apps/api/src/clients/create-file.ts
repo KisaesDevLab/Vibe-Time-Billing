@@ -38,6 +38,22 @@ export interface CreateFileArgs {
   mimeType?: string | null;
   /** Provenance recorded on the row + audit (e.g. 'generated', 'intake'). */
   source: string;
+  /**
+   * 0230 — present when the caller already ran AI naming (intake-arrival
+   * labeling): the row is created with rename provenance and the
+   * auto-rename enqueue is skipped (it would otherwise call the model a
+   * second time).
+   */
+  aiRename?: {
+    /** The pre-rename name (e.g. the decrypted intake filename). */
+    originalUploadFilename: string;
+    /** true → originalFilename IS the AI-composed name. */
+    renamed: boolean;
+    /** Low-confidence path: stored for the ✦ suggestion pill, not applied. */
+    suggestedFilename?: string | null;
+    confidence: number | null;
+    model: string | null;
+  };
 }
 
 export type CreateFileResult =
@@ -82,6 +98,7 @@ export async function createFileInClientFolder(
     };
   }
 
+  const now = new Date();
   const [row] = await db
     .insert(files)
     .values({
@@ -99,6 +116,20 @@ export async function createFileInClientFolder(
       visibility,
       uploadedBy: args.actorId,
       pendingUpload: false,
+      // Same shape applyAiRename / recordSuggestionOnly produce, so the
+      // existing revert / apply-suggestion flows work unchanged.
+      ...(args.aiRename
+        ? {
+            originalUploadFilename: args.aiRename.originalUploadFilename,
+            aiRenameAttemptedAt: now,
+            aiRenamedAt: args.aiRename.renamed ? now : null,
+            aiRenameConfidence: args.aiRename.confidence,
+            aiRenameModel: args.aiRename.model,
+            aiSuggestedFilename: args.aiRename.renamed
+              ? null
+              : (args.aiRename.suggestedFilename ?? null),
+          }
+        : {}),
     })
     .returning({ id: files.id });
 
@@ -117,13 +148,16 @@ export async function createFileInClientFolder(
   }).catch(() => undefined);
 
   // 0223 — auto-rename on arrival (router mode + firm toggle; generated
-  // sources are filtered inside). Fire-and-forget.
-  void maybeEnqueueAutoRename(db, {
-    firmId: args.firmId,
-    fileId: row!.id,
-    actorAppUserId: args.actorId,
-    source: args.source,
-  });
+  // sources are filtered inside). Fire-and-forget. Skipped when the
+  // caller already ran AI naming (0230 intake labels).
+  if (!args.aiRename) {
+    void maybeEnqueueAutoRename(db, {
+      firmId: args.firmId,
+      fileId: row!.id,
+      actorAppUserId: args.actorId,
+      source: args.source,
+    });
+  }
 
   return {
     ok: true,

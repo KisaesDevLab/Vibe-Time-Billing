@@ -13,16 +13,25 @@ import { z } from 'zod';
 import { and, desc, eq, ilike, inArray, ne, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, intakeActions, intakeFiles, intakeSessions, persons } from '@vibe/db/schema';
+import {
+  appUsers,
+  clients,
+  intakeActions,
+  intakeFiles,
+  intakeSessions,
+  persons,
+} from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 import { normalizePhone } from '@vibe/core/auth';
+import { composeFilename } from '@vibe/core/filer';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 import { firmScope, renderTemplate } from '../notifications/templating';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getApplianceLockState } from '../crypto/boot';
-import { createFileInClientFolder } from '../clients/create-file';
+import { createFileInClientFolder, type CreateFileArgs } from '../clients/create-file';
+import { loadNamingSettings } from '../files/ai-naming';
 import { ensureClientFolderBound } from '../clients/folder-link';
 import { CATEGORY_VALUES, type Category } from '../clients/files';
 import { unwrapIntakeRecordKey, decField } from './crypto';
@@ -283,6 +292,13 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
         byteSize: Number(f.byteSize),
         kind: f.kind,
         scanStatus: f.scanStatus,
+        // 0230 — intake-arrival AI label.
+        aiLabelStatus: f.aiLabelStatus,
+        aiDocType: f.aiDocType,
+        aiTaxYear: f.aiTaxYear,
+        aiIssuer: f.aiIssuer,
+        aiSuggestedName: f.aiSuggestedName,
+        aiConfidence: f.aiConfidence,
       }));
 
       const suggestions =
@@ -661,6 +677,19 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
       }
 
       const category: Category = parsed.data.category ?? 'other';
+
+      // 0230 — rebuild AI-labeled filenames with the now-known client,
+      // deterministically (no model call). Loaded once per dispose.
+      const hasLabels = selected.some((f) => f.aiLabelStatus === 'labeled');
+      const namingSettings = hasLabels ? await loadNamingSettings(deps.db, firmId) : null;
+      const [labelClient] = hasLabels
+        ? await deps.db
+            .select({ name: clients.name, externalId: clients.externalId })
+            .from(clients)
+            .where(and(eq(clients.id, parsed.data.clientId), eq(clients.firmId, firmId)))
+            .limit(1)
+        : [];
+
       let moved = 0;
       const errors: string[] = [];
       for (const f of selected) {
@@ -680,6 +709,38 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           f.kind === 'scan'
             ? `Intake scan ${s.id.slice(0, 8)}.pdf`
             : (decField(dek, f.originalFilenameEnc) ?? `intake-${f.id}`);
+
+        let finalName = filename;
+        let aiRename: CreateFileArgs['aiRename'];
+        if (f.aiLabelStatus === 'labeled' && namingSettings && labelClient) {
+          const rebuilt = composeFilename(
+            namingSettings.pattern,
+            {
+              doc_type: f.aiDocType,
+              issuer: f.aiIssuer,
+              year: f.aiTaxYear != null ? String(f.aiTaxYear) : null,
+              period: f.aiPeriod,
+              date: f.aiDocDate,
+              client: labelClient.name,
+              client_id: labelClient.externalId,
+              original: '',
+            },
+            filename,
+          );
+          const rename =
+            f.aiConfidence != null &&
+            f.aiConfidence >= namingSettings.minConfidence &&
+            rebuilt !== filename;
+          if (rename) finalName = rebuilt;
+          aiRename = {
+            originalUploadFilename: filename,
+            renamed: rename,
+            suggestedFilename: rename ? null : rebuilt !== filename ? rebuilt : null,
+            confidence: f.aiConfidence,
+            model: f.aiLabelModel,
+          };
+        }
+
         const result = await createFileInClientFolder(deps.db, storage, {
           firmId,
           clientId: parsed.data.clientId,
@@ -687,10 +748,11 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           category,
           subfolderPath: parsed.data.subfolderPath,
           visibility: parsed.data.visibility,
-          originalFilename: filename,
+          originalFilename: finalName,
           body,
           mimeType: f.mimeType,
           source: 'intake',
+          ...(aiRename ? { aiRename } : {}),
         });
         if (result.ok) moved += 1;
         else errors.push(`${f.id}:${result.code}`);

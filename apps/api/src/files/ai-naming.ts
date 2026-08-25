@@ -33,6 +33,7 @@ import {
   composeFilename,
   type NamingFields,
 } from '@vibe/core/filer';
+import { DOC_TYPES, normalizeDocType, stripPiiFields } from '@vibe/core/ai';
 
 import { getAiRuntime } from '../ai/ai-runtime';
 import { runAiCompletion, type AiRoutesDeps } from '../ai/routes';
@@ -72,6 +73,9 @@ export type SkipReason =
   | 'storage_unavailable'
   | 'ai_unavailable'
   | 'ai_failed'
+  // Router says no configured provider/model can serve vision (Q-092 in
+  // the router repo) — a firm-configuration state, skipped permanently.
+  | 'no_vision_provider'
   | 'invalid_output';
 
 export type SuggestResult =
@@ -121,7 +125,8 @@ export const FILE_NAMING_SCHEMA = {
   additionalProperties: false,
   required: ['doc_type', 'issuer', 'year', 'period', 'date', 'confidence', 'summary'],
   properties: {
-    doc_type: { type: ['string', 'null'], maxLength: 60 },
+    // Controlled vocabulary — the model cannot invent doc types.
+    doc_type: { type: ['string', 'null'], enum: [...DOC_TYPES, null] },
     issuer: { type: ['string', 'null'], maxLength: 60 },
     year: { type: ['string', 'null'], pattern: '^[0-9]{4}$' },
     period: { type: ['string', 'null'], maxLength: 12 },
@@ -131,7 +136,10 @@ export const FILE_NAMING_SCHEMA = {
   },
 } as const;
 
-const FileNamingOutputSchema = z.object({
+// Deliberately looser than FILE_NAMING_SCHEMA: the SDK's prompt-JSON
+// fallback path can produce off-vocabulary doc types, which
+// normalizeDocType maps to the vocabulary (unknown → 'Other').
+export const FileNamingOutputSchema = z.object({
   doc_type: z.string().max(80).nullable(),
   issuer: z.string().max(80).nullable(),
   year: z
@@ -147,9 +155,9 @@ const FileNamingOutputSchema = z.object({
   summary: z.string().max(400).default(''),
 });
 
-const SYSTEM_PROMPT = [
+export const NAMING_SYSTEM_PROMPT = [
   'You name documents for an accounting firm. Return ONLY a JSON object matching the schema.',
-  'Identify: doc_type (e.g. "W-2", "1099-NEC", "Form 1040", "Bank Statement", "Engagement Letter", "Invoice", "Receipt"),',
+  `Identify: doc_type — EXACTLY one of: ${DOC_TYPES.join(', ')}. Use "Other" when none fits.`,
   'issuer (the ORGANISATION that produced the document, e.g. employer, bank, agency — never a person),',
   'year (the tax/statement year as 4 digits), period (e.g. "Q3", "Mar", "2024-03", "FY2023"; null if none), date (document date, YYYY-MM-DD; null if none).',
   'NEVER output Social Security numbers, EINs, account numbers, addresses, dollar amounts, or any personal data in any field.',
@@ -283,11 +291,12 @@ export async function suggestFileName(
   });
 
   let model: string | null = null;
+  let errorCode: string | undefined;
   const raw = await runAiCompletion(deps, {
     firmId: args.firmId,
     ...(args.actorId ? { appUserId: args.actorId } : {}),
     feature: 'file-naming',
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: NAMING_SYSTEM_PROMPT,
     userPrompt,
     maxTokens: 300,
     clientId: file.clientId,
@@ -296,8 +305,18 @@ export async function suggestFileName(
     onResult: (r) => {
       model = r.model ?? null;
     },
+    onError: (e) => {
+      errorCode = e.code;
+    },
   });
-  if (raw == null) return { ok: false, fileId, current, skippedReason: 'ai_failed' };
+  if (raw == null) {
+    return {
+      ok: false,
+      fileId,
+      current,
+      skippedReason: errorCode === 'no_vision_provider' ? 'no_vision_provider' : 'ai_failed',
+    };
+  }
 
   let parsed: z.infer<typeof FileNamingOutputSchema>;
   try {
@@ -311,12 +330,16 @@ export async function suggestFileName(
     return { ok: false, fileId, current, skippedReason: 'invalid_output' };
   }
 
+  // PII guard on MODEL-emitted fields only — client/client_id come from
+  // the DB (a numeric firm client id would false-positive as an account).
   const fields: NamingFields = {
-    doc_type: parsed.doc_type,
-    issuer: parsed.issuer,
-    year: parsed.year,
-    period: parsed.period,
-    date: parsed.date,
+    ...stripPiiFields({
+      doc_type: normalizeDocType(parsed.doc_type),
+      issuer: parsed.issuer,
+      year: parsed.year,
+      period: parsed.period,
+      date: parsed.date,
+    }),
     client: file.clientName,
     client_id: file.clientExternalId,
     original: '',

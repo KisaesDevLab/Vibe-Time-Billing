@@ -1396,6 +1396,11 @@ export async function runAiCompletion(
     jsonSchema?: AiCompletionRequest['jsonSchema'];
     /** Model that served the request is reported here when the caller cares. */
     onResult?: (r: { model?: string; providerId: string }) => void;
+    /**
+     * Failure detail for callers that distinguish structured router codes
+     * (e.g. 'no_vision_provider' → permanent skip) from transient faults.
+     */
+    onError?: (e: { code?: string; message: string }) => void;
   },
 ): Promise<string | null> {
   const provider = await pickProvider(deps, args.feature, args.firmId);
@@ -1427,6 +1432,12 @@ export async function runAiCompletion(
     });
     return result.text;
   } catch (err) {
+    args.onError?.({
+      ...(typeof (err as { code?: unknown }).code === 'string'
+        ? { code: (err as { code: string }).code }
+        : {}),
+      message: err instanceof Error ? err.message : 'unknown',
+    });
     await logAiRequest(deps, {
       firmId: args.firmId,
       providerId: provider.id,

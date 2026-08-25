@@ -121,6 +121,9 @@ const PERMANENT_SKIPS = new Set([
   'generated_source',
   'already_ai_renamed',
   'invalid_output',
+  // Router config state (no vision-capable provider) — retrying won't help;
+  // the operator fixes it in the router console.
+  'no_vision_provider',
 ]);
 
 /** The unit of work; exported so tests can drive it without BullMQ. */

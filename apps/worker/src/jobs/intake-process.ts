@@ -36,6 +36,12 @@ export interface IntakeProcessDeps {
   appBaseUrl?: string;
   /** Override the virus scanner (tests inject a fake; defaults to clamd). */
   scan?: (buf: Buffer) => Promise<ClamScanResult>;
+  /**
+   * 0230 — enqueue the API-side AI labeling job once the session is
+   * 'received'. Best-effort: the worker has no AI runtime and no firm
+   * key; the API consumer does the labeling.
+   */
+  enqueueAiLabel?: (job: { sessionId: string; firmId: string }) => Promise<void>;
 }
 
 export interface IntakeProcessResult {
@@ -191,6 +197,12 @@ export async function runIntakeProcess(
     .update(intakeSessions)
     .set({ status: 'received' })
     .where(eq(intakeSessions.id, sessionId));
+
+  await deps
+    .enqueueAiLabel?.({ sessionId, firmId })
+    .catch((err: unknown) =>
+      log.warn({ err, sessionId }, 'intake-process: ai-label enqueue failed'),
+    );
 
   await notifyStaff(db, log, deps, {
     sessionId,

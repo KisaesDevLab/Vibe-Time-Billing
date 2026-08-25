@@ -334,6 +334,64 @@ describe('inbox + disposition', () => {
     expect(actions[0]!.action).toBe('move');
   });
 
+  // 0230 — dispose rebuilds AI-labeled filenames from stored fields with
+  // the now-known client, no model call, with full rename provenance.
+  it('dispose rebuilds a labeled filename with the client slug + provenance', async () => {
+    const sessionId = await makeReceivedSession();
+    await harness.db
+      .update(intakeFiles)
+      .set({
+        aiDocType: 'W-2',
+        aiTaxYear: 2024,
+        aiIssuer: 'Acme',
+        aiConfidence: 0.9,
+        aiLabelStatus: 'labeled',
+        aiLabelModel: 'm-test',
+      })
+      .where(eq(intakeFiles.sessionId, sessionId));
+
+    const res = await request(buildApp())
+      .post(`/api/staff/intake/sessions/${sessionId}/dispose`)
+      .send({ clientId: seed.clientId, category: 'correspondence' });
+    expect(res.status).toBe(200);
+
+    const [filed] = await harness.db.select().from(files).where(eq(files.clientId, seed.clientId));
+    // Default pattern '{year} {doc_type} - {issuer} - {client}'.
+    expect(filed!.originalFilename).toBe('2024 W-2 - Acme - Test Client Co.pdf');
+    expect(filed!.originalUploadFilename).toBe('w2.pdf');
+    expect(filed!.aiRenamedAt).not.toBeNull();
+    expect(filed!.aiRenameConfidence).toBeCloseTo(0.9);
+    expect(filed!.aiRenameModel).toBe('m-test');
+    expect(filed!.aiSuggestedFilename).toBeNull();
+  });
+
+  it('dispose stores a suggestion instead of renaming below the threshold', async () => {
+    const sessionId = await makeReceivedSession();
+    await harness.db
+      .update(intakeFiles)
+      .set({
+        aiDocType: 'W-2',
+        aiTaxYear: 2024,
+        aiIssuer: 'Acme',
+        aiConfidence: 0.2,
+        aiLabelStatus: 'labeled',
+        aiLabelModel: 'm-test',
+      })
+      .where(eq(intakeFiles.sessionId, sessionId));
+
+    const res = await request(buildApp())
+      .post(`/api/staff/intake/sessions/${sessionId}/dispose`)
+      .send({ clientId: seed.clientId, category: 'correspondence' });
+    expect(res.status).toBe(200);
+
+    const [filed] = await harness.db.select().from(files).where(eq(files.clientId, seed.clientId));
+    expect(filed!.originalFilename).toBe('w2.pdf'); // original kept
+    expect(filed!.aiRenamedAt).toBeNull();
+    expect(filed!.aiSuggestedFilename).toBe('2024 W-2 - Acme - Test Client Co.pdf');
+    expect(filed!.originalUploadFilename).toBe('w2.pdf');
+    expect(filed!.aiRenameAttemptedAt).not.toBeNull();
+  });
+
   it('previews a file inline', async () => {
     const sessionId = await makeReceivedSession();
     const [f] = await harness.db
