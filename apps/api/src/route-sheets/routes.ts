@@ -16,6 +16,7 @@
 // reads on engagement:read.
 
 import express, { type Request, type Response, type Router } from 'express';
+import QRCode from 'qrcode';
 import { z } from 'zod';
 import { and, desc, eq, inArray, notInArray } from 'drizzle-orm';
 
@@ -41,7 +42,7 @@ import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 import { stageStatusNotification } from '../notifications/staged/pipeline';
 import { renderHtmlToPdf } from '../pdf/render';
-import { renderRouteSheetHtml } from '../pdf-templates/route-sheet';
+import { renderRouteSheetHtml, type RouteSheetRenderOptions } from '../pdf-templates/route-sheet';
 import { sendToPrinter } from '../print-gateway/send';
 
 // Terminal states excluded from the "uncompleted" list. Shared with the
@@ -53,6 +54,21 @@ export interface RouteSheetRoutesDeps extends RbacDeps {
   db: Database | null;
   /** Test seam — defaults to the Puppeteer renderer. */
   renderPdf?: (html: string) => Promise<Buffer>;
+}
+
+/**
+ * QR of the raw client UUID for the sheet's top-right corner — staff scan
+ * the paper file to select the client in the app (Receive Payments etc.).
+ * 300px ≈ 300dpi at the printed 1in size. Failure degrades to a QR-less
+ * sheet: the code is a convenience, never worth failing the print.
+ */
+async function clientQrOptions(clientId: string): Promise<RouteSheetRenderOptions> {
+  try {
+    return { qrDataUrl: await QRCode.toDataURL(clientId, { margin: 1, width: 300 }) };
+  } catch (err) {
+    logger.warn({ err, clientId }, 'route-sheet client QR generation failed');
+    return {};
+  }
 }
 
 function clientIp(req: Request): string {
@@ -479,7 +495,12 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
     // Render once to validate the template/Puppeteer path succeeds before
     // we persist the print (bytes are re-derivable from the snapshot).
     try {
-      await renderPdf(renderRouteSheetHtml(itemRecords.map((r) => r.snapshot)));
+      await renderPdf(
+        renderRouteSheetHtml(
+          itemRecords.map((r) => r.snapshot),
+          await clientQrOptions(parsed.data.clientId),
+        ),
+      );
     } catch (err) {
       logger.error({ err }, 'route-sheet render failed');
       res.status(502).json({ error: 'render_failed' });
@@ -559,7 +580,9 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
         return;
       }
       try {
-        const pdf = await renderPdf(renderRouteSheetHtml(snapshots));
+        const pdf = await renderPdf(
+          renderRouteSheetHtml(snapshots, await clientQrOptions(print.clientId)),
+        );
         const name = snapshots[0]!.client.name.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, 60);
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `inline; filename="route-sheet-${name}.pdf"`);
@@ -591,7 +614,7 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
         return;
       }
       const [print] = await deps.db
-        .select({ id: routeSheetPrints.id })
+        .select({ id: routeSheetPrints.id, clientId: routeSheetPrints.clientId })
         .from(routeSheetPrints)
         .where(
           and(
@@ -617,7 +640,9 @@ export function createRouteSheetRouter(deps: RouteSheetRoutesDeps): Router {
       }
       let pdf: Buffer;
       try {
-        pdf = await renderPdf(renderRouteSheetHtml(snapshots));
+        pdf = await renderPdf(
+          renderRouteSheetHtml(snapshots, await clientQrOptions(print.clientId)),
+        );
       } catch (err) {
         logger.error({ err }, 'route-sheet print render failed');
         res.status(502).json({ error: 'render_failed' });

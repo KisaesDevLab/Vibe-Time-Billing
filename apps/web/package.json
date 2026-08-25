@@ -27,6 +27,7 @@
     "@vibe/core": "workspace:*",
     "@vibe/types": "workspace:*",
     "@vibe/ui": "workspace:*",
+    "jsqr": "^1.4.0",
     "lucide-react": "^1.20.0",
     "pdfjs-dist": "^4.7.76",
     "qrcode": "^1.5.3",

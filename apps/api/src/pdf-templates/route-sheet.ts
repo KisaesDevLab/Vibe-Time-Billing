@@ -26,7 +26,15 @@ function boxes(labels: string[]): string {
   return labels.map((l) => `<span class="cb"><span class="box"></span>${esc(l)}</span>`).join('');
 }
 
-function sheet(item: RouteSheetItemSnapshot): string {
+/** Options threaded from the routes — the QR is pre-generated there. */
+export interface RouteSheetRenderOptions {
+  /** PNG data URL of a QR encoding the client UUID; rendered top-right of
+   *  every page so staff can scan a paper file straight into the app
+   *  (e.g. Receive Payments). Omitted → today's exact layout. */
+  qrDataUrl?: string;
+}
+
+function sheet(item: RouteSheetItemSnapshot, opts?: RouteSheetRenderOptions): string {
   const c = item.client;
   const primary = c.contacts[0];
   const secondary = c.contacts[1];
@@ -44,8 +52,12 @@ function sheet(item: RouteSheetItemSnapshot): string {
       <div class="ln">Mobile: ${val(ct?.mobile)}</div>
     </td>`;
 
+  const qr = opts?.qrDataUrl
+    ? `<div class="qrblock"><img class="qr" src="${opts.qrDataUrl}" alt=""/></div>`
+    : '';
   return `
-  <div class="sheet">
+  <div class="sheet${opts?.qrDataUrl ? ' hasqr' : ''}">
+    ${qr}
     <div class="clienthead">CLIENT: ${val(c.name)}</div>
     <div class="title">FILE ROUTING SHEET</div>
 
@@ -121,14 +133,23 @@ function sheet(item: RouteSheetItemSnapshot): string {
 }
 
 /** Render a full multi-page route-sheet document (one page per engagement). */
-export function renderRouteSheetHtml(items: RouteSheetItemSnapshot[]): string {
-  const body = items.map(sheet).join('\n');
+export function renderRouteSheetHtml(
+  items: RouteSheetItemSnapshot[],
+  opts?: RouteSheetRenderOptions,
+): string {
+  const body = items.map((item) => sheet(item, opts)).join('\n');
   return `<!doctype html><html><head><meta charset="utf-8"/>
 <style>
   * { box-sizing: border-box; }
   body { font-family: Arial, Helvetica, sans-serif; color: #111; font-size: 11px; margin: 0; }
-  .sheet { padding: 4px 2px; page-break-after: always; }
+  .sheet { padding: 4px 2px; page-break-after: always; position: relative; }
   .sheet:last-child { page-break-after: auto; }
+  /* Client-UUID QR, top-right. Opaque white so it cleanly masks the title
+     banner's border where they cross; the contact log narrows (scoped to
+     .hasqr) so its right column stays clear of the code. */
+  .qrblock { position: absolute; top: 0; right: 0; width: 1in; background: #fff; }
+  .qr { width: 1in; height: 1in; display: block; }
+  .sheet.hasqr .contactlog { width: calc(100% - 1.15in); }
   .clienthead { text-align: left; font-size: 16px; font-weight: bold; margin-bottom: 2px; }
   .title { text-align: center; font-size: 16px; font-weight: bold; letter-spacing: 1px; border-bottom: 2px solid #111; padding-bottom: 4px; margin-bottom: 6px; }
   .section { background: #111; color: #fff; font-weight: bold; padding: 2px 6px; margin: 8px 0 4px; font-size: 11px; }
