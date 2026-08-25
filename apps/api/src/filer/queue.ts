@@ -7,6 +7,7 @@
 
 import { Queue } from 'bullmq';
 import IORedis from 'ioredis';
+import type { K1RouteConfig } from '@vibe/core/filer';
 
 export const FILER_ROUTE_QUEUE = 'filer-route';
 
@@ -22,7 +23,7 @@ export type FilerRouteJob =
        * the whole batch files consistently even if the profile is edited
        * mid-batch. Older queued jobs without it fall back to a live load.
        */
-      k1Config?: { targetPath: string; yearBehavior: string };
+      k1Config?: K1RouteConfig;
     }
   | { kind: 'undo'; firmId: string; actorId: string; logId: string };
 
@@ -48,7 +49,7 @@ export async function enqueueFilerRoute(job: {
   actorId: string;
   batchId: string;
   itemId: string;
-  k1Config?: { targetPath: string; yearBehavior: string };
+  k1Config?: K1RouteConfig;
 }): Promise<void> {
   await getFilerQueue().add(
     'route',

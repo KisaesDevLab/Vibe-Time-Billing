@@ -18,9 +18,10 @@ import { inboxItems, inboxRoutingLog, files, taxReturns } from '@vibe/db/schema'
 import type { StorageClient } from '@vibe/storage';
 import {
   joinTargetPath,
+  parseK1Recipient,
   resolveYearSubfolder,
   stripIdSegment,
-  type YearBehavior,
+  type K1RouteConfig,
 } from '@vibe/core/filer';
 
 // Cross-app imports follow the established worker pattern (see the ~30
@@ -42,7 +43,7 @@ export interface FilerRouteJob {
   logId?: string;
   /** 0229 — K-1 destination resolved at commit (batch-consistent); older
    *  queued jobs without it fall back to a live profile load. */
-  k1Config?: { targetPath: string; yearBehavior: string };
+  k1Config?: K1RouteConfig;
 }
 
 export async function runFilerRoute(
@@ -86,10 +87,12 @@ async function runRoute(
   // Idempotency: a prior attempt may have copied + logged but not yet
   // cleaned up. Success logs are discriminated by action so a logged
   // primary copy doesn't suppress a still-pending K-1 recipient copy
-  // (and vice versa) on retry. The primary guard stays batch-scoped
-  // (pre-existing semantics); the K-1 guard is CROSS-batch for the same
-  // recipient, so undoing just the primary row and re-committing cannot
-  // stack a second recipient copy beside the still-live first one.
+  // (and vice versa) on retry. BOTH guards are batch-scoped: a cross-batch
+  // K-1 guard keyed on the reusable Inbox/<filename> would silently drop
+  // the recipient copy for a genuinely re-exported same-named package
+  // (review finding) — the undo-then-recommit duplicate is prevented at
+  // its source instead: the primary undo stamps the recreated inbox stub
+  // k1Status='dismissed' when a live recipient copy exists (see runUndo).
   const priorLogs = await db
     .select({ id: inboxRoutingLog.id, action: inboxRoutingLog.action })
     .from(inboxRoutingLog)
@@ -102,22 +105,7 @@ async function runRoute(
       ),
     );
   const priorPrimary = priorLogs.find((l) => l.action !== 'k1_recipient');
-  const priorK1 = needsK1
-    ? await db
-        .select({ id: inboxRoutingLog.id })
-        .from(inboxRoutingLog)
-        .where(
-          and(
-            eq(inboxRoutingLog.firmId, job.firmId),
-            eq(inboxRoutingLog.objectKeyFrom, item.objectKey),
-            eq(inboxRoutingLog.action, 'k1_recipient'),
-            eq(inboxRoutingLog.status, 'success'),
-            eq(inboxRoutingLog.clientId, item.k1MatchedClient!),
-          ),
-        )
-        .limit(1)
-        .then((r) => r[0])
-    : undefined;
+  const priorK1 = priorLogs.find((l) => l.action === 'k1_recipient');
   if (priorPrimary) {
     // 'skipped' means the source was already gone — no K-1 copy possible.
     if (needsK1 && !priorK1 && priorPrimary.action !== 'skipped') {
@@ -128,6 +116,15 @@ async function runRoute(
       } else {
         await k1FailLog(db, job, item, 'k1_source_missing');
       }
+    } else if (k1Confirmed && !needsK1 && priorPrimary.action !== 'skipped') {
+      // The visibility guarantee must hold on the retry path too (review
+      // finding): a confirmed-but-ineligible leg still gets its error row.
+      await k1FailLog(
+        db,
+        job,
+        item,
+        item.k1MatchedClient == null ? 'k1_client_missing' : 'k1_same_as_entity',
+      );
     }
     await storage.delete(item.objectKey).catch(() => undefined);
     await db.delete(inboxItems).where(eq(inboxItems.id, item.id));
@@ -261,14 +258,7 @@ async function routeK1Copy(
 ): Promise<void> {
   let subfolder = item.k1OverrideFolder;
   if (subfolder == null) {
-    const cfg = job.k1Config
-      ? // reason: the payload value came from loadK1Config, whose column is
-        // CHECK-constrained to the YearBehavior union (0229).
-        {
-          targetPath: job.k1Config.targetPath,
-          yearBehavior: job.k1Config.yearBehavior as YearBehavior,
-        }
-      : await loadK1Config(db, job.firmId);
+    const cfg = job.k1Config ?? (await loadK1Config(db, job.firmId));
     const yearSub = resolveYearSubfolder(item.overrideYear ?? item.parsedYear, cfg.yearBehavior);
     if (yearSub === null) {
       // Year required but none parsed — file at the base path rather
@@ -280,35 +270,46 @@ async function routeK1Copy(
     }
   }
 
-  const filed = await fileExistingObjectIntoClientFolder(db, storage, {
-    firmId: job.firmId,
-    clientId: item.k1MatchedClient!,
-    actorId: job.actorId,
-    subfolderPath: subfolder,
-    originalFilename: stripIdSegment(item.originalName, item.parsedId),
-    sourceKey: item.objectKey,
-    sizeBytes: item.sizeBytes,
-    etag: item.etag,
-    source: 'filer',
+  // The files row and the success log commit ATOMICALLY (review finding):
+  // a crash between them would otherwise leave a copied file with no log
+  // marker, and the retry would file a collision-renamed duplicate. With
+  // the transaction, a crash before commit leaves only an orphan B2
+  // object (no visible row), which the retry's fresh copy supersedes.
+  const dest = subfolder;
+  let failCode: string | null = null;
+  await db.transaction(async (tx) => {
+    const filed = await fileExistingObjectIntoClientFolder(tx as Database, storage, {
+      firmId: job.firmId,
+      clientId: item.k1MatchedClient!,
+      actorId: job.actorId,
+      subfolderPath: dest,
+      originalFilename: stripIdSegment(item.originalName, item.parsedId),
+      sourceKey: item.objectKey,
+      sizeBytes: item.sizeBytes,
+      etag: item.etag,
+      source: 'filer',
+    });
+    if (!filed.ok) {
+      failCode = filed.code;
+      return; // nothing written inside the tx on this path
+    }
+    await tx.insert(inboxRoutingLog).values({
+      batchId: job.batchId!,
+      firmId: job.firmId,
+      objectKeyFrom: item.objectKey,
+      objectKeyTo: filed.storageKey,
+      clientId: item.k1MatchedClient,
+      folderPath: dest,
+      action: 'k1_recipient',
+      routedFileId: filed.fileId,
+      userId: job.actorId,
+      status: 'success',
+    });
   });
-  if (!filed.ok) {
-    log.warn({ itemId: item.id, code: filed.code }, 'filer: k1 recipient copy failed');
-    await k1FailLog(db, job, item, `k1_${filed.code}`);
-    return;
+  if (failCode) {
+    log.warn({ itemId: item.id, code: failCode }, 'filer: k1 recipient copy failed');
+    await k1FailLog(db, job, item, `k1_${failCode}`);
   }
-
-  await db.insert(inboxRoutingLog).values({
-    batchId: job.batchId!,
-    firmId: job.firmId,
-    objectKeyFrom: item.objectKey,
-    objectKeyTo: filed.storageKey,
-    clientId: item.k1MatchedClient,
-    folderPath: subfolder,
-    action: 'k1_recipient',
-    routedFileId: filed.fileId,
-    userId: job.actorId,
-    status: 'success',
-  });
 }
 
 /** Visible 'failed' history row for a K-1 leg that could not file. */
@@ -318,16 +319,7 @@ async function k1FailLog(
   item: typeof inboxItems.$inferSelect,
   error: string,
 ): Promise<void> {
-  await db.insert(inboxRoutingLog).values({
-    batchId: job.batchId!,
-    firmId: job.firmId,
-    objectKeyFrom: item.objectKey,
-    clientId: item.k1MatchedClient,
-    action: 'failed',
-    userId: job.actorId,
-    status: 'error',
-    error,
-  });
+  await failLog(db, job, item.objectKey, item.k1MatchedClient, error);
 }
 
 async function failLog(
@@ -422,14 +414,42 @@ async function runUndo(
     .where(eq(inboxRoutingLog.id, row.id));
 
   // Re-surface in the inbox on the next scan (best-effort upsert now).
+  // The stub REMEMBERS a still-live recipient copy from this batch: an
+  // undo of only the primary leg would otherwise let staff re-confirm and
+  // commit a second copy beside the first (review finding). Dismissed is
+  // the honest state — the recipient already has the document; staff can
+  // Restore if they undo the K-1 leg too.
+  const originalName = row.objectKeyFrom.slice(row.objectKeyFrom.lastIndexOf('/') + 1);
+  const [liveK1] = await db
+    .select({ clientId: inboxRoutingLog.clientId })
+    .from(inboxRoutingLog)
+    .where(
+      and(
+        eq(inboxRoutingLog.firmId, job.firmId),
+        eq(inboxRoutingLog.batchId, row.batchId),
+        eq(inboxRoutingLog.objectKeyFrom, row.objectKeyFrom),
+        eq(inboxRoutingLog.action, 'k1_recipient'),
+        eq(inboxRoutingLog.status, 'success'),
+      ),
+    )
+    .limit(1);
+  const k1Recipient = parseK1Recipient(originalName);
   await db
     .insert(inboxItems)
     .values({
       firmId: job.firmId,
       objectKey: row.objectKeyFrom,
-      originalName: row.objectKeyFrom.slice(row.objectKeyFrom.lastIndexOf('/') + 1),
+      originalName,
       matchStatus: 'unparseable',
+      ...(liveK1 && k1Recipient
+        ? {
+            k1RecipientName: k1Recipient.recipientName,
+            k1MatchedClient: liveK1.clientId,
+            k1Status: 'dismissed' as const,
+          }
+        : {}),
     })
     .onConflictDoNothing();
-  // The next inbox scan re-parses + re-matches the restored object.
+  // The next inbox scan re-parses + re-matches the restored object; a
+  // 'dismissed' k1 state is preserved by the scan upsert's CASE guard.
 }

@@ -79,3 +79,11 @@ export function joinTargetPath(targetPath: string, yearSub: string): string {
 // import them); the web UI placeholder does import them.
 export const DEFAULT_K1_TARGET_PATH = 'Income Tax';
 export const DEFAULT_K1_YEAR_BEHAVIOR: YearBehavior = 'current_only';
+
+/** 0229 — the K-1 recipient-copy destination config, shared by the
+ *  loader (api), the commit payload (queue), and the route worker so the
+ *  shape (and the typed yearBehavior) exists exactly once. */
+export interface K1RouteConfig {
+  targetPath: string;
+  yearBehavior: YearBehavior;
+}

@@ -28,6 +28,7 @@ import {
   parseK1Recipient,
   resolveYearSubfolder,
   type K1Recipient,
+  type K1RouteConfig,
   type RoutingRule,
 } from '@vibe/core/filer';
 
@@ -336,14 +337,11 @@ export async function loadActiveRules(db: Database, firmId: string): Promise<Rou
 
 /**
  * 0229 — destination config for K-1 recipient copies, from the active
- * routing profile. Defaults apply when no profile is active.
+ * routing profile. Defaults apply when no profile is active. The shape
+ * lives in @vibe/core/filer (K1RouteConfig) so the loader, the commit
+ * payload, and the route worker cannot drift.
  */
-export interface K1Config {
-  targetPath: string;
-  yearBehavior: RoutingRule['yearBehavior'];
-}
-
-export async function loadK1Config(db: Database, firmId: string): Promise<K1Config> {
+export async function loadK1Config(db: Database, firmId: string): Promise<K1RouteConfig> {
   const [profile] = await db
     .select({
       k1TargetPath: inboxRoutingProfiles.k1TargetPath,
@@ -398,17 +396,14 @@ export async function scanInbox(
   const rules = await loadActiveRules(db, firmId);
 
   // 0229 — a staff-confirmed/dismissed K-1 decision survives re-scan.
-  // Correctness lives in the upsert's SQL CASE (evaluated against the
-  // ROW'S LIVE k1_status, so a confirm landing mid-scan is never clobbered
-  // by a stale snapshot — review finding); this prefetch is only a
-  // compute-skip hint so decided rows don't pay the fuzzy-match cost.
-  const k1Existing = await db
-    .select({ objectKey: inboxItems.objectKey, k1Status: inboxItems.k1Status })
-    .from(inboxItems)
-    .where(eq(inboxItems.firmId, firmId));
-  const k1StatusByKey = new Map(k1Existing.map((r) => [r.objectKey, r.k1Status]));
+  // The decision lives ENTIRELY in the upsert's SQL CASE, evaluated
+  // against the row's LIVE state — no prefetched snapshot to go stale
+  // (a Dismiss→Restore racing the scan used to null the suggestion
+  // because the snapshot and the CASE disagreed — review finding).
+  // A CONFIRMED recipient that the re-matched primary would alias is
+  // NOT kept: that state is invalid (the worker refuses it), so the row
+  // falls back to a fresh suggestion, which excludes the entity.
   const candidates = k1Candidates(clientList, boundIds);
-  const k1Keep = sql`${inboxItems.k1Status} IN ('confirmed', 'dismissed')`;
 
   let matched = 0;
   const liveKeys: string[] = [];
@@ -417,9 +412,12 @@ export async function scanInbox(
     const m = matchObject(obj.name, clientList, rules, boundIds, now);
     if (m.matchStatus === 'matched' || m.matchStatus === 'fuzzy') matched += 1;
     const k1 = parseK1Recipient(obj.name);
-    const existingK1Status = k1StatusByKey.get(obj.key);
-    const likelyDecided = existingK1Status === 'confirmed' || existingK1Status === 'dismissed';
-    const k1m = k1 && !likelyDecided ? matchK1Recipient(k1, candidates, m.matchedClient) : null;
+    const k1m = k1 ? matchK1Recipient(k1, candidates, m.matchedClient) : null;
+    const k1Keep = sql`(
+      ${inboxItems.k1Status} = 'dismissed'
+      OR (${inboxItems.k1Status} = 'confirmed'
+          AND ${inboxItems.k1MatchedClient} IS DISTINCT FROM ${m.matchedClient}::uuid)
+    )`;
     const k1Fields = {
       k1RecipientName: k1?.recipientName ?? null,
       k1MatchedClient: k1m?.matchedClient ?? null,

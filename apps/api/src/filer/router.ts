@@ -51,6 +51,7 @@ import {
 
 import { evaluateRules, joinTargetPath, resolveYearSubfolder } from '@vibe/core/filer';
 
+import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { resolveClientFolders } from '../clients/folder-templates';
 import {
@@ -330,24 +331,22 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         res.status(400).json({ error: 'client_not_found' });
         return;
       }
+      // A recipient without a bound folder would wedge at commit — the
+      // same gate the scan suggestions apply.
+      const k1Fileable = async (id: string): Promise<boolean> => {
+        const [bound] = await deps
+          .db!.select({ id: clientFolders.id })
+          .from(clientFolders)
+          .where(and(eq(clientFolders.clientId, id), eq(clientFolders.firmId, session.firmId)))
+          .limit(1);
+        return Boolean(bound);
+      };
       if (parsed.data.k1MatchedClient != null) {
         if (!(await firmClient(parsed.data.k1MatchedClient))) {
           res.status(400).json({ error: 'k1_client_not_found' });
           return;
         }
-        // A recipient without a bound folder would wedge at commit — the
-        // same gate the scan suggestions apply.
-        const [bound] = await deps.db
-          .select({ id: clientFolders.id })
-          .from(clientFolders)
-          .where(
-            and(
-              eq(clientFolders.clientId, parsed.data.k1MatchedClient),
-              eq(clientFolders.firmId, session.firmId),
-            ),
-          )
-          .limit(1);
-        if (!bound) {
+        if (!(await k1Fileable(parsed.data.k1MatchedClient))) {
           res.status(400).json({ error: 'k1_client_folder_unbound' });
           return;
         }
@@ -375,6 +374,13 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         }
         if (resultingK1Client === resultingMatched) {
           res.status(400).json({ error: 'k1_same_as_entity' });
+          return;
+        }
+        // Confirming a STORED suggestion (Verify sends only k1Status) must
+        // re-validate the resulting client too — its folder binding may
+        // have been removed since the scan (review finding).
+        if (parsed.data.k1MatchedClient == null && !(await k1Fileable(resultingK1Client))) {
+          res.status(400).json({ error: 'k1_client_folder_unbound' });
           return;
         }
       } else if (
@@ -450,6 +456,27 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         .update(inboxItems)
         .set(recompute)
         .where(and(eq(inboxItems.id, row.id), eq(inboxItems.firmId, session.firmId)));
+    }
+    // 0229 — K-1 verification decides which client folder receives a copy
+    // of a tax document: who confirmed/dismissed it must be recoverable
+    // (CLAUDE.md non-negotiable #1). Metadata only, never document content.
+    if (touchesClients) {
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'inbox_item',
+        entityId: row.id,
+        actorAppUserId: session.appUserId,
+        after: {
+          k1Review: true,
+          ...(parsed.data.k1Status !== undefined ? { k1Status: parsed.data.k1Status } : {}),
+          ...(parsed.data.k1MatchedClient !== undefined
+            ? { k1MatchedClient: parsed.data.k1MatchedClient }
+            : {}),
+          ...(parsed.data.k1OverrideFolder !== undefined
+            ? { k1OverrideFolder: parsed.data.k1OverrideFolder }
+            : {}),
+        },
+      }).catch(() => undefined);
     }
     res.json({ ok: true });
   });
@@ -722,6 +749,16 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
               eq(inboxRoutingProfiles.firmId, session.firmId),
             ),
           );
+        // The K-1 destination config controls where recipient copies land.
+        if (set['k1TargetPath'] !== undefined || set['k1YearBehavior'] !== undefined) {
+          await emitAudit(deps.db, {
+            action: 'UPDATE',
+            entityType: 'inbox_routing_profile',
+            entityId: req.params['id']!,
+            actorAppUserId: session.appUserId,
+            after: set,
+          }).catch(() => undefined);
+        }
       }
       if (parsed.data.isActive) await activateProfile(deps.db, session.firmId, req.params['id']!);
       res.json({ ok: true });
@@ -1037,6 +1074,32 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // GET /k1-recipients — clients a K-1 recipient copy may actually be
+  // filed to: ACTIVE and folder-bound, the same gate k1Candidates applies
+  // to scan suggestions and PATCH applies to picks. The general client
+  // picker lists everyone, so offering it here produced 400s on unbound
+  // picks with no way to tell which clients were eligible (review finding).
+  router.get('/k1-recipients', requirePermission(deps, 'storage:folder:view'), async (req, res) => {
+    const session = req.staffSession!;
+    if (!deps.db) {
+      res.json({ items: [] });
+      return;
+    }
+    const rows = await deps.db
+      .select({ id: clients.id, name: clients.name, externalId: clients.externalId })
+      .from(clients)
+      .innerJoin(clientFolders, eq(clientFolders.clientId, clients.id))
+      .where(
+        and(
+          eq(clients.firmId, session.firmId),
+          eq(clients.status, 'ACTIVE'),
+          eq(clientFolders.firmId, session.firmId),
+        ),
+      )
+      .orderBy(clients.name);
+    res.json({ items: rows });
+  });
+
   // GET /clients/:clientId/folders — the client's known folder paths
   // for the inbox target-folder dropdown: every distinct subfolder that
   // already holds a file, plus the (possibly empty) top-level skeleton

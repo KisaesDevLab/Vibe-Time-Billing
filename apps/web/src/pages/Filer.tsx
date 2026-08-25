@@ -205,6 +205,21 @@ function statusTone(s: MatchStatus): 'success' | 'warning' | 'danger' {
   return 'warning';
 }
 
+// Server error codes → text a staff member can act on.
+const PATCH_ERROR_TEXT: Record<string, string> = {
+  k1_same_as_entity:
+    'That client is already this document\u2019s entity — pick a different K-1 recipient.',
+  k1_client_required: 'Pick a K-1 recipient before verifying.',
+  k1_client_not_found: 'That client is not in this firm.',
+  k1_client_folder_unbound:
+    'That client has no document folder yet — bind one from the client\u2019s Files tab first.',
+  client_not_found: 'That client is not in this firm.',
+};
+function friendlyPatchError(err: unknown): string {
+  const code = err instanceof Error ? err.message : 'update failed';
+  return PATCH_ERROR_TEXT[code] ?? code;
+}
+
 // A row can never be committed when it has no resolvable destination.
 function isCommittable(r: InboxRow): boolean {
   return r.matchStatus !== 'unparseable' && r.matchStatus !== 'folder_unbound';
@@ -244,6 +259,7 @@ export function FilerPage(): JSX.Element {
 function InboxTab(): JSX.Element {
   const [items, setItems] = useState<InboxRow[]>([]);
   const [clients, setClients] = useState<ClientPick[]>([]);
+  const [k1Recipients, setK1Recipients] = useState<ClientPick[]>([]);
   const [activeProfile, setActiveProfile] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -271,10 +287,18 @@ function InboxTab(): JSX.Element {
     setClients(r.rows ?? r.items ?? []);
   }, []);
 
+  // 0229 — only ACTIVE, folder-bound clients can receive a K-1 recipient
+  // copy; offering the full picker produced server 400s with no hint of
+  // which clients were eligible.
+  const loadK1Recipients = useCallback(async (): Promise<void> => {
+    const r = await api<{ items: ClientPick[] }>(`${BASE}/k1-recipients`);
+    setK1Recipients(r.items ?? []);
+  }, []);
+
   useEffect(() => {
     void (async () => {
       try {
-        await Promise.all([loadInbox(), loadProfiles(), loadClients()]);
+        await Promise.all([loadInbox(), loadProfiles(), loadClients(), loadK1Recipients()]);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'failed to load inbox');
       } finally {
@@ -378,7 +402,7 @@ function InboxTab(): JSX.Element {
         void loadInbox();
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'update failed');
+      setError(friendlyPatchError(err));
       // Re-pull authoritative state on failure.
       void loadInbox();
     }
@@ -392,6 +416,17 @@ function InboxTab(): JSX.Element {
       setError(err instanceof Error ? err.message : 'preview failed');
     }
   }
+
+  const k1RecipientOptions = useMemo(
+    () =>
+      k1Recipients
+        .map((c) => ({
+          value: c.id,
+          label: c.externalId ? `${c.name} · ${c.externalId}` : c.name,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label)),
+    [k1Recipients],
+  );
 
   const clientOptions = useMemo(
     () =>
@@ -768,6 +803,7 @@ function InboxTab(): JSX.Element {
                       row={r}
                       selected={selectedIds.has(r.id)}
                       clientOptions={clientOptions}
+                      k1RecipientOptions={k1RecipientOptions}
                       clientFolders={r.matchedClient ? (clientFolders[r.matchedClient] ?? []) : []}
                       onEnsureFolders={ensureFolders}
                       onToggleSelect={() => toggleSelect(r.id)}
@@ -803,6 +839,7 @@ function InboxRowView({
   row,
   selected,
   clientOptions,
+  k1RecipientOptions,
   clientFolders,
   onEnsureFolders,
   onToggleSelect,
@@ -812,6 +849,7 @@ function InboxRowView({
   row: InboxRow;
   selected: boolean;
   clientOptions: Array<{ value: string; label: string }>;
+  k1RecipientOptions: Array<{ value: string; label: string }>;
   clientFolders: string[];
   onEnsureFolders: (clientId: string) => void;
   onToggleSelect: () => void;
@@ -867,7 +905,7 @@ function InboxRowView({
           </div>
         )}
         {row.k1RecipientName && (
-          <K1RecipientControls row={row} clientOptions={clientOptions} onPatch={onPatch} />
+          <K1RecipientControls row={row} clientOptions={k1RecipientOptions} onPatch={onPatch} />
         )}
       </td>
 
