@@ -1072,6 +1072,10 @@ function setupIntakeProcessQueue(): void {
   intakeEvents.on('failed', ({ jobId, failedReason }) => {
     logger.error({ jobId, queue: INTAKE_PROCESS_QUEUE, failedReason }, 'intake-process job failed');
   });
+  // 0230 — producer only: the consumer (which holds the AI runtime and
+  // the firm key) runs in the API process.
+  const aiLabelQueue = new Queue<IntakeJobPayload>(INTAKE_AI_LABEL_QUEUE, { connection });
+  intakeAiLabelQueueRef = aiLabelQueue;
   const intakeWorker = new Worker<IntakeJobPayload>(
     INTAKE_PROCESS_QUEUE,
     async (job) => {
@@ -1079,6 +1083,18 @@ function setupIntakeProcessQueue(): void {
         sendEmail: dunningSendEmail,
         sendSms: dunningSendSms,
         appBaseUrl: process.env['APP_BASE_URL'],
+        enqueueAiLabel: async (payload) => {
+          await aiLabelQueue.add('label', payload, {
+            // BullMQ forbids ':' in custom job ids — dash form, matching
+            // the intake-process jobId convention. Deterministic so a
+            // re-run of the pipeline coalesces into one label job.
+            jobId: `intake-ai-label-${payload.sessionId}`,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 30_000 },
+            removeOnComplete: { age: 24 * 3600 },
+            removeOnFail: { age: 7 * 24 * 3600 },
+          });
+        },
       });
       logger.info({ jobId: job.id, ...result }, 'intake-process complete');
     },
@@ -1090,9 +1106,11 @@ function setupIntakeProcessQueue(): void {
   logger.info({ queueName: INTAKE_PROCESS_QUEUE }, 'intake-process queue registered');
 }
 
+const INTAKE_AI_LABEL_QUEUE = 'intake-ai-label';
 let intakeWorkerRef: Worker<IntakeJobPayload> | null = null;
 let intakeQueueRef: Queue<IntakeJobPayload> | null = null;
 let intakeEventsRef: QueueEvents | null = null;
+let intakeAiLabelQueueRef: Queue<IntakeJobPayload> | null = null;
 
 const FILER_ROUTE_QUEUE = 'filer-route';
 let filerWorkerRef: Worker<FilerRouteJob> | null = null;
@@ -1617,6 +1635,7 @@ async function shutdown(): Promise<void> {
   if (intakeWorkerRef) await intakeWorkerRef.close();
   if (intakeQueueRef) await intakeQueueRef.close();
   if (intakeEventsRef) await intakeEventsRef.close();
+  if (intakeAiLabelQueueRef) await intakeAiLabelQueueRef.close();
   if (filerWorkerRef) await filerWorkerRef.close();
   if (filerQueueRef) await filerQueueRef.close();
   if (filerEventsRef) await filerEventsRef.close();

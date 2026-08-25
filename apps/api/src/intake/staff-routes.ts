@@ -13,18 +13,29 @@ import { z } from 'zod';
 import { and, desc, eq, ilike, inArray, ne, or } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { appUsers, intakeActions, intakeFiles, intakeSessions, persons } from '@vibe/db/schema';
+import {
+  appUsers,
+  clients,
+  intakeActions,
+  intakeFiles,
+  intakeSessions,
+  persons,
+} from '@vibe/db/schema';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 import { normalizePhone } from '@vibe/core/auth';
+import { composeFilename } from '@vibe/core/filer';
+import { filenameDocType, type DocType } from '@vibe/core/ai';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 import { firmScope, renderTemplate } from '../notifications/templating';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { getApplianceLockState } from '../crypto/boot';
-import { createFileInClientFolder } from '../clients/create-file';
+import { createFileInClientFolder, type CreateFileArgs } from '../clients/create-file';
+import { loadNamingSettings } from '../files/ai-naming';
 import { ensureClientFolderBound } from '../clients/folder-link';
 import { CATEGORY_VALUES, type Category } from '../clients/files';
+import { SCAN_DISPLAY_NAME } from './constants';
 import { unwrapIntakeRecordKey, decField } from './crypto';
 import { suggestClients } from './auto-match';
 import { createIntakeLink } from './links';
@@ -277,16 +288,25 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
         .where(eq(intakeFiles.sessionId, s.id));
       const files = fileRows.map((f) => ({
         id: f.id,
-        filename:
-          f.kind === 'scan' ? 'Scanned documents.pdf' : decField(dek, f.originalFilenameEnc),
+        filename: f.kind === 'scan' ? SCAN_DISPLAY_NAME : decField(dek, f.originalFilenameEnc),
         mimeType: f.mimeType,
         byteSize: Number(f.byteSize),
         kind: f.kind,
         scanStatus: f.scanStatus,
+        // 0230 — intake-arrival AI label.
+        aiLabelStatus: f.aiLabelStatus,
+        aiDocType: f.aiDocType,
+        aiTaxYear: f.aiTaxYear,
+        aiIssuer: f.aiIssuer,
+        aiSuggestedName: f.aiSuggestedName,
+        aiConfidence: f.aiConfidence,
       }));
 
+      // suggestions=0: the label poll re-reads only the ai_* columns and
+      // must not pay the firm-wide auto-match scans on every tick.
+      const wantSuggestions = req.query['suggestions'] !== '0';
       const suggestions =
-        s.status === 'received' || s.status === 'processing'
+        wantSuggestions && (s.status === 'received' || s.status === 'processing')
           ? await suggestClients(deps.db, firmId, { email, phone, name })
           : [];
 
@@ -349,7 +369,7 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
       const dek = unwrapIntakeRecordKey(deps.db, firmId, s.wrappedDek);
       const filename =
         f.kind === 'scan'
-          ? 'Scanned documents.pdf'
+          ? SCAN_DISPLAY_NAME
           : (decField(dek, f.originalFilenameEnc) ?? 'document');
       try {
         const obj = await storage.get(f.objectKey);
@@ -661,6 +681,19 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
       }
 
       const category: Category = parsed.data.category ?? 'other';
+
+      // 0230 — rebuild AI-labeled filenames with the now-known client,
+      // deterministically (no model call). Loaded once per dispose.
+      const hasLabels = selected.some((f) => f.aiLabelStatus === 'labeled');
+      const namingSettings = hasLabels ? await loadNamingSettings(deps.db, firmId) : null;
+      const [labelClient] = hasLabels
+        ? await deps.db
+            .select({ name: clients.name, externalId: clients.externalId })
+            .from(clients)
+            .where(and(eq(clients.id, parsed.data.clientId), eq(clients.firmId, firmId)))
+            .limit(1)
+        : [];
+
       let moved = 0;
       const errors: string[] = [];
       for (const f of selected) {
@@ -676,10 +709,53 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           errors.push(f.id);
           continue;
         }
+        // The SAME fallback names the labeler prompts/previews with — the
+        // ✦ preview and the filed name must never diverge.
         const filename =
           f.kind === 'scan'
-            ? `Intake scan ${s.id.slice(0, 8)}.pdf`
+            ? SCAN_DISPLAY_NAME
             : (decField(dek, f.originalFilenameEnc) ?? `intake-${f.id}`);
+
+        // Rename ONLY when the stored label clears every gate; anything
+        // less falls through WITHOUT aiRename so the 0223 client-bound
+        // auto-rename pass still runs for it (review finding — that pass
+        // is better-informed than the arrival label). Deliberately
+        // 'skipped' rows (pages embedded in the assembled scan) suppress
+        // that pass instead — their content is covered by the scan PDF.
+        let finalName = filename;
+        let aiRename: CreateFileArgs['aiRename'];
+        if (f.aiLabelStatus === 'labeled' && namingSettings?.autoRenameUploads && labelClient) {
+          const docType = filenameDocType((f.aiDocType ?? null) as DocType | null);
+          const informative = docType != null || f.aiTaxYear != null || f.aiIssuer != null;
+          const rebuilt = composeFilename(
+            namingSettings.pattern,
+            {
+              doc_type: docType,
+              issuer: f.aiIssuer,
+              year: f.aiTaxYear != null ? String(f.aiTaxYear) : null,
+              period: f.aiPeriod,
+              date: f.aiDocDate,
+              client: labelClient.name,
+              client_id: labelClient.externalId,
+              original: '',
+            },
+            filename,
+          );
+          const rename =
+            informative &&
+            f.aiConfidence != null &&
+            f.aiConfidence >= namingSettings.minConfidence &&
+            rebuilt !== filename;
+          if (rename) {
+            finalName = rebuilt;
+            aiRename = {
+              originalUploadFilename: filename,
+              confidence: f.aiConfidence,
+              model: f.aiLabelModel,
+            };
+          }
+        }
+
         const result = await createFileInClientFolder(deps.db, storage, {
           firmId,
           clientId: parsed.data.clientId,
@@ -687,13 +763,33 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           category,
           subfolderPath: parsed.data.subfolderPath,
           visibility: parsed.data.visibility,
-          originalFilename: filename,
+          originalFilename: finalName,
           body,
           mimeType: f.mimeType,
           source: 'intake',
+          ...(aiRename ? { aiRename } : {}),
+          ...(f.aiLabelStatus === 'skipped' ? { skipAutoRename: true } : {}),
         });
-        if (result.ok) moved += 1;
-        else errors.push(`${f.id}:${result.code}`);
+        if (result.ok) {
+          moved += 1;
+          if (aiRename) {
+            // The AI rename gets its own audit row (before/after names +
+            // the AI flag), matching applyAiRename's trail — the generic
+            // CREATE row alone can't reconstruct a machine rename.
+            await emitAudit(deps.db, {
+              action: 'UPDATE',
+              entityType: 'file',
+              entityId: result.fileId,
+              actorAppUserId: actorId,
+              before: { originalFilename: filename },
+              after: {
+                originalFilename: finalName,
+                aiRename: true,
+                confidence: f.aiConfidence,
+              },
+            }).catch(() => undefined);
+          }
+        } else errors.push(`${f.id}:${result.code}`);
       }
 
       if (moved === 0) {

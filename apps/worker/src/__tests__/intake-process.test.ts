@@ -197,6 +197,74 @@ describe('runIntakeProcess', () => {
     expect(result.outcome).toBe('skipped');
   });
 
+  // 0230 — the AI-label job fires once on the received path only, and a
+  // failed enqueue never fails the pipeline.
+  it('enqueues the AI-label job on received, not on rejected, tolerating enqueue errors', async () => {
+    const { firmId, sessionId } = await seedSession();
+    await addUpload(sessionId, 'application/pdf', Buffer.from('%PDF-1.4 real'));
+    const calls: Array<{ sessionId: string; firmId: string }> = [];
+    const received = await runIntakeProcess(
+      harness.db,
+      storage,
+      silentLog,
+      { sessionId, firmId },
+      {
+        scan: async () => ({ status: 'clean' }),
+        enqueueAiLabel: async (j) => {
+          calls.push(j);
+        },
+      },
+    );
+    expect(received.outcome).toBe('received');
+    expect(calls).toEqual([{ sessionId, firmId }]);
+    // The clean rows were flipped to 'pending' alongside the enqueue
+    // ('pending' means "a label job exists"; the column defaults 'skipped').
+    const flipped = await harness.db
+      .select({ aiLabelStatus: intakeFiles.aiLabelStatus })
+      .from(intakeFiles)
+      .where(eq(intakeFiles.sessionId, sessionId));
+    expect(flipped.every((f) => f.aiLabelStatus === 'pending')).toBe(true);
+
+    const { sessionId: s2, firmId: firm2 } = await seedSession();
+    await addUpload(s2, 'application/pdf', Buffer.from('%PDF evil'));
+    const rejected = await runIntakeProcess(
+      harness.db,
+      storage,
+      silentLog,
+      { sessionId: s2, firmId: firm2 },
+      {
+        scan: async () => ({ status: 'infected', signature: 'Eicar-Test-Signature' }),
+        enqueueAiLabel: async (j) => {
+          calls.push(j);
+        },
+      },
+    );
+    expect(rejected.outcome).toBe('rejected');
+    expect(calls).toHaveLength(1); // no enqueue for the rejected session
+
+    const { sessionId: s3, firmId: firm3 } = await seedSession();
+    await addUpload(s3, 'application/pdf', Buffer.from('%PDF-1.4 fine'));
+    const survived = await runIntakeProcess(
+      harness.db,
+      storage,
+      silentLog,
+      { sessionId: s3, firmId: firm3 },
+      {
+        scan: async () => ({ status: 'clean' }),
+        enqueueAiLabel: async () => {
+          throw new Error('redis down');
+        },
+      },
+    );
+    expect(survived.outcome).toBe('received'); // enqueue failure is non-fatal
+    // …and the pending flip was reverted, so no permanent "AI labeling…".
+    const reverted = await harness.db
+      .select({ aiLabelStatus: intakeFiles.aiLabelStatus })
+      .from(intakeFiles)
+      .where(eq(intakeFiles.sessionId, s3));
+    expect(reverted.every((f) => f.aiLabelStatus === 'skipped')).toBe(true);
+  });
+
   it('non-image clean files do not produce an assembled PDF', async () => {
     const { firmId, sessionId } = await seedSession();
     await addUpload(sessionId, 'application/pdf', Buffer.from('%PDF-1.4 real'));

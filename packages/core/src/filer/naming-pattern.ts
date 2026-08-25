@@ -35,10 +35,13 @@ export interface NamingFields {
 }
 
 export const DEFAULT_NAMING_PATTERN = '{year} {doc_type} - {issuer} - {client}';
+// Examples use the controlled doc-type vocabulary shapes (see
+// @vibe/core/ai DOC_TYPES) so they never contradict the enum-constrained
+// prompt they are injected next to.
 export const DEFAULT_NAMING_EXAMPLES = [
   '2024 W-2 - Acme Corp - Smith John',
-  '2023 Form 1040 - Smith John',
-  '2024-Q3 Bank Statement - Chase - Smith Family Trust',
+  '2023 Form-1040 - Smith John',
+  '2024-Q3 Bank-Statement - Chase - Smith Family Trust',
 ].join('\n');
 
 export const MAX_PATTERN_LENGTH = 120;

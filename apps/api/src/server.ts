@@ -46,6 +46,7 @@ import type { AiProvider } from '@vibe/core/ai';
 import { registerTimeBillingTaskClasses } from './ai/vibe-router';
 import { onAiRuntimeChange, refreshAiRuntime, startAiRuntimeRefresh } from './ai/ai-runtime';
 import { startAutoRenameConsumer } from './files/auto-rename-queue';
+import { startIntakeAiLabelConsumer } from './intake/ai-label-queue';
 import type { Worker } from 'bullmq';
 
 const config = loadConfig();
@@ -53,6 +54,7 @@ const redis = getRedis();
 const { db } = createDb({ connectionString: config.DATABASE_URL });
 const sessionStore = createSessionStore(redis);
 let autoRenameWorker: Worker | null = null;
+let intakeAiLabelWorker: Worker | null = null;
 
 // Stripe — firm-owned keys per Q7. Prefer the key the firm entered + tested
 // in Admin → Billing → Stripe Connect (encrypted at rest) over the appliance
@@ -506,6 +508,14 @@ const server = app.listen(config.PORT, () => {
     cloudProvider: cloudAiProvider ?? null,
     localProvider: localAiProvider ?? null,
   });
+  // 0230 — intake-arrival AI labeling consumer (same gating pattern;
+  // INTAKE_AI_LABEL_CONSUMER=0 disables).
+  intakeAiLabelWorker = startIntakeAiLabelConsumer({
+    db,
+    redis,
+    cloudProvider: cloudAiProvider ?? null,
+    localProvider: localAiProvider ?? null,
+  });
   onAiRuntimeChange((rt) => {
     logger.info(
       { aiMode: rt.mode, source: rt.source, problem: rt.problem },
@@ -596,6 +606,7 @@ process.on('uncaughtException', (err) => {
 function shutdownGracefully(signal: string): void {
   logger.info({ signal }, 'received shutdown signal — closing api server');
   void autoRenameWorker?.close().catch(() => undefined);
+  void intakeAiLabelWorker?.close().catch(() => undefined);
   server.close((err) => {
     if (err) logger.warn({ err }, 'server.close errored, exiting anyway');
     process.exit(0);

@@ -5883,6 +5883,18 @@ export const intakeFiles = pgTable(
     kind: text('kind').notNull().default('upload'),
     scanStatus: text('scan_status').notNull().default('pending'),
     assembledPdfObjectKey: text('assembled_pdf_object_key'),
+    // 0230 — intake-arrival AI label (plaintext; PII-free by contract).
+    aiDocType: text('ai_doc_type'),
+    aiTaxYear: smallint('ai_tax_year'),
+    aiIssuer: text('ai_issuer'),
+    aiPeriod: text('ai_period'),
+    aiDocDate: text('ai_doc_date'),
+    aiSuggestedName: text('ai_suggested_name'),
+    aiConfidence: real('ai_confidence'),
+    // 'pending' means "a label job exists" — set by the worker alongside
+    // the enqueue; the default is the no-job state (0230 review).
+    aiLabelStatus: text('ai_label_status').notNull().default('skipped'),
+    aiLabelModel: text('ai_label_model'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
@@ -5891,6 +5903,10 @@ export const intakeFiles = pgTable(
     scanStatusCk: check(
       'intake_files_scan_status_ck',
       sql`${t.scanStatus} IN ('pending', 'clean', 'infected')`,
+    ),
+    aiLabelStatusCk: check(
+      'intake_files_ai_label_status_ck',
+      sql`${t.aiLabelStatus} IN ('pending', 'labeled', 'failed', 'skipped')`,
     ),
   }),
 );

@@ -33,6 +33,7 @@ import {
   composeFilename,
   type NamingFields,
 } from '@vibe/core/filer';
+import { DOC_TYPES, filenameDocType, normalizeDocType, stripPiiFields } from '@vibe/core/ai';
 
 import { getAiRuntime } from '../ai/ai-runtime';
 import { runAiCompletion, type AiRoutesDeps } from '../ai/routes';
@@ -72,6 +73,11 @@ export type SkipReason =
   | 'storage_unavailable'
   | 'ai_unavailable'
   | 'ai_failed'
+  // Router says no configured provider/model can serve vision (Q-092 in
+  // the router repo) — a firm-configuration state, skipped permanently.
+  | 'no_vision_provider'
+  // Monthly AI budget exhausted — permanent for the rest of the period.
+  | 'ai_budget_exhausted'
   | 'invalid_output';
 
 export type SuggestResult =
@@ -121,7 +127,8 @@ export const FILE_NAMING_SCHEMA = {
   additionalProperties: false,
   required: ['doc_type', 'issuer', 'year', 'period', 'date', 'confidence', 'summary'],
   properties: {
-    doc_type: { type: ['string', 'null'], maxLength: 60 },
+    // Controlled vocabulary — the model cannot invent doc types.
+    doc_type: { type: ['string', 'null'], enum: [...DOC_TYPES, null] },
     issuer: { type: ['string', 'null'], maxLength: 60 },
     year: { type: ['string', 'null'], pattern: '^[0-9]{4}$' },
     period: { type: ['string', 'null'], maxLength: 12 },
@@ -131,7 +138,10 @@ export const FILE_NAMING_SCHEMA = {
   },
 } as const;
 
-const FileNamingOutputSchema = z.object({
+// Deliberately looser than FILE_NAMING_SCHEMA: the SDK's prompt-JSON
+// fallback path can produce off-vocabulary doc types, which
+// normalizeDocType maps to the vocabulary (unknown → 'Other').
+export const FileNamingOutputSchema = z.object({
   doc_type: z.string().max(80).nullable(),
   issuer: z.string().max(80).nullable(),
   year: z
@@ -147,9 +157,9 @@ const FileNamingOutputSchema = z.object({
   summary: z.string().max(400).default(''),
 });
 
-const SYSTEM_PROMPT = [
+export const NAMING_SYSTEM_PROMPT = [
   'You name documents for an accounting firm. Return ONLY a JSON object matching the schema.',
-  'Identify: doc_type (e.g. "W-2", "1099-NEC", "Form 1040", "Bank Statement", "Engagement Letter", "Invoice", "Receipt"),',
+  `Identify: doc_type — EXACTLY one of: ${DOC_TYPES.join(', ')}. Use "Other" when none fits.`,
   'issuer (the ORGANISATION that produced the document, e.g. employer, bank, agency — never a person),',
   'year (the tax/statement year as 4 digits), period (e.g. "Q3", "Mar", "2024-03", "FY2023"; null if none), date (document date, YYYY-MM-DD; null if none).',
   'NEVER output Social Security numbers, EINs, account numbers, addresses, dollar amounts, or any personal data in any field.',
@@ -282,41 +292,22 @@ export async function suggestFileName(
     hasImages: extracted.images.length > 0,
   });
 
-  let model: string | null = null;
-  const raw = await runAiCompletion(deps, {
+  const modelResult = await runNamingModel(deps, {
     firmId: args.firmId,
     ...(args.actorId ? { appUserId: args.actorId } : {}),
-    feature: 'file-naming',
-    systemPrompt: SYSTEM_PROMPT,
-    userPrompt,
-    maxTokens: 300,
     clientId: file.clientId,
+    userPrompt,
     attachments: extracted.images,
-    jsonSchema: { name: 'file_naming', schema: FILE_NAMING_SCHEMA, strict: true },
-    onResult: (r) => {
-      model = r.model ?? null;
-    },
   });
-  if (raw == null) return { ok: false, fileId, current, skippedReason: 'ai_failed' };
-
-  let parsed: z.infer<typeof FileNamingOutputSchema>;
-  try {
-    const jsonStart = raw.indexOf('{');
-    const jsonEnd = raw.lastIndexOf('}');
-    parsed = FileNamingOutputSchema.parse(
-      JSON.parse(jsonStart >= 0 && jsonEnd > jsonStart ? raw.slice(jsonStart, jsonEnd + 1) : raw),
-    );
-  } catch (err) {
-    logger.warn({ err, fileId }, 'ai-naming: model output did not match schema');
+  if (!modelResult.ok) return { ok: false, fileId, current, skippedReason: modelResult.reason };
+  if (!modelResult.informative) {
+    // Nothing usable extracted — composing would collapse to just the
+    // client name (review finding; mirrors the intake-arrival guard).
     return { ok: false, fileId, current, skippedReason: 'invalid_output' };
   }
 
   const fields: NamingFields = {
-    doc_type: parsed.doc_type,
-    issuer: parsed.issuer,
-    year: parsed.year,
-    period: parsed.period,
-    date: parsed.date,
+    ...modelResult.fields,
     client: file.clientName,
     client_id: file.clientExternalId,
     original: '',
@@ -327,9 +318,112 @@ export async function suggestFileName(
     fileId,
     current,
     proposed,
-    confidence: parsed.confidence,
+    confidence: modelResult.confidence,
     fields,
     strategy: extracted.strategy,
+    summary: modelResult.summary,
+    model: modelResult.model,
+  };
+}
+
+// ---- shared model call ---------------------------------------------------------
+//
+// The ONE place the naming model is invoked and its output parsed,
+// normalized, and PII-stripped — used by suggestFileName (0223) and the
+// intake-arrival labeler (0230) so the contract cannot drift between them.
+
+export interface NamingModelFields {
+  doc_type: string | null;
+  issuer: string | null;
+  year: string | null;
+  period: string | null;
+  date: string | null;
+}
+
+export type NamingModelResult =
+  | {
+      ok: true;
+      /** PII-stripped, vocabulary-normalized, 'Other' removed from the
+       *  filename slot (it stays in `rawDocType` for label storage). */
+      fields: NamingModelFields;
+      rawDocType: string | null;
+      /** True when at least one of doc_type/year/issuer survived — the
+       *  minimum for a filename that says anything. */
+      informative: boolean;
+      confidence: number;
+      summary: string;
+      model: string | null;
+    }
+  | {
+      ok: false;
+      reason: 'ai_failed' | 'no_vision_provider' | 'ai_budget_exhausted' | 'invalid_output';
+    };
+
+export async function runNamingModel(
+  deps: AiNamingDeps,
+  args: {
+    firmId: string;
+    appUserId?: string | null;
+    clientId?: string | null;
+    userPrompt: string;
+    attachments: Parameters<typeof runAiCompletion>[1]['attachments'];
+  },
+): Promise<NamingModelResult> {
+  let model: string | null = null;
+  let errorCode: string | undefined;
+  const raw = await runAiCompletion(deps, {
+    firmId: args.firmId,
+    ...(args.appUserId ? { appUserId: args.appUserId } : {}),
+    feature: 'file-naming',
+    systemPrompt: NAMING_SYSTEM_PROMPT,
+    userPrompt: args.userPrompt,
+    maxTokens: 300,
+    ...(args.clientId ? { clientId: args.clientId } : {}),
+    attachments: args.attachments,
+    jsonSchema: { name: 'file_naming', schema: FILE_NAMING_SCHEMA, strict: true },
+    onResult: (r) => {
+      model = r.model ?? null;
+    },
+    onError: (e) => {
+      errorCode = e.code;
+    },
+  });
+  if (raw == null) {
+    const reason =
+      errorCode === 'no_vision_provider' || errorCode === 'ai_budget_exhausted'
+        ? errorCode
+        : 'ai_failed';
+    return { ok: false, reason };
+  }
+
+  let parsed: z.infer<typeof FileNamingOutputSchema>;
+  try {
+    const jsonStart = raw.indexOf('{');
+    const jsonEnd = raw.lastIndexOf('}');
+    parsed = FileNamingOutputSchema.parse(
+      JSON.parse(jsonStart >= 0 && jsonEnd > jsonStart ? raw.slice(jsonStart, jsonEnd + 1) : raw),
+    );
+  } catch (err) {
+    logger.warn({ err }, 'ai-naming: model output did not match schema');
+    return { ok: false, reason: 'invalid_output' };
+  }
+
+  // PII guard on MODEL-emitted fields only — client/client_id come from
+  // the DB (a numeric firm client id would false-positive as an account).
+  const rawDocType = normalizeDocType(parsed.doc_type);
+  const fields = stripPiiFields({
+    doc_type: filenameDocType(rawDocType),
+    issuer: parsed.issuer,
+    year: parsed.year,
+    period: parsed.period,
+    date: parsed.date,
+  });
+  return {
+    ok: true,
+    fields,
+    rawDocType,
+    informative: fields.doc_type != null || fields.year != null || fields.issuer != null,
+    confidence: parsed.confidence,
     summary: parsed.summary,
     model,
   };

@@ -1,8 +1,16 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 
-import { NAMING_MAX_BYTES, extractForNaming, namingStrategyFor } from './extract-for-naming';
+import {
+  NAMING_MAX_BYTES,
+  extractForNaming,
+  looksLikeHeic,
+  namingStrategyFor,
+} from './extract-for-naming';
 
 async function textPdf(words: number): Promise<Buffer> {
   const doc = await PDFDocument.create();
@@ -70,6 +78,36 @@ describe('extractForNaming', () => {
 
   it('treats a corrupt PDF as metadata-only', async () => {
     const r = await extractForNaming(Buffer.from('%PDF-1.4 garbage'), 'application/pdf');
+    expect(r.strategy).toBe('metadata');
+  });
+
+  // 0230 — HEIC/HEIF phone photos convert to JPEG for the vision pass.
+  it('converts a HEIC image to a JPEG attachment', async () => {
+    const heic = readFileSync(path.join(__dirname, '__fixtures__', 'sample.heic'));
+    const r = await extractForNaming(heic, 'image/heic');
+    expect(r.strategy).toBe('image');
+    expect(r.images).toHaveLength(1);
+    expect(r.images[0]!.mimeType).toBe('image/jpeg');
+    expect(r.images[0]!.dataUrl.startsWith('data:image/jpeg;base64,')).toBe(true);
+  }, 30_000);
+
+  it('sniffs HEIC by ftyp brand even with a generic mime', async () => {
+    const heic = readFileSync(path.join(__dirname, '__fixtures__', 'sample.heic'));
+    expect(looksLikeHeic(heic, 'application/octet-stream')).toBe(true);
+    const r = await extractForNaming(heic, 'application/octet-stream');
+    expect(r.strategy).toBe('image');
+    expect(r.images[0]!.mimeType).toBe('image/jpeg');
+  }, 30_000);
+
+  it('degrades to metadata when HEIC decoding fails', async () => {
+    // A valid ftyp/heic header with garbage payload.
+    const fake = Buffer.concat([
+      Buffer.from([0, 0, 0, 0x18]),
+      Buffer.from('ftypheic'),
+      Buffer.alloc(64, 7),
+    ]);
+    expect(looksLikeHeic(fake, null)).toBe(true);
+    const r = await extractForNaming(fake, 'image/heic');
     expect(r.strategy).toBe('metadata');
   });
 });

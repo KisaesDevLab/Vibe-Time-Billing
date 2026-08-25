@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import {
   clientFolders,
   files,
+  firmSettings,
   intakeActions,
   intakeFiles,
   intakeSessions,
@@ -332,6 +333,125 @@ describe('inbox + disposition', () => {
       .from(intakeActions)
       .where(eq(intakeActions.sessionId, sessionId));
     expect(actions[0]!.action).toBe('move');
+  });
+
+  // 0230 — dispose rebuilds AI-labeled filenames from stored fields with
+  // the now-known client, no model call, with full rename provenance.
+  // The rebuild honors the live firm toggle.
+  async function enableAutoRename(on = true): Promise<void> {
+    await harness.db
+      .insert(firmSettings)
+      .values({ firmId: seed.firmId, autoRenameUploads: on })
+      .onConflictDoUpdate({ target: firmSettings.firmId, set: { autoRenameUploads: on } });
+  }
+
+  it('dispose rebuilds a labeled filename with the client slug + provenance', async () => {
+    await enableAutoRename();
+    const sessionId = await makeReceivedSession();
+    await harness.db
+      .update(intakeFiles)
+      .set({
+        aiDocType: 'W-2',
+        aiTaxYear: 2024,
+        aiIssuer: 'Acme',
+        aiConfidence: 0.9,
+        aiLabelStatus: 'labeled',
+        aiLabelModel: 'm-test',
+      })
+      .where(eq(intakeFiles.sessionId, sessionId));
+
+    const res = await request(buildApp())
+      .post(`/api/staff/intake/sessions/${sessionId}/dispose`)
+      .send({ clientId: seed.clientId, category: 'correspondence' });
+    expect(res.status).toBe(200);
+
+    const [filed] = await harness.db.select().from(files).where(eq(files.clientId, seed.clientId));
+    // Default pattern '{year} {doc_type} - {issuer} - {client}'.
+    expect(filed!.originalFilename).toBe('2024 W-2 - Acme - Test Client Co.pdf');
+    expect(filed!.originalUploadFilename).toBe('w2.pdf');
+    expect(filed!.aiRenamedAt).not.toBeNull();
+    expect(filed!.aiRenameConfidence).toBeCloseTo(0.9);
+    expect(filed!.aiRenameModel).toBe('m-test');
+    expect(filed!.aiSuggestedFilename).toBeNull();
+  });
+
+  it('dispose stores a suggestion instead of renaming below the threshold', async () => {
+    await enableAutoRename();
+    const sessionId = await makeReceivedSession();
+    await harness.db
+      .update(intakeFiles)
+      .set({
+        aiDocType: 'W-2',
+        aiTaxYear: 2024,
+        aiIssuer: 'Acme',
+        aiConfidence: 0.2,
+        aiLabelStatus: 'labeled',
+        aiLabelModel: 'm-test',
+      })
+      .where(eq(intakeFiles.sessionId, sessionId));
+
+    const res = await request(buildApp())
+      .post(`/api/staff/intake/sessions/${sessionId}/dispose`)
+      .send({ clientId: seed.clientId, category: 'correspondence' });
+    expect(res.status).toBe(200);
+
+    const [filed] = await harness.db.select().from(files).where(eq(files.clientId, seed.clientId));
+    expect(filed!.originalFilename).toBe('w2.pdf'); // original kept
+    // Below-threshold labels leave NO provenance: the file falls through
+    // to the client-bound 0223 auto-rename pass instead (review finding),
+    // which will apply or suggest with better context.
+    expect(filed!.aiRenamedAt).toBeNull();
+    expect(filed!.aiSuggestedFilename).toBeNull();
+    expect(filed!.originalUploadFilename).toBeNull();
+    expect(filed!.aiRenameAttemptedAt).toBeNull();
+  });
+
+  it('dispose keeps the original name when the firm toggle is off, even for labeled files', async () => {
+    await enableAutoRename(false);
+    const sessionId = await makeReceivedSession();
+    await harness.db
+      .update(intakeFiles)
+      .set({
+        aiDocType: 'W-2',
+        aiTaxYear: 2024,
+        aiIssuer: 'Acme',
+        aiConfidence: 0.9,
+        aiLabelStatus: 'labeled',
+        aiLabelModel: 'm-test',
+      })
+      .where(eq(intakeFiles.sessionId, sessionId));
+    const res = await request(buildApp())
+      .post(`/api/staff/intake/sessions/${sessionId}/dispose`)
+      .send({ clientId: seed.clientId, category: 'correspondence' });
+    expect(res.status).toBe(200);
+    const [filed] = await harness.db.select().from(files).where(eq(files.clientId, seed.clientId));
+    expect(filed!.originalFilename).toBe('w2.pdf');
+    expect(filed!.aiRenamedAt).toBeNull();
+    expect(filed!.originalUploadFilename).toBeNull(); // no provenance written
+  });
+
+  it('dispose never renames on a label with no informative fields', async () => {
+    await enableAutoRename();
+    const sessionId = await makeReceivedSession();
+    await harness.db
+      .update(intakeFiles)
+      .set({
+        aiPeriod: 'Q3', // period-only: composing would yield just the client name
+        aiConfidence: 0.95,
+        aiLabelStatus: 'labeled',
+        aiLabelModel: 'm-test',
+      })
+      .where(eq(intakeFiles.sessionId, sessionId));
+    const res = await request(buildApp())
+      .post(`/api/staff/intake/sessions/${sessionId}/dispose`)
+      .send({ clientId: seed.clientId, category: 'correspondence' });
+    expect(res.status).toBe(200);
+    const [filed] = await harness.db.select().from(files).where(eq(files.clientId, seed.clientId));
+    expect(filed!.originalFilename).toBe('w2.pdf'); // not renamed to 'Test Client Co.pdf'
+    expect(filed!.aiRenamedAt).toBeNull();
+    expect(filed!.aiSuggestedFilename).toBeNull();
+    // No provenance either — the file keeps its 0223 auto-rename pass.
+    expect(filed!.aiRenameAttemptedAt).toBeNull();
   });
 
   it('previews a file inline', async () => {

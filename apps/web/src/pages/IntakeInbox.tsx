@@ -42,6 +42,12 @@ interface FileItem {
   byteSize: number;
   kind: string;
   scanStatus: string;
+  aiLabelStatus: 'pending' | 'labeled' | 'failed' | 'skipped';
+  aiDocType: string | null;
+  aiTaxYear: number | null;
+  aiIssuer: string | null;
+  aiSuggestedName: string | null;
+  aiConfidence: number | null;
 }
 
 interface Suggestion {
@@ -99,6 +105,41 @@ export function IntakeInboxPage(): JSX.Element {
       setError((err as ApiError).message);
     }
   }, []);
+
+  // 0230 — while any file is still "AI labeling…", re-fetch the open
+  // session every 5 s (without the blank-out openSession does) so labels
+  // appear as the API-side consumer finishes them. Depends on the BOOLEAN
+  // hasPending, not `detail` — otherwise every setDetail would recreate
+  // the interval and reset the tick cap (review finding). The alive flag
+  // drops a late response after the user switches sessions; the tick cap
+  // bounds the endpoint if a row somehow stays 'pending'; suggestions=0
+  // skips the firm-wide auto-match scans the poll doesn't need.
+  const hasPending = detail?.files.some((f) => f.aiLabelStatus === 'pending') ?? false;
+  useEffect(() => {
+    if (!selected || !hasPending) return;
+    let alive = true;
+    let ticks = 0;
+    const t = setInterval(() => {
+      if (++ticks > 60) {
+        clearInterval(t);
+        return;
+      }
+      void api<Detail>(`/api/staff/intake/sessions/${selected}?suggestions=0`)
+        .then((d) => {
+          if (!alive) return;
+          setDetail((prev) =>
+            prev && prev.session.id === d.session.id
+              ? { ...d, suggestions: prev.suggestions }
+              : prev,
+          );
+        })
+        .catch(() => undefined);
+    }, 5000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+  }, [selected, hasPending]);
 
   useEffect(() => {
     if (!clientQuery.trim()) {
@@ -351,6 +392,43 @@ export function IntakeInboxPage(): JSX.Element {
                             ({(f.byteSize / 1024).toFixed(0)} KB
                             {f.kind === 'scan' ? ', assembled' : ''})
                           </span>
+                          {f.aiLabelStatus === 'labeled' && (
+                            <span
+                              title={
+                                (f.aiSuggestedName ? `Suggested: ${f.aiSuggestedName}` : '') +
+                                (f.aiConfidence != null
+                                  ? ` (${Math.round(f.aiConfidence * 100)}%)`
+                                  : '')
+                              }
+                              style={{
+                                display: 'inline-block',
+                                marginLeft: 6,
+                                padding: '1px 6px',
+                                fontSize: 11,
+                                borderRadius: 999,
+                                border: `1px solid ${tokens.color.border}`,
+                                color: tokens.color.textMuted,
+                                background: tokens.color.surface,
+                                whiteSpace: 'nowrap',
+                              }}
+                            >
+                              ✦{' '}
+                              {[f.aiDocType, f.aiTaxYear, f.aiIssuer]
+                                .filter((v) => v != null && v !== '')
+                                .join(' · ')}
+                            </span>
+                          )}
+                          {f.aiLabelStatus === 'pending' && (
+                            <span
+                              style={{
+                                marginLeft: 6,
+                                fontSize: 11,
+                                color: tokens.color.textMuted,
+                              }}
+                            >
+                              AI labeling…
+                            </span>
+                          )}
                         </span>
                         <a
                           href={`${base}?inline=1`}

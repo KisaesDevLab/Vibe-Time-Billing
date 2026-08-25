@@ -39,6 +39,25 @@ export interface CreateFileArgs {
   mimeType?: string | null;
   /** Provenance recorded on the row + audit (e.g. 'generated', 'intake'). */
   source: string;
+  /**
+   * 0230 — present ONLY when originalFilename IS an already-applied AI
+   * name (intake-arrival label above threshold): the row carries rename
+   * provenance and the auto-rename enqueue is skipped. Anything less than
+   * an applied rename must NOT pass this — the file then gets the normal
+   * client-bound auto-rename pass instead.
+   */
+  aiRename?: {
+    /** The pre-rename name (e.g. the decrypted intake filename). */
+    originalUploadFilename: string;
+    confidence: number | null;
+    model: string | null;
+  };
+  /**
+   * 0230 — suppress the auto-rename enqueue WITHOUT rename provenance
+   * (e.g. intake page images whose content is covered by the assembled
+   * scan PDF's label). Decoupled from aiRename on review advice.
+   */
+  skipAutoRename?: boolean;
 }
 
 export type CreateFileResult =
@@ -83,6 +102,7 @@ export async function createFileInClientFolder(
     };
   }
 
+  const now = new Date();
   const [row] = await db
     .insert(files)
     .values({
@@ -100,6 +120,17 @@ export async function createFileInClientFolder(
       visibility,
       uploadedBy: args.actorId,
       pendingUpload: false,
+      // Same shape applyAiRename produces, so the existing revert flow
+      // works unchanged.
+      ...(args.aiRename
+        ? {
+            originalUploadFilename: args.aiRename.originalUploadFilename,
+            aiRenameAttemptedAt: now,
+            aiRenamedAt: now,
+            aiRenameConfidence: args.aiRename.confidence,
+            aiRenameModel: args.aiRename.model,
+          }
+        : {}),
     })
     .returning({ id: files.id });
 
@@ -118,13 +149,16 @@ export async function createFileInClientFolder(
   }).catch(() => undefined);
 
   // 0223 — auto-rename on arrival (router mode + firm toggle; generated
-  // sources are filtered inside). Fire-and-forget.
-  void maybeEnqueueAutoRename(db, {
-    firmId: args.firmId,
-    fileId: row!.id,
-    actorAppUserId: args.actorId,
-    source: args.source,
-  });
+  // sources are filtered inside). Fire-and-forget. Skipped when the name
+  // is already an applied AI rename (0230) or the caller opted out.
+  if (!args.aiRename && !args.skipAutoRename) {
+    void maybeEnqueueAutoRename(db, {
+      firmId: args.firmId,
+      fileId: row!.id,
+      actorAppUserId: args.actorId,
+      source: args.source,
+    });
+  }
 
   return {
     ok: true,

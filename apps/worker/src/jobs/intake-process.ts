@@ -24,11 +24,11 @@ import type { Database } from '@vibe/db';
 import { appUsers, auditLog, intakeFiles, intakeSessions, intakeStaffCards } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
+import { isEmbeddableImage } from '../../../api/src/intake/constants';
 import { clamdScan, isClamdConfigured, type ClamScanResult } from '../clamd';
 import type { MailDispatch, SmsDispatch } from '../dispatchers';
 
 const RECEIVED_PREFIX = 'intake/received';
-const EMBEDDABLE = new Set(['image/jpeg', 'image/png']);
 
 export interface IntakeProcessDeps {
   sendEmail?: MailDispatch;
@@ -36,6 +36,12 @@ export interface IntakeProcessDeps {
   appBaseUrl?: string;
   /** Override the virus scanner (tests inject a fake; defaults to clamd). */
   scan?: (buf: Buffer) => Promise<ClamScanResult>;
+  /**
+   * 0230 — enqueue the API-side AI labeling job once the session is
+   * 'received'. Best-effort: the worker has no AI runtime and no firm
+   * key; the API consumer does the labeling.
+   */
+  enqueueAiLabel?: (job: { sessionId: string; firmId: string }) => Promise<void>;
 }
 
 export interface IntakeProcessResult {
@@ -146,7 +152,7 @@ export async function runIntakeProcess(
     }
 
     await db.update(intakeFiles).set({ scanStatus: 'clean' }).where(eq(intakeFiles.id, f.id));
-    if (f.mimeType && EMBEDDABLE.has(f.mimeType)) {
+    if (f.mimeType && isEmbeddableImage(f.mimeType)) {
       cleanImages.push({ buf, mimeType: f.mimeType });
     }
   }
@@ -191,6 +197,24 @@ export async function runIntakeProcess(
     .update(intakeSessions)
     .set({ status: 'received' })
     .where(eq(intakeSessions.id, sessionId));
+
+  // 0230 — 'pending' means "a label job exists": flip the clean rows in
+  // the same step that enqueues, and revert on enqueue failure so a lost
+  // job never strands rows on a permanent "AI labeling…" badge.
+  if (deps.enqueueAiLabel) {
+    await db
+      .update(intakeFiles)
+      .set({ aiLabelStatus: 'pending' })
+      .where(and(eq(intakeFiles.sessionId, sessionId), eq(intakeFiles.scanStatus, 'clean')));
+    await deps.enqueueAiLabel({ sessionId, firmId }).catch(async (err: unknown) => {
+      log.warn({ err, sessionId }, 'intake-process: ai-label enqueue failed');
+      await db
+        .update(intakeFiles)
+        .set({ aiLabelStatus: 'skipped' })
+        .where(and(eq(intakeFiles.sessionId, sessionId), eq(intakeFiles.aiLabelStatus, 'pending')))
+        .catch(() => undefined);
+    });
+  }
 
   await notifyStaff(db, log, deps, {
     sessionId,

@@ -1,0 +1,10 @@
+ALTER TABLE vibetb.intake_files DROP CONSTRAINT IF EXISTS intake_files_ai_label_status_ck;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_label_model;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_label_status;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_confidence;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_suggested_name;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_doc_date;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_period;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_issuer;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_tax_year;
+ALTER TABLE vibetb.intake_files DROP COLUMN IF EXISTS ai_doc_type;

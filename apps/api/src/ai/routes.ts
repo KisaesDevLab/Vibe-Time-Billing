@@ -1396,12 +1396,36 @@ export async function runAiCompletion(
     jsonSchema?: AiCompletionRequest['jsonSchema'];
     /** Model that served the request is reported here when the caller cares. */
     onResult?: (r: { model?: string; providerId: string }) => void;
+    /**
+     * Failure detail for callers that distinguish structured router codes
+     * (e.g. 'no_vision_provider' → permanent skip) from transient faults.
+     */
+    onError?: (e: { code?: string; message: string }) => void;
   },
 ): Promise<string | null> {
-  const provider = await pickProvider(deps, args.feature, args.firmId);
-  if (!provider) return null;
+  // Pre-flight exits also report through onError (review finding): a
+  // caller must be able to tell these PERMANENT states apart from a
+  // transient fault, or it burns retries on an exhausted budget.
+  let provider: AiProvider | null = null;
+  try {
+    provider = await pickProvider(deps, args.feature, args.firmId);
+  } catch (err) {
+    // Router mode with missing/invalid creds throws — surface, don't leak.
+    args.onError?.({
+      code: 'no_ai_provider',
+      message: err instanceof Error ? err.message : 'unknown',
+    });
+    return null;
+  }
+  if (!provider) {
+    args.onError?.({ code: 'no_ai_provider', message: 'no AI provider available' });
+    return null;
+  }
   const budget = await loadBudget(deps, args.firmId, deps.now?.() ?? new Date());
-  if (budget.kind === 'exhausted') return null;
+  if (budget.kind === 'exhausted') {
+    args.onError?.({ code: 'ai_budget_exhausted', message: 'monthly AI budget exhausted' });
+    return null;
+  }
   const started = Date.now();
   try {
     const result = await provider.complete({
@@ -1427,6 +1451,18 @@ export async function runAiCompletion(
     });
     return result.text;
   } catch (err) {
+    // Null-safe probe: a provider rejecting with null/undefined must not
+    // turn this never-throws error path into a TypeError.
+    const errCode =
+      typeof err === 'object' &&
+      err !== null &&
+      typeof (err as { code?: unknown }).code === 'string'
+        ? (err as { code: string }).code
+        : undefined;
+    args.onError?.({
+      ...(errCode ? { code: errCode } : {}),
+      message: err instanceof Error ? err.message : 'unknown',
+    });
     await logAiRequest(deps, {
       firmId: args.firmId,
       providerId: provider.id,
