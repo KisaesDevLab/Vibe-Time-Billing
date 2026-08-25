@@ -27,6 +27,7 @@
 import express, { type Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 import { z } from 'zod';
 
 import type { Database } from '@vibe/db';
@@ -86,11 +87,18 @@ const ReviewSchema = z.object({
   flagFormCode: z.string().max(40).nullable().optional(),
   flagTaxYear: z.number().int().min(1900).max(2999).nullable().optional(),
   included: z.boolean().optional(),
+  // 0229 — K-1 recipient verification (verify / search / dismiss).
+  k1MatchedClient: z.string().uuid().nullable().optional(),
+  k1Status: z.enum(['suggested', 'confirmed', 'dismissed']).nullable().optional(),
+  k1OverrideFolder: z.string().max(512).nullable().optional(),
 });
 
 const ProfileSchema = z.object({
   name: z.string().min(1).max(120),
   isActive: z.boolean().optional(),
+  // 0229 — destination for K-1 recipient copies.
+  k1TargetPath: z.string().max(512).optional(),
+  k1YearBehavior: z.enum(['none', 'current_only', 'current_and_next', 'previous']).optional(),
 });
 const RuleSchema = z.object({
   profileId: z.string().uuid(),
@@ -105,6 +113,9 @@ const RuleSchema = z.object({
   notes: z.string().max(2000).nullable().optional(),
 });
 const RulePatchSchema = RuleSchema.partial().omit({ profileId: true });
+
+// 0229 — second clients join for the K-1 recipient suggestion.
+const k1Client = alias(clients, 'k1_client');
 
 export function createFilerRouter(deps: FilerRoutesDeps): Router {
   const router = express.Router();
@@ -211,9 +222,17 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         flagFormCode: inboxItems.flagFormCode,
         flagTaxYear: inboxItems.flagTaxYear,
         included: inboxItems.included,
+        k1RecipientName: inboxItems.k1RecipientName,
+        k1MatchedClient: inboxItems.k1MatchedClient,
+        k1ClientName: k1Client.name,
+        k1ClientExternalId: k1Client.externalId,
+        k1MatchScore: inboxItems.k1MatchScore,
+        k1Status: inboxItems.k1Status,
+        k1OverrideFolder: inboxItems.k1OverrideFolder,
       })
       .from(inboxItems)
       .leftJoin(clients, eq(clients.id, inboxItems.matchedClient))
+      .leftJoin(k1Client, eq(k1Client.id, inboxItems.k1MatchedClient))
       .where(eq(inboxItems.firmId, session.firmId))
       .orderBy(desc(inboxItems.discoveredAt));
     res.json({ items: rows });
@@ -261,6 +280,40 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       res.status(400).json({ error: 'invalid_payload', detail: parsed.error.flatten() });
       return;
     }
+    // 0229 — K-1 field rules need the current row (verify against the
+    // primary client, confirm requires a recipient client).
+    const touchesK1 =
+      parsed.data.k1MatchedClient !== undefined || parsed.data.k1Status !== undefined;
+    if (touchesK1) {
+      const [current] = await deps.db
+        .select({
+          matchedClient: inboxItems.matchedClient,
+          k1MatchedClient: inboxItems.k1MatchedClient,
+        })
+        .from(inboxItems)
+        .where(and(eq(inboxItems.id, req.params['id']!), eq(inboxItems.firmId, session.firmId)))
+        .limit(1);
+      if (!current) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      // Picking a client via search implies confirmation.
+      if (parsed.data.k1MatchedClient != null && parsed.data.k1Status === undefined) {
+        parsed.data.k1Status = 'confirmed';
+      }
+      const effectiveK1Client =
+        parsed.data.k1MatchedClient !== undefined
+          ? parsed.data.k1MatchedClient
+          : current.k1MatchedClient;
+      if (effectiveK1Client != null && effectiveK1Client === current.matchedClient) {
+        res.status(400).json({ error: 'k1_same_as_entity' });
+        return;
+      }
+      if (parsed.data.k1Status === 'confirmed' && effectiveK1Client == null) {
+        res.status(400).json({ error: 'k1_client_required' });
+        return;
+      }
+    }
     const set: Record<string, unknown> = { reviewedBy: session.appUserId, updatedAt: new Date() };
     for (const k of [
       'reviewAction',
@@ -270,6 +323,9 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
       'flagFormCode',
       'flagTaxYear',
       'included',
+      'k1MatchedClient',
+      'k1Status',
+      'k1OverrideFolder',
     ] as const) {
       if (parsed.data[k] !== undefined) set[k] = parsed.data[k];
     }
@@ -578,10 +634,16 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         res.status(400).json({ error: 'invalid_payload' });
         return;
       }
-      if (parsed.data.name !== undefined) {
+      const set: Record<string, unknown> = {};
+      if (parsed.data.name !== undefined) set['name'] = parsed.data.name;
+      if (parsed.data.k1TargetPath !== undefined) set['k1TargetPath'] = parsed.data.k1TargetPath;
+      if (parsed.data.k1YearBehavior !== undefined) {
+        set['k1YearBehavior'] = parsed.data.k1YearBehavior;
+      }
+      if (Object.keys(set).length > 0) {
         await deps.db
           .update(inboxRoutingProfiles)
-          .set({ name: parsed.data.name })
+          .set(set)
           .where(
             and(
               eq(inboxRoutingProfiles.id, req.params['id']!),
@@ -809,6 +871,7 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
         at: sql<string>`MAX(${inboxRoutingLog.createdAt})`,
         total: sql<number>`COUNT(*)::int`,
         filed: sql<number>`COUNT(*) FILTER (WHERE ${inboxRoutingLog.action} IN ('filed','tax_flagged'))::int`,
+        k1: sql<number>`COUNT(*) FILTER (WHERE ${inboxRoutingLog.action} = 'k1_recipient')::int`,
         reversed: sql<number>`COUNT(*) FILTER (WHERE ${inboxRoutingLog.status} = 'reversed')::int`,
       })
       .from(inboxRoutingLog)
@@ -859,7 +922,7 @@ export function createFilerRouter(deps: FilerRoutesDeps): Router {
             eq(inboxRoutingLog.firmId, session.firmId),
             eq(inboxRoutingLog.batchId, req.params['batchId']!),
             eq(inboxRoutingLog.status, 'success'),
-            inArray(inboxRoutingLog.action, ['filed', 'tax_flagged']),
+            inArray(inboxRoutingLog.action, ['filed', 'tax_flagged', 'k1_recipient']),
           ),
         );
       for (const r of rows) {

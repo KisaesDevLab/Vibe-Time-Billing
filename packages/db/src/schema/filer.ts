@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // Drizzle schema for the Vibe Filer module (document inbox & routing).
-// Mirrors packages/db/migrations/0137_filer.sql — edit both together.
+// Mirrors packages/db/migrations/0137_filer.sql (+ 0229 K-1 recipient
+// columns) — edit both together.
 
 import {
   bigint,
@@ -11,6 +12,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  real,
   text,
   timestamp,
   uniqueIndex,
@@ -45,6 +47,15 @@ export const inboxItems = pgTable(
     overrideYear: integer('override_year'),
     flagFormCode: text('flag_form_code'),
     flagTaxYear: integer('flag_tax_year'),
+    // 0229 — K-1 recipient secondary match. Suggestion columns refresh on
+    // every scan; k1Status 'confirmed'/'dismissed' is review state.
+    k1RecipientName: text('k1_recipient_name'),
+    k1MatchedClient: uuid('k1_matched_client').references(() => clients.id, {
+      onDelete: 'set null',
+    }),
+    k1MatchScore: real('k1_match_score'),
+    k1Status: text('k1_status'),
+    k1OverrideFolder: text('k1_override_folder'),
     included: boolean('included').notNull().default(true),
     reviewedBy: uuid('reviewed_by').references(() => appUsers.id, { onDelete: 'set null' }),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -60,6 +71,10 @@ export const inboxItems = pgTable(
       'inbox_items_review_action_ck',
       sql`${t.reviewAction} IS NULL OR ${t.reviewAction} IN ('file','flag_tax','skip','file_flag_tax')`,
     ),
+    k1StatusCk: check(
+      'inbox_items_k1_status_ck',
+      sql`${t.k1Status} IS NULL OR ${t.k1Status} IN ('suggested','confirmed','dismissed')`,
+    ),
   }),
 );
 
@@ -72,10 +87,17 @@ export const inboxRoutingProfiles = pgTable(
       .references(() => firms.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     isActive: boolean('is_active').notNull().default(false),
+    // 0229 — destination for K-1 recipient copies.
+    k1TargetPath: text('k1_target_path').notNull().default('Income Tax'),
+    k1YearBehavior: text('k1_year_behavior').notNull().default('current_only'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     firmIdx: index('inbox_routing_profiles_firm_idx').on(t.firmId),
+    k1YearBehaviorCk: check(
+      'inbox_routing_profiles_k1_year_behavior_ck',
+      sql`${t.k1YearBehavior} IN ('none','current_only','current_and_next','previous')`,
+    ),
   }),
 );
 
@@ -140,7 +162,7 @@ export const inboxRoutingLog = pgTable(
     fromIdx: index('inbox_routing_log_from_idx').on(t.firmId, t.objectKeyFrom),
     actionCk: check(
       'inbox_routing_log_action_ck',
-      sql`${t.action} IN ('filed','tax_flagged','skipped','failed')`,
+      sql`${t.action} IN ('filed','tax_flagged','skipped','failed','k1_recipient')`,
     ),
     statusCk: check(
       'inbox_routing_log_status_ck',

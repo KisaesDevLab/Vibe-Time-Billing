@@ -80,6 +80,13 @@ interface InboxRow {
   flagFormCode: string | null;
   flagTaxYear: number | null;
   included: boolean;
+  k1RecipientName: string | null;
+  k1MatchedClient: string | null;
+  k1ClientName: string | null;
+  k1ClientExternalId: string | null;
+  k1MatchScore: number | null;
+  k1Status: 'suggested' | 'confirmed' | 'dismissed' | null;
+  k1OverrideFolder: string | null;
 }
 
 type MatchMode = 'contains' | 'starts_with' | 'regex';
@@ -104,6 +111,8 @@ interface Profile {
   id: string;
   name: string;
   isActive: boolean;
+  k1TargetPath: string;
+  k1YearBehavior: YearBehavior;
   createdAt: string;
 }
 
@@ -112,10 +121,11 @@ interface BatchRow {
   at: string;
   total: number;
   filed: number;
+  k1: number;
   reversed: number;
 }
 
-type LogAction = 'filed' | 'tax_flagged' | 'skipped' | 'failed';
+type LogAction = 'filed' | 'tax_flagged' | 'skipped' | 'failed' | 'k1_recipient';
 type LogStatus = 'success' | 'reversed' | 'error';
 
 interface LogRow {
@@ -356,8 +366,13 @@ function InboxTab(): JSX.Element {
         body: JSON.stringify(body),
       });
       // Client / year edits re-run the routing rules server-side; pull
-      // the recomputed destination + status.
-      if (body.matchedClient !== undefined || body.overrideYear !== undefined) {
+      // the recomputed destination + status. K-1 client picks need the
+      // reload for the joined recipient-client name.
+      if (
+        body.matchedClient !== undefined ||
+        body.overrideYear !== undefined ||
+        body.k1MatchedClient !== undefined
+      ) {
         void loadInbox();
       }
     } catch (err) {
@@ -446,6 +461,9 @@ function InboxTab(): JSX.Element {
 
   const flaggedCount = commitTargets.filter(
     (r) => r.reviewAction === 'flag_tax' || r.reviewAction === 'file_flag_tax',
+  ).length;
+  const k1Count = commitTargets.filter(
+    (r) => r.k1Status === 'confirmed' && r.k1MatchedClient,
   ).length;
   const folderCount = new Set(
     commitTargets.map((r) => r.suggestedPath ?? r.overrideFolder ?? '(client root)'),
@@ -766,6 +784,7 @@ function InboxTab(): JSX.Element {
           count={commitTargets.length}
           folders={folderCount}
           flagged={flaggedCount}
+          k1Count={k1Count}
           onCancel={() => setConfirmOpen(false)}
           onConfirm={() => void doCommit()}
         />
@@ -842,6 +861,9 @@ function InboxRowView({
               </div>
             )}
           </div>
+        )}
+        {row.k1RecipientName && (
+          <K1RecipientControls row={row} clientOptions={clientOptions} onPatch={onPatch} />
         )}
       </td>
 
@@ -942,18 +964,131 @@ function InboxRowView({
   );
 }
 
+// ── K-1 recipient verify / search / dismiss (0229) ───────────────────────
+//
+// Rendered under the primary client when the filename carries a
+// `K1_Package_` recipient. A confirmed recipient gets an additional copy
+// of the PDF in their own folder at commit; unverified/dismissed
+// suggestions are never copied.
+
+function K1RecipientControls({
+  row,
+  clientOptions,
+  onPatch,
+}: {
+  row: InboxRow;
+  clientOptions: Array<{ value: string; label: string }>;
+  onPatch: (body: Partial<InboxRow>) => void;
+}): JSX.Element {
+  const [searching, setSearching] = useState(false);
+  // The recipient copy can't target the entity itself.
+  const options = useMemo(
+    () => clientOptions.filter((o) => o.value !== row.matchedClient),
+    [clientOptions, row.matchedClient],
+  );
+  const muted: React.CSSProperties = { fontSize: 11, color: tokens.color.textMuted };
+  const actionRow: React.CSSProperties = {
+    display: 'flex',
+    gap: 4,
+    alignItems: 'center',
+    flexWrap: 'wrap',
+  };
+
+  return (
+    <div
+      style={{
+        marginTop: 6,
+        paddingTop: 6,
+        borderTop: `1px dashed ${tokens.color.border}`,
+        display: 'grid',
+        gap: 4,
+      }}
+    >
+      <div style={muted}>
+        K-1 recipient: <strong style={{ color: tokens.color.text }}>{row.k1RecipientName}</strong>
+      </div>
+
+      {searching ? (
+        <div style={{ ...actionRow, minWidth: 220 }}>
+          <div style={{ flex: 1, minWidth: 180 }}>
+            <Combobox
+              ariaLabel={`Pick K-1 recipient client for ${row.originalName}`}
+              clearable
+              value={row.k1MatchedClient ?? ''}
+              onChange={(v) => {
+                if (v) onPatch({ k1MatchedClient: v, k1Status: 'confirmed' });
+                setSearching(false);
+              }}
+              options={options}
+              placeholder="Pick recipient client…"
+            />
+          </div>
+          <Button size="sm" variant="ghost" onClick={() => setSearching(false)}>
+            Cancel
+          </Button>
+        </div>
+      ) : row.k1Status === 'confirmed' ? (
+        <div style={actionRow}>
+          <Pill tone="success">✓ {row.k1ClientName ?? 'recipient'}</Pill>
+          <Button size="sm" variant="ghost" onClick={() => setSearching(true)}>
+            Change
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'dismissed' })}>
+            Dismiss
+          </Button>
+        </div>
+      ) : row.k1Status === 'dismissed' ? (
+        <div style={actionRow}>
+          <span style={muted}>K-1 copy dismissed</span>
+          <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'suggested' })}>
+            Restore
+          </Button>
+        </div>
+      ) : (
+        <div style={actionRow}>
+          {row.k1MatchedClient ? (
+            <>
+              <span style={{ fontSize: 12 }}>{row.k1ClientName}</span>
+              {row.k1MatchScore != null && (
+                <Pill tone="warning">{Math.round(row.k1MatchScore * 100)}%</Pill>
+              )}
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => onPatch({ k1Status: 'confirmed' })}
+              >
+                Verify
+              </Button>
+            </>
+          ) : (
+            <span style={muted}>no match</span>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => setSearching(true)}>
+            Search
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => onPatch({ k1Status: 'dismissed' })}>
+            Dismiss
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Commit confirmation modal ────────────────────────────────────────────
 
 function CommitConfirmDialog({
   count,
   folders,
   flagged,
+  k1Count,
   onCancel,
   onConfirm,
 }: {
   count: number;
   folders: number;
   flagged: number;
+  k1Count: number;
   onCancel: () => void;
   onConfirm: () => void;
 }): JSX.Element {
@@ -982,6 +1117,12 @@ function CommitConfirmDialog({
                 <>
                   {' '}
                   (<strong>{flagged}</strong> flagged for tax processing)
+                </>
+              ) : null}
+              {k1Count > 0 ? (
+                <>
+                  {' '}
+                  (<strong>{k1Count}</strong> K-1 recipient cop{k1Count === 1 ? 'y' : 'ies'})
                 </>
               ) : null}
               ? Files are relocated in B2; this is undoable from History.
@@ -1660,6 +1801,23 @@ function RulesTab(): JSX.Element {
     }
   }
 
+  // 0229 — destination config for K-1 recipient copies.
+  async function patchK1Config(body: {
+    k1TargetPath?: string;
+    k1YearBehavior?: YearBehavior;
+  }): Promise<void> {
+    if (!selectedProfile) return;
+    try {
+      await api(`${BASE}/profiles/${selectedProfile.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      await loadProfiles();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'K-1 settings update failed');
+    }
+  }
+
   return (
     <Card title="Routing rules">
       {error && (
@@ -1725,6 +1883,53 @@ function RulesTab(): JSX.Element {
               + New profile
             </Button>
           </div>
+
+          {/* K-1 recipient copy destination (0229) */}
+          {selectedProfile && (
+            <div
+              style={{
+                display: 'flex',
+                gap: 8,
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                paddingBottom: 12,
+                borderBottom: `1px solid ${tokens.color.border}`,
+              }}
+            >
+              <span style={{ fontSize: 12, color: tokens.color.textMuted, fontWeight: 600 }}>
+                K-1 recipient copies
+              </span>
+              <input
+                type="text"
+                key={`k1-path-${selectedProfile.id}`}
+                aria-label="K-1 recipient target path"
+                defaultValue={selectedProfile.k1TargetPath}
+                placeholder="Income Tax"
+                onBlur={(e) => {
+                  const v = e.target.value.trim() || 'Income Tax';
+                  if (v !== selectedProfile.k1TargetPath) void patchK1Config({ k1TargetPath: v });
+                }}
+                style={{ ...controlStyle, width: 200 }}
+              />
+              <select
+                aria-label="K-1 recipient year behavior"
+                value={selectedProfile.k1YearBehavior}
+                onChange={(e) =>
+                  void patchK1Config({ k1YearBehavior: e.target.value as YearBehavior })
+                }
+                style={controlStyle}
+              >
+                {YEAR_BEHAVIOR_OPTIONS.map((y) => (
+                  <option key={y.value} value={y.value}>
+                    {y.label}
+                  </option>
+                ))}
+              </select>
+              <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                Where a verified K-1 recipient&apos;s copy is filed in their folder.
+              </span>
+            </div>
+          )}
 
           {/* Rules list */}
           {!selectedProfileId ? (
@@ -2313,6 +2518,7 @@ function HistoryTab(): JSX.Element {
                 <th style={th()}>When</th>
                 <th style={th('right')}>Total</th>
                 <th style={th('right')}>Filed</th>
+                <th style={th('right')}>K-1 copies</th>
                 <th style={th('right')}>Reversed</th>
                 <th style={th('right')}>Actions</th>
               </tr>
@@ -2337,6 +2543,7 @@ function HistoryTab(): JSX.Element {
                       <td style={td()}>{new Date(b.at).toLocaleString()}</td>
                       <td style={{ ...td(), textAlign: 'right' }}>{b.total}</td>
                       <td style={{ ...td(), textAlign: 'right' }}>{b.filed}</td>
+                      <td style={{ ...td(), textAlign: 'right' }}>{b.k1}</td>
                       <td style={{ ...td(), textAlign: 'right' }}>{b.reversed}</td>
                       <td style={{ ...td(), textAlign: 'right' }}>
                         <Button
@@ -2351,7 +2558,7 @@ function HistoryTab(): JSX.Element {
                     </tr>
                     {open && (
                       <tr>
-                        <td colSpan={6} style={{ padding: 0 }}>
+                        <td colSpan={7} style={{ padding: 0 }}>
                           <BatchDetail
                             rows={logs[b.batchId]}
                             onUndoLog={(logId) => void undoLog(b.batchId, logId)}
@@ -2375,6 +2582,14 @@ const LOG_STATUS_TONE: Record<LogStatus, 'success' | 'warning' | 'danger'> = {
   success: 'success',
   reversed: 'warning',
   error: 'danger',
+};
+
+const LOG_ACTION_LABELS: Record<LogAction, string> = {
+  filed: 'filed',
+  tax_flagged: 'tax flagged',
+  skipped: 'skipped',
+  failed: 'failed',
+  k1_recipient: 'K-1 recipient copy',
 };
 
 function BatchDetail({
@@ -2425,7 +2640,7 @@ function BatchDetail({
                     <div style={{ color: tokens.color.danger, fontSize: 11 }}>{r.error}</div>
                   )}
                 </td>
-                <td style={td()}>{r.action}</td>
+                <td style={td()}>{LOG_ACTION_LABELS[r.action] ?? r.action}</td>
                 <td style={td()}>
                   <Pill tone={LOG_STATUS_TONE[r.status]}>{r.status}</Pill>
                 </td>

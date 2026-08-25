@@ -19,7 +19,8 @@ import type { StorageClient } from '@vibe/storage';
 
 import { fileExistingObjectIntoClientFolder } from '../../../api/src/clients/file-existing';
 import { createTaxReturnFromFileCore } from '../../../api/src/tax-returns/intake-core';
-import { stripIdSegment } from '@vibe/core/filer';
+import { loadK1Config } from '../../../api/src/filer/scan';
+import { resolveYearSubfolder, stripIdSegment } from '@vibe/core/filer';
 
 const TAX_RETURN_SUBFOLDER = 'Tax Returns/';
 
@@ -61,11 +62,20 @@ async function runRoute(
     return;
   }
 
+  // 0229 — a staff-confirmed K-1 recipient gets an additional copy of
+  // the PDF into their own folder, in this same job, before the inbox
+  // source is deleted.
+  const needsK1 =
+    item.k1Status === 'confirmed' &&
+    item.k1MatchedClient != null &&
+    item.k1MatchedClient !== item.matchedClient;
+
   // Idempotency: a prior attempt may have copied + logged but not yet
-  // cleaned up. If a success log already exists for this source, just
-  // finish the delete + row removal.
-  const [priorLog] = await db
-    .select({ id: inboxRoutingLog.id, objectKeyTo: inboxRoutingLog.objectKeyTo })
+  // cleaned up. Success logs are discriminated by action so a logged
+  // primary copy doesn't suppress a still-pending K-1 recipient copy
+  // (and vice versa) on retry.
+  const priorLogs = await db
+    .select({ id: inboxRoutingLog.id, action: inboxRoutingLog.action })
     .from(inboxRoutingLog)
     .where(
       and(
@@ -74,9 +84,14 @@ async function runRoute(
         eq(inboxRoutingLog.objectKeyFrom, item.objectKey),
         eq(inboxRoutingLog.status, 'success'),
       ),
-    )
-    .limit(1);
-  if (priorLog) {
+    );
+  const priorPrimary = priorLogs.find((l) => l.action !== 'k1_recipient');
+  const priorK1 = priorLogs.find((l) => l.action === 'k1_recipient');
+  if (priorPrimary) {
+    // 'skipped' means the source was already gone — no K-1 copy possible.
+    if (needsK1 && !priorK1 && priorPrimary.action !== 'skipped') {
+      await routeK1Copy(db, storage, log, job, item);
+    }
     await storage.delete(item.objectKey).catch(() => undefined);
     await db.delete(inboxItems).where(eq(inboxItems.id, item.id));
     return;
@@ -163,6 +178,12 @@ async function runRoute(
     status: 'success',
   });
 
+  // K-1 recipient copy — after the primary log (so a crash here retries
+  // only this leg) and before the source delete (so the copy has a source).
+  if (needsK1) {
+    await routeK1Copy(db, storage, log, job, item);
+  }
+
   // Delete the inbox original, then drop the workqueue row.
   await storage
     .delete(item.objectKey)
@@ -173,6 +194,62 @@ async function runRoute(
       ),
     );
   await db.delete(inboxItems).where(eq(inboxItems.id, item.id));
+}
+
+/**
+ * 0229 — file the K-1 recipient's copy. Destination comes from the
+ * per-row override or the active profile's K-1 config. Throws on copy
+ * failure so BullMQ retries; the action-discriminated idempotency guard
+ * makes the retry re-run only this leg.
+ */
+async function routeK1Copy(
+  db: Database,
+  storage: StorageClient,
+  log: Logger,
+  job: FilerRouteJob,
+  item: typeof inboxItems.$inferSelect,
+): Promise<void> {
+  let subfolder = item.k1OverrideFolder;
+  if (!subfolder) {
+    const cfg = await loadK1Config(db, job.firmId);
+    const yearSub = resolveYearSubfolder(item.overrideYear ?? item.parsedYear, cfg.yearBehavior);
+    if (yearSub === null) {
+      // Year required but none parsed — file at the base path rather
+      // than losing the verified copy.
+      log.warn({ itemId: item.id }, 'filer: k1 copy has no year; filing at base path');
+      subfolder = cfg.targetPath;
+    } else {
+      subfolder = `${cfg.targetPath}${cfg.targetPath && !cfg.targetPath.endsWith('/') ? '/' : ''}${yearSub}`;
+    }
+  }
+
+  const filed = await fileExistingObjectIntoClientFolder(db, storage, {
+    firmId: job.firmId,
+    clientId: item.k1MatchedClient!,
+    actorId: job.actorId,
+    subfolderPath: subfolder,
+    originalFilename: stripIdSegment(item.originalName, item.parsedId),
+    sourceKey: item.objectKey,
+    sizeBytes: item.sizeBytes,
+    etag: item.etag,
+    source: 'filer',
+  });
+  if (!filed.ok) {
+    throw new Error(`filer k1 recipient copy failed: ${filed.code}`);
+  }
+
+  await db.insert(inboxRoutingLog).values({
+    batchId: job.batchId!,
+    firmId: job.firmId,
+    objectKeyFrom: item.objectKey,
+    objectKeyTo: filed.storageKey,
+    clientId: item.k1MatchedClient,
+    folderPath: subfolder,
+    action: 'k1_recipient',
+    routedFileId: filed.fileId,
+    userId: job.actorId,
+    status: 'success',
+  });
 }
 
 async function failLog(
@@ -206,6 +283,27 @@ async function runUndo(
     .where(and(eq(inboxRoutingLog.id, job.logId!), eq(inboxRoutingLog.firmId, job.firmId)))
     .limit(1);
   if (!row || row.status !== 'success' || !row.objectKeyTo) return;
+
+  // 0229 — undo of a K-1 recipient copy removes ONLY that copy. Source
+  // restoration and the inbox stub belong solely to the primary
+  // ('filed'/'tax_flagged') row's undo, so batch undo composes: the two
+  // legs touch disjoint keys and restore exactly one inbox object.
+  if (row.action === 'k1_recipient') {
+    try {
+      await storage.delete(row.objectKeyTo);
+    } catch (err) {
+      log.warn({ err, logId: row.id }, 'filer undo: k1 copy delete failed');
+      return;
+    }
+    if (row.routedFileId) {
+      await db.update(files).set({ deletedAt: new Date() }).where(eq(files.id, row.routedFileId));
+    }
+    await db
+      .update(inboxRoutingLog)
+      .set({ status: 'reversed' })
+      .where(eq(inboxRoutingLog.id, row.id));
+    return;
+  }
 
   // Restore the inbox original (copy routed → inbox key), then remove the
   // routed copy + soft-delete the files row.
