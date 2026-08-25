@@ -133,6 +133,12 @@ export function convertHeicOffThread(body: Buffer, quality = 0.8): Promise<Buffe
       );
     });
     worker.once('error', (err) => finish(() => reject(err)));
+    // A worker that dies without message/error (e.g. a WASM runtime
+    // calling process.exit) must settle immediately, not after the
+    // 60 s timeout (review finding).
+    worker.once('exit', (code) =>
+      finish(() => reject(new Error(`heic worker exited (${code}) without result`))),
+    );
   });
 }
 

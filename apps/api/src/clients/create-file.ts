@@ -39,21 +39,24 @@ export interface CreateFileArgs {
   /** Provenance recorded on the row + audit (e.g. 'generated', 'intake'). */
   source: string;
   /**
-   * 0230 — present when the caller already ran AI naming (intake-arrival
-   * labeling): the row is created with rename provenance and the
-   * auto-rename enqueue is skipped (it would otherwise call the model a
-   * second time).
+   * 0230 — present ONLY when originalFilename IS an already-applied AI
+   * name (intake-arrival label above threshold): the row carries rename
+   * provenance and the auto-rename enqueue is skipped. Anything less than
+   * an applied rename must NOT pass this — the file then gets the normal
+   * client-bound auto-rename pass instead.
    */
   aiRename?: {
     /** The pre-rename name (e.g. the decrypted intake filename). */
     originalUploadFilename: string;
-    /** true → originalFilename IS the AI-composed name. */
-    renamed: boolean;
-    /** Low-confidence path: stored for the ✦ suggestion pill, not applied. */
-    suggestedFilename?: string | null;
     confidence: number | null;
     model: string | null;
   };
+  /**
+   * 0230 — suppress the auto-rename enqueue WITHOUT rename provenance
+   * (e.g. intake page images whose content is covered by the assembled
+   * scan PDF's label). Decoupled from aiRename on review advice.
+   */
+  skipAutoRename?: boolean;
 }
 
 export type CreateFileResult =
@@ -116,18 +119,15 @@ export async function createFileInClientFolder(
       visibility,
       uploadedBy: args.actorId,
       pendingUpload: false,
-      // Same shape applyAiRename / recordSuggestionOnly produce, so the
-      // existing revert / apply-suggestion flows work unchanged.
+      // Same shape applyAiRename produces, so the existing revert flow
+      // works unchanged.
       ...(args.aiRename
         ? {
             originalUploadFilename: args.aiRename.originalUploadFilename,
             aiRenameAttemptedAt: now,
-            aiRenamedAt: args.aiRename.renamed ? now : null,
+            aiRenamedAt: now,
             aiRenameConfidence: args.aiRename.confidence,
             aiRenameModel: args.aiRename.model,
-            aiSuggestedFilename: args.aiRename.renamed
-              ? null
-              : (args.aiRename.suggestedFilename ?? null),
           }
         : {}),
     })
@@ -148,9 +148,9 @@ export async function createFileInClientFolder(
   }).catch(() => undefined);
 
   // 0223 — auto-rename on arrival (router mode + firm toggle; generated
-  // sources are filtered inside). Fire-and-forget. Skipped when the
-  // caller already ran AI naming (0230 intake labels).
-  if (!args.aiRename) {
+  // sources are filtered inside). Fire-and-forget. Skipped when the name
+  // is already an applied AI rename (0230) or the caller opted out.
+  if (!args.aiRename && !args.skipAutoRename) {
     void maybeEnqueueAutoRename(db, {
       firmId: args.firmId,
       fileId: row!.id,

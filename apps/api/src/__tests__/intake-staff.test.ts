@@ -397,10 +397,13 @@ describe('inbox + disposition', () => {
 
     const [filed] = await harness.db.select().from(files).where(eq(files.clientId, seed.clientId));
     expect(filed!.originalFilename).toBe('w2.pdf'); // original kept
+    // Below-threshold labels leave NO provenance: the file falls through
+    // to the client-bound 0223 auto-rename pass instead (review finding),
+    // which will apply or suggest with better context.
     expect(filed!.aiRenamedAt).toBeNull();
-    expect(filed!.aiSuggestedFilename).toBe('2024 W-2 - Acme - Test Client Co.pdf');
-    expect(filed!.originalUploadFilename).toBe('w2.pdf');
-    expect(filed!.aiRenameAttemptedAt).not.toBeNull();
+    expect(filed!.aiSuggestedFilename).toBeNull();
+    expect(filed!.originalUploadFilename).toBeNull();
+    expect(filed!.aiRenameAttemptedAt).toBeNull();
   });
 
   it('dispose keeps the original name when the firm toggle is off, even for labeled files', async () => {
@@ -447,7 +450,8 @@ describe('inbox + disposition', () => {
     expect(filed!.originalFilename).toBe('w2.pdf'); // not renamed to 'Test Client Co.pdf'
     expect(filed!.aiRenamedAt).toBeNull();
     expect(filed!.aiSuggestedFilename).toBeNull();
-    expect(filed!.aiRenameAttemptedAt).not.toBeNull(); // still suppresses re-labeling
+    // No provenance either — the file keeps its 0223 auto-rename pass.
+    expect(filed!.aiRenameAttemptedAt).toBeNull();
   });
 
   it('previews a file inline', async () => {

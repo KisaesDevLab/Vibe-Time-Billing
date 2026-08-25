@@ -44,6 +44,20 @@ export const DOC_TYPES = [
   'Receipt',
   'Invoice',
   'Handwritten-Note',
+  // Review additions — common accounting-firm documents the v1 list missed.
+  'W-9',
+  'Form-1040',
+  'Form-1120',
+  'Form-1120S',
+  'Form-1065',
+  'Form-941',
+  'Form-940',
+  'Financial-Statement',
+  'Profit-and-Loss',
+  'Balance-Sheet',
+  'Mortgage-Statement',
+  'Voided-Check',
+  'Trust-Document',
   'Other',
 ] as const;
 
@@ -66,6 +80,15 @@ export function normalizeDocType(raw: string | null | undefined): DocType | null
     if (canon(t) === target) return t;
   }
   return 'Other';
+}
+
+/**
+ * The doc_type value usable in a FILENAME: the literal catch-all 'Other'
+ * carries no information and would rename real documents to
+ * "2024 Other - …" — it stays in the stored label but never in a name.
+ */
+export function filenameDocType(dt: DocType | null): DocType | null {
+  return dt === 'Other' ? null : dt;
 }
 
 /**

@@ -108,13 +108,15 @@ export function IntakeInboxPage(): JSX.Element {
 
   // 0230 — while any file is still "AI labeling…", re-fetch the open
   // session every 5 s (without the blank-out openSession does) so labels
-  // appear as the API-side consumer finishes them. The alive flag drops a
-  // late response after the user switches sessions (a stale setDetail
-  // would make dispose target a different session than the one shown),
-  // and the tick cap bounds the decrypt-heavy endpoint if a row somehow
-  // stays 'pending' (labeling marks rows failed on its final attempt).
+  // appear as the API-side consumer finishes them. Depends on the BOOLEAN
+  // hasPending, not `detail` — otherwise every setDetail would recreate
+  // the interval and reset the tick cap (review finding). The alive flag
+  // drops a late response after the user switches sessions; the tick cap
+  // bounds the endpoint if a row somehow stays 'pending'; suggestions=0
+  // skips the firm-wide auto-match scans the poll doesn't need.
+  const hasPending = detail?.files.some((f) => f.aiLabelStatus === 'pending') ?? false;
   useEffect(() => {
-    if (!selected || !detail?.files.some((f) => f.aiLabelStatus === 'pending')) return;
+    if (!selected || !hasPending) return;
     let alive = true;
     let ticks = 0;
     const t = setInterval(() => {
@@ -122,9 +124,14 @@ export function IntakeInboxPage(): JSX.Element {
         clearInterval(t);
         return;
       }
-      void api<Detail>(`/api/staff/intake/sessions/${selected}`)
+      void api<Detail>(`/api/staff/intake/sessions/${selected}?suggestions=0`)
         .then((d) => {
-          if (alive) setDetail(d);
+          if (!alive) return;
+          setDetail((prev) =>
+            prev && prev.session.id === d.session.id
+              ? { ...d, suggestions: prev.suggestions }
+              : prev,
+          );
         })
         .catch(() => undefined);
     }, 5000);
@@ -132,7 +139,7 @@ export function IntakeInboxPage(): JSX.Element {
       alive = false;
       clearInterval(t);
     };
-  }, [selected, detail]);
+  }, [selected, hasPending]);
 
   useEffect(() => {
     if (!clientQuery.trim()) {

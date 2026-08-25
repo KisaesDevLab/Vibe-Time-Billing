@@ -158,6 +158,9 @@ async function makeReceivedSession(opts: { files?: number; status?: string } = {
         byteSize: 9,
         kind: 'upload',
         scanStatus: 'clean',
+        // The worker sets 'pending' alongside the enqueue (default is
+        // 'skipped' — a row only shows "AI labeling…" when a job exists).
+        aiLabelStatus: 'pending',
       })
       .returning({ id: intakeFiles.id });
     fileIds.push(f!.id);
@@ -306,6 +309,26 @@ describe('processIntakeAiLabelJob', () => {
     expect(row!.aiLabelStatus).toBe('failed');
   });
 
+  it('an exhausted AI budget is a one-shot skip, not a retry burn', async () => {
+    // Review finding: the pre-flight budget bailout must reach onError.
+    await harness.db
+      .update(firmSettings)
+      .set({ aiMonthlyBudgetCents: 0 })
+      .where(eq(firmSettings.firmId, seed.firmId));
+    const { sessionId, fileIds } = await makeReceivedSession();
+    const outcome = await processIntakeAiLabelJob(
+      deps(),
+      { sessionId, firmId: seed.firmId },
+      { attemptsMade: 0, maxAttempts: 3 }, // NOT the final attempt — must still skip
+    );
+    expect(outcome).toBe('skipped');
+    const [row] = await harness.db
+      .select()
+      .from(intakeFiles)
+      .where(eq(intakeFiles.id, fileIds[0]!));
+    expect(row!.aiLabelStatus).toBe('skipped');
+  });
+
   it("router's no_vision_provider code is a one-shot skip, not a retry burn", async () => {
     // The router SDK throws VibeAiError with the body's error.code; the
     // provider rethrow must preserve .code for onError to see it.
@@ -386,6 +409,7 @@ describe('processIntakeAiLabelJob', () => {
           byteSize: 9,
           kind,
           scanStatus: 'clean',
+          aiLabelStatus: 'pending',
         })
         .returning({ id: intakeFiles.id });
       storage.objects.set(key, Buffer.from('Form W-2 Wage and Tax Statement '.repeat(20)));

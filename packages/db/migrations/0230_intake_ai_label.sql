@@ -21,19 +21,15 @@ ALTER TABLE vibetb.intake_files ADD COLUMN ai_period text;
 ALTER TABLE vibetb.intake_files ADD COLUMN ai_doc_date text;
 ALTER TABLE vibetb.intake_files ADD COLUMN ai_suggested_name text;
 ALTER TABLE vibetb.intake_files ADD COLUMN ai_confidence real;
-ALTER TABLE vibetb.intake_files ADD COLUMN ai_label_status text NOT NULL DEFAULT 'pending';
+-- Default is 'skipped', NOT 'pending' (review finding): 'pending' means "a
+-- label job exists for this row" and is set by the worker in the same step
+-- that enqueues the job. With a 'pending' default, every path where the
+-- enqueue never lands (old worker beside a new DB, Redis down at enqueue,
+-- consumer disabled) would strand rows on a permanent "AI labeling…"
+-- badge; with 'skipped', a missed enqueue simply shows no label. This also
+-- makes a backfill unnecessary — pre-existing rows are 'skipped'.
+ALTER TABLE vibetb.intake_files ADD COLUMN ai_label_status text NOT NULL DEFAULT 'skipped';
 ALTER TABLE vibetb.intake_files ADD COLUMN ai_label_model text;
 ALTER TABLE vibetb.intake_files
   ADD CONSTRAINT intake_files_ai_label_status_ck
   CHECK (ai_label_status IN ('pending', 'labeled', 'failed', 'skipped'));
-
--- Backfill: only sessions the pipeline will never enqueue a label job for
--- again are terminal. 'received' sessions already passed the enqueue point
--- (the worker enqueues on the pending_scan/processing -> received flip), so
--- leaving them 'pending' would show "AI labeling…" forever; mark them
--- skipped too. Mid-pipeline sessions ('pending_scan'/'processing') keep
--- 'pending' — their in-flight intake-process run will flip them to
--- received and enqueue, labeling every clean row.
-UPDATE vibetb.intake_files f SET ai_label_status = 'skipped'
-  FROM vibetb.intake_sessions s
-  WHERE s.id = f.session_id AND s.status IN ('received', 'disposed', 'rejected');

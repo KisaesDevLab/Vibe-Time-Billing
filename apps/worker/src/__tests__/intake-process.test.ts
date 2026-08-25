@@ -217,6 +217,13 @@ describe('runIntakeProcess', () => {
     );
     expect(received.outcome).toBe('received');
     expect(calls).toEqual([{ sessionId, firmId }]);
+    // The clean rows were flipped to 'pending' alongside the enqueue
+    // ('pending' means "a label job exists"; the column defaults 'skipped').
+    const flipped = await harness.db
+      .select({ aiLabelStatus: intakeFiles.aiLabelStatus })
+      .from(intakeFiles)
+      .where(eq(intakeFiles.sessionId, sessionId));
+    expect(flipped.every((f) => f.aiLabelStatus === 'pending')).toBe(true);
 
     const { sessionId: s2, firmId: firm2 } = await seedSession();
     await addUpload(s2, 'application/pdf', Buffer.from('%PDF evil'));
@@ -250,6 +257,12 @@ describe('runIntakeProcess', () => {
       },
     );
     expect(survived.outcome).toBe('received'); // enqueue failure is non-fatal
+    // …and the pending flip was reverted, so no permanent "AI labeling…".
+    const reverted = await harness.db
+      .select({ aiLabelStatus: intakeFiles.aiLabelStatus })
+      .from(intakeFiles)
+      .where(eq(intakeFiles.sessionId, s3));
+    expect(reverted.every((f) => f.aiLabelStatus === 'skipped')).toBe(true);
   });
 
   it('non-image clean files do not produce an assembled PDF', async () => {

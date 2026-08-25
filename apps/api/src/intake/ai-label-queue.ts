@@ -16,26 +16,22 @@
 import { Worker, type Job } from 'bullmq';
 import IORedis from 'ioredis';
 import { and, eq, inArray } from 'drizzle-orm';
-import type { z } from 'zod';
 
 import { intakeFiles, intakeSessions } from '@vibe/db/schema';
 import { composeFilename } from '@vibe/core/filer';
-import { normalizeDocType, stripPiiFields } from '@vibe/core/ai';
 
 import { getAiRuntime } from '../ai/ai-runtime';
-import { runAiCompletion } from '../ai/routes';
 import { getApplianceLockState } from '../crypto/boot';
 import { logger } from '../logger';
 import {
-  FILE_NAMING_SCHEMA,
-  FileNamingOutputSchema,
-  NAMING_SYSTEM_PROMPT,
   buildNamingPrompt,
   getNamingStorage,
   loadNamingSettings,
+  runNamingModel,
   type AiNamingDeps,
 } from '../files/ai-naming';
 import { NAMING_MAX_BYTES, extractForNaming } from '../files/extract-for-naming';
+import { SCAN_DISPLAY_NAME, isEmbeddableImage } from './constants';
 import { unwrapIntakeRecordKey, decField } from './crypto';
 
 export const INTAKE_AI_LABEL_QUEUE = 'intake-ai-label';
@@ -44,12 +40,6 @@ export interface IntakeAiLabelJob {
   sessionId: string;
   firmId: string;
 }
-
-/** Name shown for the assembled scan PDF (mirrors staff-routes). */
-const SCAN_DISPLAY_NAME = 'Scanned documents.pdf';
-
-/** Image kinds intake-process embeds into the assembled scan PDF (its EMBEDDABLE set). */
-const ASSEMBLED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png']);
 
 async function markPending(
   deps: AiNamingDeps,
@@ -69,8 +59,26 @@ export async function processIntakeAiLabelJob(
   jobMeta?: { attemptsMade: number; maxAttempts: number },
 ): Promise<'labeled' | 'partial' | 'skipped' | 'failed'> {
   if (!deps.db) return 'skipped';
-  const db = deps.db;
   const finalAttempt = jobMeta ? jobMeta.attemptsMade + 1 >= jobMeta.maxAttempts : true;
+  try {
+    return await labelSession(deps, job, finalAttempt);
+  } catch (err) {
+    // Deliberate transient throws retry until the final attempt; an
+    // UNEXPECTED throw must not strand rows on 'pending' either (review
+    // finding — e.g. pickProvider throwing on missing router creds).
+    if (!finalAttempt) throw err;
+    logger.warn({ err, ...job }, 'intake-ai-label: unexpected failure on final attempt');
+    await markPending(deps, job.sessionId, 'failed').catch(() => undefined);
+    return 'failed';
+  }
+}
+
+async function labelSession(
+  deps: AiNamingDeps,
+  job: IntakeAiLabelJob,
+  finalAttempt: boolean,
+): Promise<'labeled' | 'partial' | 'skipped' | 'failed'> {
+  const db = deps.db!;
 
   // Transient-or-fail helper: retry while attempts remain, else mark the
   // rows failed so the UI never shows "labeling…" forever. Returns
@@ -121,7 +129,16 @@ export async function processIntakeAiLabelJob(
   }
 
   const allClean = await db
-    .select()
+    .select({
+      id: intakeFiles.id,
+      kind: intakeFiles.kind,
+      mimeType: intakeFiles.mimeType,
+      byteSize: intakeFiles.byteSize,
+      objectKey: intakeFiles.objectKey,
+      createdAt: intakeFiles.createdAt,
+      aiLabelStatus: intakeFiles.aiLabelStatus,
+      originalFilenameEnc: intakeFiles.originalFilenameEnc,
+    })
     .from(intakeFiles)
     .where(and(eq(intakeFiles.sessionId, job.sessionId), eq(intakeFiles.scanStatus, 'clean')));
   let rows = allClean.filter((f) => f.aiLabelStatus === 'pending');
@@ -134,9 +151,9 @@ export async function processIntakeAiLabelJob(
   // are still labeled individually.
   const hasAssembledScan = allClean.some((f) => f.kind === 'scan');
   if (hasAssembledScan) {
-    const embedded = rows.filter(
-      (f) => f.kind === 'upload' && ASSEMBLED_IMAGE_MIMES.has((f.mimeType ?? '').toLowerCase()),
-    );
+    const isEmbedded = (f: (typeof rows)[number]): boolean =>
+      f.kind === 'upload' && isEmbeddableImage(f.mimeType);
+    const embedded = rows.filter(isEmbedded);
     if (embedded.length > 0) {
       await db
         .update(intakeFiles)
@@ -147,7 +164,7 @@ export async function processIntakeAiLabelJob(
             embedded.map((f) => f.id),
           ),
         );
-      rows = rows.filter((f) => !embedded.some((e) => e.id === f.id));
+      rows = rows.filter((f) => !isEmbedded(f));
     }
     if (rows.length === 0) return 'skipped';
   }
@@ -155,8 +172,12 @@ export async function processIntakeAiLabelJob(
   let labeled = 0;
   let failed = 0;
   for (const f of rows) {
+    // The same fallback names the dispose handler uses — the {original}
+    // slot and the composed preview must match the eventually-filed name.
     const filename =
-      f.kind === 'scan' ? SCAN_DISPLAY_NAME : (decField(dek, f.originalFilenameEnc) ?? 'upload');
+      f.kind === 'scan'
+        ? SCAN_DISPLAY_NAME
+        : (decField(dek, f.originalFilenameEnc) ?? `intake-${f.id}`);
 
     // Oversize bodies degrade to metadata-only anyway — don't download them.
     let extracted;
@@ -187,87 +208,58 @@ export async function processIntakeAiLabelJob(
       hasImages: extracted.images.length > 0,
     });
 
-    let model: string | null = null;
-    let errorCode: string | undefined;
-    const raw = await runAiCompletion(deps, {
+    const result = await runNamingModel(deps, {
       firmId: job.firmId,
-      feature: 'file-naming',
-      systemPrompt: NAMING_SYSTEM_PROMPT,
       userPrompt,
-      maxTokens: 300,
       attachments: extracted.images,
-      jsonSchema: { name: 'file_naming', schema: FILE_NAMING_SCHEMA, strict: true },
-      onResult: (r) => {
-        model = r.model ?? null;
-      },
-      onError: (e) => {
-        errorCode = e.code;
-      },
     });
-    if (raw == null) {
-      // No vision-capable provider is a router-configuration state, not a
-      // transient fault — skip the whole session, don't retry.
-      if (errorCode === 'no_vision_provider') {
+    if (!result.ok) {
+      // Firm-configuration states hold for the whole session — skip it
+      // rather than burning retries (no vision provider, budget spent).
+      if (result.reason === 'no_vision_provider' || result.reason === 'ai_budget_exhausted') {
         await markPending(deps, job.sessionId, 'skipped');
         return 'skipped';
       }
-      return transient('ai_unavailable');
+      if (result.reason === 'invalid_output') {
+        await db
+          .update(intakeFiles)
+          .set({ aiLabelStatus: 'failed' })
+          .where(eq(intakeFiles.id, f.id));
+        failed += 1;
+        continue;
+      }
+      return transient(result.reason);
     }
-
-    let parsed: z.infer<typeof FileNamingOutputSchema>;
-    try {
-      const jsonStart = raw.indexOf('{');
-      const jsonEnd = raw.lastIndexOf('}');
-      parsed = FileNamingOutputSchema.parse(
-        JSON.parse(jsonStart >= 0 && jsonEnd > jsonStart ? raw.slice(jsonStart, jsonEnd + 1) : raw),
-      );
-    } catch (err) {
-      logger.warn({ err, fileId: f.id }, 'intake-ai-label: model output did not match schema');
-      await db.update(intakeFiles).set({ aiLabelStatus: 'failed' }).where(eq(intakeFiles.id, f.id));
-      failed += 1;
-      continue;
-    }
-
-    const fields = stripPiiFields({
-      doc_type: normalizeDocType(parsed.doc_type),
-      issuer: parsed.issuer,
-      year: parsed.year,
-      period: parsed.period,
-      date: parsed.date,
-    });
     // A label with nothing informative would rebuild to just the client
     // name at dispose — record it as failed, not labeled.
-    if (
-      fields.doc_type == null &&
-      fields.year == null &&
-      fields.issuer == null &&
-      fields.period == null &&
-      fields.date == null
-    ) {
+    if (!result.informative) {
       await db.update(intakeFiles).set({ aiLabelStatus: 'failed' }).where(eq(intakeFiles.id, f.id));
       failed += 1;
       continue;
     }
+
     // No bound client yet — the {client}/{client_id} slots collapse; the
     // dispose handler recomposes with the real client once known.
     const suggested = composeFilename(
       settings.pattern,
-      { ...fields, client: '', client_id: null, original: '' },
+      { ...result.fields, client: '', client_id: null, original: '' },
       filename,
     );
 
     await db
       .update(intakeFiles)
       .set({
-        aiDocType: fields.doc_type,
-        aiTaxYear: fields.year != null ? Number(fields.year) : null,
-        aiIssuer: fields.issuer,
-        aiPeriod: fields.period,
-        aiDocDate: fields.date,
+        // rawDocType keeps 'Other' for the label chip even though it is
+        // excluded from composed filenames.
+        aiDocType: result.rawDocType,
+        aiTaxYear: result.fields.year != null ? Number(result.fields.year) : null,
+        aiIssuer: result.fields.issuer,
+        aiPeriod: result.fields.period,
+        aiDocDate: result.fields.date,
         aiSuggestedName: suggested,
-        aiConfidence: parsed.confidence,
+        aiConfidence: result.confidence,
         aiLabelStatus: 'labeled',
-        aiLabelModel: model,
+        aiLabelModel: result.model,
       })
       .where(eq(intakeFiles.id, f.id));
     labeled += 1;

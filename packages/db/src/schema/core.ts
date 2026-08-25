@@ -5891,7 +5891,9 @@ export const intakeFiles = pgTable(
     aiDocDate: text('ai_doc_date'),
     aiSuggestedName: text('ai_suggested_name'),
     aiConfidence: real('ai_confidence'),
-    aiLabelStatus: text('ai_label_status').notNull().default('pending'),
+    // 'pending' means "a label job exists" — set by the worker alongside
+    // the enqueue; the default is the no-job state (0230 review).
+    aiLabelStatus: text('ai_label_status').notNull().default('skipped'),
     aiLabelModel: text('ai_label_model'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

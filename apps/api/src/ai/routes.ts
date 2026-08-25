@@ -1403,10 +1403,29 @@ export async function runAiCompletion(
     onError?: (e: { code?: string; message: string }) => void;
   },
 ): Promise<string | null> {
-  const provider = await pickProvider(deps, args.feature, args.firmId);
-  if (!provider) return null;
+  // Pre-flight exits also report through onError (review finding): a
+  // caller must be able to tell these PERMANENT states apart from a
+  // transient fault, or it burns retries on an exhausted budget.
+  let provider: AiProvider | null = null;
+  try {
+    provider = await pickProvider(deps, args.feature, args.firmId);
+  } catch (err) {
+    // Router mode with missing/invalid creds throws — surface, don't leak.
+    args.onError?.({
+      code: 'no_ai_provider',
+      message: err instanceof Error ? err.message : 'unknown',
+    });
+    return null;
+  }
+  if (!provider) {
+    args.onError?.({ code: 'no_ai_provider', message: 'no AI provider available' });
+    return null;
+  }
   const budget = await loadBudget(deps, args.firmId, deps.now?.() ?? new Date());
-  if (budget.kind === 'exhausted') return null;
+  if (budget.kind === 'exhausted') {
+    args.onError?.({ code: 'ai_budget_exhausted', message: 'monthly AI budget exhausted' });
+    return null;
+  }
   const started = Date.now();
   try {
     const result = await provider.complete({
