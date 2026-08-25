@@ -108,15 +108,30 @@ export function IntakeInboxPage(): JSX.Element {
 
   // 0230 — while any file is still "AI labeling…", re-fetch the open
   // session every 5 s (without the blank-out openSession does) so labels
-  // appear as the API-side consumer finishes them.
+  // appear as the API-side consumer finishes them. The alive flag drops a
+  // late response after the user switches sessions (a stale setDetail
+  // would make dispose target a different session than the one shown),
+  // and the tick cap bounds the decrypt-heavy endpoint if a row somehow
+  // stays 'pending' (labeling marks rows failed on its final attempt).
   useEffect(() => {
     if (!selected || !detail?.files.some((f) => f.aiLabelStatus === 'pending')) return;
+    let alive = true;
+    let ticks = 0;
     const t = setInterval(() => {
+      if (++ticks > 60) {
+        clearInterval(t);
+        return;
+      }
       void api<Detail>(`/api/staff/intake/sessions/${selected}`)
-        .then((d) => setDetail(d))
+        .then((d) => {
+          if (alive) setDetail(d);
+        })
         .catch(() => undefined);
     }, 5000);
-    return () => clearInterval(t);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
   }, [selected, detail]);
 
   useEffect(() => {

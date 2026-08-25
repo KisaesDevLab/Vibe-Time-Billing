@@ -13,6 +13,7 @@
 
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import { Worker } from 'node:worker_threads';
 
 import type { AiAttachment } from '@vibe/core/ai';
 import type { PDFDocumentProxy, getDocument as GetDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
@@ -88,6 +89,53 @@ function toUint8(body: Buffer | Uint8Array): Uint8Array {
     : body;
 }
 
+// heic-convert's WASM decode + JS JPEG encode run synchronously and take
+// seconds for a multi-MP phone photo — enough to stall every request in
+// this process. An ephemeral worker thread keeps the event loop free; the
+// spawn cost (~ms) is noise next to the conversion itself. The worker
+// resolves heic-convert relative to THIS module's URL (passed as
+// workerData) so it works from both tsx (src/) and compiled (dist/) runs.
+const HEIC_WORKER_SRC = `
+const { parentPort, workerData } = require('node:worker_threads');
+const { createRequire } = require('node:module');
+const req = createRequire(workerData.baseUrl);
+const convert = req('heic-convert');
+convert({ buffer: workerData.buf, format: 'JPEG', quality: workerData.quality })
+  .then((out) => parentPort.postMessage({ ok: true, out }))
+  .catch((err) => parentPort.postMessage({ ok: false, message: String((err && err.message) || err) }));
+`;
+
+const HEIC_CONVERT_TIMEOUT_MS = 60_000;
+
+export function convertHeicOffThread(body: Buffer, quality = 0.8): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(HEIC_WORKER_SRC, {
+      eval: true,
+      workerData: { buf: toUint8(body), quality, baseUrl: import.meta.url },
+    });
+    let settled = false;
+    const finish = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      void worker.terminate();
+      fn();
+    };
+    const timer = setTimeout(
+      () => finish(() => reject(new Error('heic conversion timed out'))),
+      HEIC_CONVERT_TIMEOUT_MS,
+    );
+    worker.once('message', (msg: { ok: boolean; out?: Uint8Array; message?: string }) => {
+      finish(() =>
+        msg.ok && msg.out
+          ? resolve(Buffer.from(msg.out))
+          : reject(new Error(msg.message ?? 'heic conversion failed')),
+      );
+    });
+    worker.once('error', (err) => finish(() => reject(err)));
+  });
+}
+
 export async function extractForNaming(
   body: Buffer,
   mimeType: string | null | undefined,
@@ -100,9 +148,7 @@ export async function extractForNaming(
   // HEIC/HEIF (iPhone photos) → JPEG so the vision provider can read it.
   if (looksLikeHeic(body, mime)) {
     try {
-      const { default: heicConvert } = await import('heic-convert');
-      const jpeg = await heicConvert({ buffer: toUint8(body), format: 'JPEG', quality: 0.8 });
-      const converted = Buffer.from(jpeg);
+      const converted = await convertHeicOffThread(body);
       if (converted.byteLength > NAMING_MAX_ATTACH_BYTES) {
         return { images: [], strategy: 'metadata' };
       }

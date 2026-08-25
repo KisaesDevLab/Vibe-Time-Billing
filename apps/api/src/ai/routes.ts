@@ -1432,10 +1432,16 @@ export async function runAiCompletion(
     });
     return result.text;
   } catch (err) {
+    // Null-safe probe: a provider rejecting with null/undefined must not
+    // turn this never-throws error path into a TypeError.
+    const errCode =
+      typeof err === 'object' &&
+      err !== null &&
+      typeof (err as { code?: unknown }).code === 'string'
+        ? (err as { code: string }).code
+        : undefined;
     args.onError?.({
-      ...(typeof (err as { code?: unknown }).code === 'string'
-        ? { code: (err as { code: string }).code }
-        : {}),
+      ...(errCode ? { code: errCode } : {}),
       message: err instanceof Error ? err.message : 'unknown',
     });
     await logAiRequest(deps, {

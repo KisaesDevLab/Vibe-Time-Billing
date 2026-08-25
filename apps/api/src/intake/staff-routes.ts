@@ -712,7 +712,12 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
 
         let finalName = filename;
         let aiRename: CreateFileArgs['aiRename'];
-        if (f.aiLabelStatus === 'labeled' && namingSettings && labelClient) {
+        // The rename honors the LIVE firm toggle (a firm that turned
+        // auto-rename off after labeling keeps original names) and
+        // requires at least one informative field — a label of all-nulls
+        // would compose to just the client name, destroying the original.
+        if (f.aiLabelStatus === 'labeled' && namingSettings?.autoRenameUploads && labelClient) {
+          const informative = f.aiDocType != null || f.aiTaxYear != null || f.aiIssuer != null;
           const rebuilt = composeFilename(
             namingSettings.pattern,
             {
@@ -728,6 +733,7 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
             filename,
           );
           const rename =
+            informative &&
             f.aiConfidence != null &&
             f.aiConfidence >= namingSettings.minConfidence &&
             rebuilt !== filename;
@@ -735,7 +741,8 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           aiRename = {
             originalUploadFilename: filename,
             renamed: rename,
-            suggestedFilename: rename ? null : rebuilt !== filename ? rebuilt : null,
+            suggestedFilename:
+              rename || !informative ? null : rebuilt !== filename ? rebuilt : null,
             confidence: f.aiConfidence,
             model: f.aiLabelModel,
           };

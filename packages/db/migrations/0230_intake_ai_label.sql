@@ -27,7 +27,13 @@ ALTER TABLE vibetb.intake_files
   ADD CONSTRAINT intake_files_ai_label_status_ck
   CHECK (ai_label_status IN ('pending', 'labeled', 'failed', 'skipped'));
 
--- Historical rows (sessions already disposed/rejected) never get labeled.
+-- Backfill: only sessions the pipeline will never enqueue a label job for
+-- again are terminal. 'received' sessions already passed the enqueue point
+-- (the worker enqueues on the pending_scan/processing -> received flip), so
+-- leaving them 'pending' would show "AI labeling…" forever; mark them
+-- skipped too. Mid-pipeline sessions ('pending_scan'/'processing') keep
+-- 'pending' — their in-flight intake-process run will flip them to
+-- received and enqueue, labeling every clean row.
 UPDATE vibetb.intake_files f SET ai_label_status = 'skipped'
   FROM vibetb.intake_sessions s
-  WHERE s.id = f.session_id AND s.status <> 'received';
+  WHERE s.id = f.session_id AND s.status IN ('received', 'disposed', 'rejected');

@@ -167,7 +167,12 @@ export function createVibeRouterProvider(opts: VibeRouterProviderOptions): AiPro
         };
       } catch (err) {
         if (err instanceof VibeAiError) {
-          throw new Error(`Vibe AI Router: ${err.message} (${err.code})`);
+          // Preserve the machine-readable code on the rethrow — callers
+          // (runAiCompletion's onError) distinguish structured skips like
+          // 'no_vision_provider' from transient faults by it.
+          throw Object.assign(new Error(`Vibe AI Router: ${err.message} (${err.code})`), {
+            code: err.code,
+          });
         }
         throw new Error(
           `Vibe AI Router unreachable: ${err instanceof Error ? err.message : String(err)}. ` +

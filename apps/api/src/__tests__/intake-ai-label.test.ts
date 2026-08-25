@@ -298,11 +298,114 @@ describe('processIntakeAiLabelJob', () => {
       { sessionId, firmId: seed.firmId },
       { attemptsMade: 2, maxAttempts: 3 },
     );
-    expect(outcome).toBe('skipped');
+    expect(outcome).toBe('failed'); // total failure is not a no-op 'skipped'
     const [row] = await harness.db
       .select()
       .from(intakeFiles)
       .where(eq(intakeFiles.id, fileIds[0]!));
     expect(row!.aiLabelStatus).toBe('failed');
+  });
+
+  it("router's no_vision_provider code is a one-shot skip, not a retry burn", async () => {
+    // The router SDK throws VibeAiError with the body's error.code; the
+    // provider rethrow must preserve .code for onError to see it.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              error: {
+                message: 'no vision-capable model is configured',
+                type: 'router_error',
+                code: 'no_vision_provider',
+              },
+            }),
+            { status: 409, headers: { 'content-type': 'application/json' } },
+          ),
+      ),
+    );
+    const { sessionId, fileIds } = await makeReceivedSession();
+    const outcome = await processIntakeAiLabelJob(
+      deps(),
+      { sessionId, firmId: seed.firmId },
+      { attemptsMade: 0, maxAttempts: 3 }, // NOT the final attempt — must still skip
+    );
+    expect(outcome).toBe('skipped');
+    const [row] = await harness.db
+      .select()
+      .from(intakeFiles)
+      .where(eq(intakeFiles.id, fileIds[0]!));
+    expect(row!.aiLabelStatus).toBe('skipped');
+  });
+
+  it('an all-null label is failed, never stored as an empty suggestion', async () => {
+    fakeRouter(() =>
+      JSON.stringify({
+        doc_type: null,
+        issuer: null,
+        year: null,
+        period: null,
+        date: null,
+        confidence: 0.95,
+        summary: '',
+      }),
+    );
+    const { sessionId, fileIds } = await makeReceivedSession();
+    const outcome = await processIntakeAiLabelJob(deps(), { sessionId, firmId: seed.firmId });
+    expect(outcome).toBe('failed');
+    const [row] = await harness.db
+      .select()
+      .from(intakeFiles)
+      .where(eq(intakeFiles.id, fileIds[0]!));
+    expect(row!.aiLabelStatus).toBe('failed');
+    expect(row!.aiSuggestedName).toBeNull();
+  });
+
+  it('page images embedded in an assembled scan are skipped — only the PDF is labeled', async () => {
+    const { dek, wrappedDek } = newIntakeRecordKey(harness.db, seed.firmId);
+    const [s] = await harness.db
+      .insert(intakeSessions)
+      .values({
+        firmId: seed.firmId,
+        targetStaffId: seed.appUserId,
+        wrappedDek: Buffer.from(wrappedDek),
+        status: 'received',
+      })
+      .returning({ id: intakeSessions.id });
+    const sessionId = s!.id;
+    const mk = async (kind: string, mime: string, name: string): Promise<string> => {
+      const key = `intake/quarantine/${sessionId}/${name}`;
+      const [f] = await harness.db
+        .insert(intakeFiles)
+        .values({
+          sessionId,
+          objectKey: key,
+          originalFilenameEnc: encField(dek, name),
+          mimeType: mime,
+          byteSize: 9,
+          kind,
+          scanStatus: 'clean',
+        })
+        .returning({ id: intakeFiles.id });
+      storage.objects.set(key, Buffer.from('Form W-2 Wage and Tax Statement '.repeat(20)));
+      return f!.id;
+    };
+    const img1 = await mk('upload', 'image/jpeg', 'page1.jpg');
+    const img2 = await mk('upload', 'image/png', 'page2.png');
+    const pdfUpload = await mk('upload', 'application/pdf', 'w9.pdf');
+    const scan = await mk('scan', 'application/pdf', 'assembled.pdf');
+
+    const outcome = await processIntakeAiLabelJob(deps(), { sessionId, firmId: seed.firmId });
+    expect(outcome).toBe('labeled');
+    const byId = new Map(
+      (await harness.db.select().from(intakeFiles).where(eq(intakeFiles.sessionId, sessionId))).map(
+        (r) => [r.id, r],
+      ),
+    );
+    expect(byId.get(img1)!.aiLabelStatus).toBe('skipped');
+    expect(byId.get(img2)!.aiLabelStatus).toBe('skipped');
+    expect(byId.get(pdfUpload)!.aiLabelStatus).toBe('labeled');
+    expect(byId.get(scan)!.aiLabelStatus).toBe('labeled');
   });
 });

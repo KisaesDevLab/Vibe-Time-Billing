@@ -15,7 +15,7 @@
 
 import { Worker, type Job } from 'bullmq';
 import IORedis from 'ioredis';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import type { z } from 'zod';
 
 import { intakeFiles, intakeSessions } from '@vibe/db/schema';
@@ -35,7 +35,7 @@ import {
   loadNamingSettings,
   type AiNamingDeps,
 } from '../files/ai-naming';
-import { extractForNaming } from '../files/extract-for-naming';
+import { NAMING_MAX_BYTES, extractForNaming } from '../files/extract-for-naming';
 import { unwrapIntakeRecordKey, decField } from './crypto';
 
 export const INTAKE_AI_LABEL_QUEUE = 'intake-ai-label';
@@ -47,6 +47,9 @@ export interface IntakeAiLabelJob {
 
 /** Name shown for the assembled scan PDF (mirrors staff-routes). */
 const SCAN_DISPLAY_NAME = 'Scanned documents.pdf';
+
+/** Image kinds intake-process embeds into the assembled scan PDF (its EMBEDDABLE set). */
+const ASSEMBLED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png']);
 
 async function markPending(
   deps: AiNamingDeps,
@@ -64,18 +67,20 @@ export async function processIntakeAiLabelJob(
   deps: AiNamingDeps,
   job: IntakeAiLabelJob,
   jobMeta?: { attemptsMade: number; maxAttempts: number },
-): Promise<'labeled' | 'partial' | 'skipped'> {
+): Promise<'labeled' | 'partial' | 'skipped' | 'failed'> {
   if (!deps.db) return 'skipped';
   const db = deps.db;
   const finalAttempt = jobMeta ? jobMeta.attemptsMade + 1 >= jobMeta.maxAttempts : true;
 
   // Transient-or-fail helper: retry while attempts remain, else mark the
-  // rows failed so the UI never shows "labeling…" forever.
-  const transient = async (reason: string): Promise<'skipped'> => {
+  // rows failed so the UI never shows "labeling…" forever. Returns
+  // 'failed' (not 'skipped') so the operator log distinguishes total
+  // failure from a deliberate no-op.
+  const transient = async (reason: string): Promise<'failed'> => {
     if (!finalAttempt) throw new Error(`intake-ai-label transient: ${reason}`);
     logger.warn({ ...job, reason }, 'intake-ai-label: giving up after final attempt');
     await markPending(deps, job.sessionId, 'failed');
-    return 'skipped';
+    return 'failed';
   };
 
   // Permanent gates → skipped.
@@ -115,17 +120,37 @@ export async function processIntakeAiLabelJob(
     return transient('key_unavailable');
   }
 
-  const rows = await db
+  const allClean = await db
     .select()
     .from(intakeFiles)
-    .where(
-      and(
-        eq(intakeFiles.sessionId, job.sessionId),
-        eq(intakeFiles.scanStatus, 'clean'),
-        eq(intakeFiles.aiLabelStatus, 'pending'),
-      ),
-    );
+    .where(and(eq(intakeFiles.sessionId, job.sessionId), eq(intakeFiles.scanStatus, 'clean')));
+  let rows = allClean.filter((f) => f.aiLabelStatus === 'pending');
   if (rows.length === 0) return 'skipped';
+
+  // The assembled scan PDF embeds the session's JPG/PNG page images —
+  // labeling each page AND the PDF built from those pages is N+1 model
+  // calls on the same content. When a scan row exists, skip the embedded
+  // image kinds; other uploads (PDFs, HEIC/TIFF that were not assembled)
+  // are still labeled individually.
+  const hasAssembledScan = allClean.some((f) => f.kind === 'scan');
+  if (hasAssembledScan) {
+    const embedded = rows.filter(
+      (f) => f.kind === 'upload' && ASSEMBLED_IMAGE_MIMES.has((f.mimeType ?? '').toLowerCase()),
+    );
+    if (embedded.length > 0) {
+      await db
+        .update(intakeFiles)
+        .set({ aiLabelStatus: 'skipped' })
+        .where(
+          inArray(
+            intakeFiles.id,
+            embedded.map((f) => f.id),
+          ),
+        );
+      rows = rows.filter((f) => !embedded.some((e) => e.id === f.id));
+    }
+    if (rows.length === 0) return 'skipped';
+  }
 
   let labeled = 0;
   let failed = 0;
@@ -133,15 +158,20 @@ export async function processIntakeAiLabelJob(
     const filename =
       f.kind === 'scan' ? SCAN_DISPLAY_NAME : (decField(dek, f.originalFilenameEnc) ?? 'upload');
 
+    // Oversize bodies degrade to metadata-only anyway — don't download them.
     let extracted;
-    try {
-      const { body } = await storage.get(f.objectKey);
-      const chunks: Buffer[] = [];
-      for await (const c of body) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
-      extracted = await extractForNaming(Buffer.concat(chunks), f.mimeType);
-    } catch (err) {
-      logger.warn({ err, fileId: f.id }, 'intake-ai-label: could not read object');
-      return transient('storage_unavailable');
+    if (Number(f.byteSize) > NAMING_MAX_BYTES) {
+      extracted = { images: [], strategy: 'metadata' as const, text: undefined };
+    } else {
+      try {
+        const { body } = await storage.get(f.objectKey);
+        const chunks: Buffer[] = [];
+        for await (const c of body) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c));
+        extracted = await extractForNaming(Buffer.concat(chunks), f.mimeType);
+      } catch (err) {
+        logger.warn({ err, fileId: f.id }, 'intake-ai-label: could not read object');
+        return transient('storage_unavailable');
+      }
     }
 
     const userPrompt = buildNamingPrompt({
@@ -205,6 +235,19 @@ export async function processIntakeAiLabelJob(
       period: parsed.period,
       date: parsed.date,
     });
+    // A label with nothing informative would rebuild to just the client
+    // name at dispose — record it as failed, not labeled.
+    if (
+      fields.doc_type == null &&
+      fields.year == null &&
+      fields.issuer == null &&
+      fields.period == null &&
+      fields.date == null
+    ) {
+      await db.update(intakeFiles).set({ aiLabelStatus: 'failed' }).where(eq(intakeFiles.id, f.id));
+      failed += 1;
+      continue;
+    }
     // No bound client yet — the {client}/{client_id} slots collapse; the
     // dispose handler recomposes with the real client once known.
     const suggested = composeFilename(
@@ -230,7 +273,7 @@ export async function processIntakeAiLabelJob(
     labeled += 1;
   }
 
-  return failed === 0 ? 'labeled' : labeled > 0 ? 'partial' : 'skipped';
+  return failed === 0 ? 'labeled' : labeled > 0 ? 'partial' : 'failed';
 }
 
 export function startIntakeAiLabelConsumer(deps: AiNamingDeps): Worker<IntakeAiLabelJob> | null {
