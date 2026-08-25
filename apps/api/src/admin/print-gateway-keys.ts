@@ -134,11 +134,13 @@ export function createPrintGatewayKeysRouter(deps: PrintGatewayKeysRoutesDeps): 
     }
     try {
       const printers = await listPrinters({
+        id: 'legacy',
         baseUrl,
         apiKey,
         enabled: true,
         defaultPrinterId: null,
         autoPrintSignatureConfirmation: false,
+        officeId: null,
       });
       res.json({ ok: true, printers });
     } catch (err) {

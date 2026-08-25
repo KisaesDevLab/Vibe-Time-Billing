@@ -4,7 +4,7 @@
 > **Addendum label:** Phases PGW-1 through PGW-5
 > **Insertion point:** Any time after the current phase closes; PGW phases are sequential
 > **Total checklist items:** ~58
-> **Status:** DRAFT — decisions D-PGW-01…08 proposed, review before build
+> **Status:** PGW-1 COMPLETE (2026-08-25, migration 0228 — the addendum originally said 0218 but the sequence had moved on). Decisions D-PGW-01…08 accepted as proposed. PGW-2..5 pending.
 
 ---
 
@@ -55,25 +55,33 @@ The structural obstacles:
 **Purpose:** Introduce gateway identity without breaking the running single-gateway
 appliance for even one request.
 
-### Database (migration 0218_print_multi_gateway.sql)
+### Database (migration 0228_print_multi_gateway.sql)
 
-- [ ] `print_gateway` table: `id`, `firm_id` FK, `office_id` nullable FK (`ON DELETE SET NULL`), `name` text, `base_url` text, `api_key_encrypted` text, `enabled` boolean default true, `is_default` boolean default false, `default_printer_id` integer nullable, `auto_print_signature_confirmation` boolean default false, timestamps
-- [ ] Partial unique index: one `is_default = true` per firm; index on `(firm_id, office_id)`
-- [ ] `printer_assignment`: add `gateway_id uuid REFERENCES print_gateway(id) ON DELETE CASCADE` (nullable during transition), add `is_office_default boolean NOT NULL DEFAULT false`
-- [ ] New unique index `(gateway_id, gateway_printer_id)` WHERE `gateway_id IS NOT NULL` (legacy `(firm_id, gateway_printer_id)` index stays until PGW-3 cutover completes; dropped in a follow-up migration)
-- [ ] `print_log`: add `gateway_id uuid` nullable (null = legacy/default)
-- [ ] Paired gateway columns (all nullable = default gateway): `app_user.default_printer_gateway_id`, `signature_print_rule.gateway_id`, `notification_template.printer_gateway_id`, `terminal_readers.printer_gateway_id`
-- [ ] Drizzle schema in `packages/db/src/schema/core.ts` mirrors all of the above
+- [x] `print_gateway` table: `id`, `firm_id` FK, `office_id` nullable FK (`ON DELETE SET NULL`), `name` text, `base_url` text, `api_key_encrypted` text, `enabled` boolean default true, `is_default` boolean default false, `default_printer_id` integer nullable, `auto_print_signature_confirmation` boolean default false, timestamps
+- [x] Partial unique index: one `is_default = true` per firm; index on `(firm_id, office_id)`
+- [x] `printer_assignment`: add `gateway_id uuid REFERENCES print_gateway(id) ON DELETE CASCADE` (nullable during transition), add `is_office_default boolean NOT NULL DEFAULT false`
+- [x] New unique index `(gateway_id, gateway_printer_id)` WHERE `gateway_id IS NOT NULL` (legacy `(firm_id, gateway_printer_id)` index stays until PGW-3 cutover completes; dropped in a follow-up migration)
+- [x] `print_log`: add `gateway_id uuid` nullable (null = legacy/default)
+- [x] Paired gateway columns (all nullable = default gateway): `app_user.default_printer_gateway_id`, `signature_print_rule.gateway_id`, `notification_template.printer_gateway_id`, `terminal_readers.printer_gateway_id`
+- [x] Drizzle schema in `packages/db/src/schema/core.ts` mirrors all of the above
 
 ### Config & resolution (`apps/api/src/print-gateway/config.ts`, `assignments.ts`)
 
-- [ ] `StoredPrintGatewayConfig` → `ResolvedGateway { id: string | 'legacy' | 'env', baseUrl, apiKey, enabled, defaultPrinterId, autoPrintSignatureConfirmation, officeId }`
-- [ ] `resolvePrintGateway(db, firmId, opts?: { gatewayId?, officeId? })`: rows in `print_gateway` win (officeId → its gateway, else firm default); empty table → legacy `firm_settings` blob; blob absent → env pair (D-PGW-02, D-PGW-07)
-- [ ] `listGateways(db, firmId)` helper for admin + pickers
-- [ ] `resolveOfficePrinter` / `resolvePreselectPrinter` become gateway-aware: return `{gatewayId, printerId}`; deterministic pick — `is_office_default DESC, created_at ASC` (D-PGW-08)
-- [ ] Unit tests: resolution precedence (explicit > office > default > legacy blob > env), determinism of office-printer pick, cross-office isolation
+- [x] `StoredPrintGatewayConfig` → `ResolvedGateway { id: string | 'legacy' | 'env', baseUrl, apiKey, enabled, defaultPrinterId, autoPrintSignatureConfirmation, officeId }`
+- [x] `resolvePrintGateway(db, firmId, opts?: { gatewayId?, officeId? })`: rows in `print_gateway` win (officeId → its gateway, else firm default); empty table → legacy `firm_settings` blob; blob absent → env pair (D-PGW-02, D-PGW-07)
+- [x] `listGateways(db, firmId)` helper for admin + pickers
+- [x] `resolveOfficePrinter` / `resolvePreselectPrinter` become gateway-aware: return `{gatewayId, printerId}`; deterministic pick — `is_office_default DESC, created_at ASC` (D-PGW-08)
+- [x] Unit tests: resolution precedence (explicit > office > default > legacy blob > env), determinism of office-printer pick, cross-office isolation
 
 **Phase PGW-1 checklist count: 12**
+
+> **As built (2026-08-25):** the gateway-aware resolvers landed as new
+> `resolveOfficePrinterTarget` / `resolvePreselectPrinterTarget` (returning
+> `{gatewayId, printerId}`) with the original bare-integer functions kept as
+> thin back-compat shims — existing dispatch/picker call sites keep compiling
+> unchanged and pick up the D-PGW-08 determinism fix for free. PGW-2 moves
+> dispatch surfaces onto the Target variants; PGW-4 moves the pickers; the
+> shims are deleted when their last caller migrates.
 
 ---
 

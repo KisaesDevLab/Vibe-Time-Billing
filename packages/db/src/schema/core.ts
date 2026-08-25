@@ -681,6 +681,8 @@ export const notificationTemplates = pgTable(
     // 'specific' (printerId) or 'client_office' (the client office's printer).
     printerMode: text('printer_mode'),
     printerId: integer('printer_id'),
+    // 0228 — which gateway printer_id lives on (null = firm default).
+    printerGatewayId: uuid('printer_gateway_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -723,6 +725,8 @@ export const appUsers = pgTable(
     // 0185 — remembered Vibe Print gateway printer (numeric gateway id) for
     // this user's interactive direct-print actions.
     defaultPrinterId: integer('default_printer_id'),
+    // 0228 — which gateway that printer lives on (null = firm default).
+    defaultPrinterGatewayId: uuid('default_printer_gateway_id'),
     status: userStatus('status').notNull().default('ACTIVE'),
 
     // TOTP — was Q5 (mandatory) prior to 0087. Now one of three
@@ -1952,6 +1956,42 @@ export const statementTemplates = pgTable(
 // automated prints (e.g. signature-confirmation auto-print).
 // =====================================================================
 
+// =====================================================================
+// 0228 (PGW-1) — print_gateway. One row per Vibe Print gateway; multi-
+// location firms run one per office LAN. office_id null = firm-wide;
+// exactly one is_default per firm (partial unique). While this table is
+// empty, the legacy encrypted blob on firm_settings acts as the implicit
+// firm-default gateway (D-PGW-02) — resolution handles the fallback.
+// =====================================================================
+
+export const printGateways = pgTable(
+  'print_gateway',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    officeId: uuid('office_id').references(() => offices.id, { onDelete: 'set null' }),
+    name: text('name').notNull(),
+    baseUrl: text('base_url').notNull(),
+    apiKeyEncrypted: text('api_key_encrypted').notNull(),
+    enabled: boolean('enabled').notNull().default(true),
+    isDefault: boolean('is_default').notNull().default(false),
+    defaultPrinterId: integer('default_printer_id'),
+    autoPrintSignatureConfirmation: boolean('auto_print_signature_confirmation')
+      .notNull()
+      .default(false),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmDefaultUk: uniqueIndex('print_gateway_firm_default_uk')
+      .on(t.firmId)
+      .where(sql`${t.isDefault}`),
+    firmOfficeIdx: index('print_gateway_firm_office_idx').on(t.firmId, t.officeId),
+  }),
+);
+
 export const printLog = pgTable(
   'print_log',
   {
@@ -1963,6 +2003,9 @@ export const printLog = pgTable(
     printableType: text('printable_type').notNull(),
     printableId: text('printable_id'),
     printerId: integer('printer_id').notNull(),
+    // 0228 — which gateway the job went to. No FK: the audit row must
+    // survive gateway deletion (D-PGW-06). Null = legacy/default.
+    gatewayId: uuid('gateway_id'),
     copies: integer('copies').notNull().default(1),
     status: text('status').notNull(), // SENT | FAILED
     gatewayJobId: text('gateway_job_id'),
@@ -1988,9 +2031,14 @@ export const printerAssignments = pgTable(
       .notNull()
       .references(() => firms.id, { onDelete: 'cascade' }),
     gatewayPrinterId: integer('gateway_printer_id').notNull(),
+    // 0228 — owning gateway. Nullable during the single-gateway
+    // transition (null = the implicit legacy/default gateway).
+    gatewayId: uuid('gateway_id').references(() => printGateways.id, { onDelete: 'cascade' }),
     officeId: uuid('office_id').references(() => offices.id, { onDelete: 'set null' }),
     label: text('label'),
     enabled: boolean('enabled').notNull().default(true),
+    // 0228 — deterministic office-printer pick (D-PGW-08).
+    isOfficeDefault: boolean('is_office_default').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1999,6 +2047,9 @@ export const printerAssignments = pgTable(
       t.firmId,
       t.gatewayPrinterId,
     ),
+    gatewayPrinterUk: uniqueIndex('printer_assignment_gateway_printer_uk')
+      .on(t.gatewayId, t.gatewayPrinterId)
+      .where(sql`${t.gatewayId} IS NOT NULL`),
   }),
 );
 
@@ -2027,6 +2078,8 @@ export const signaturePrintRules = pgTable(
     gatewayTemplateId: integer('gateway_template_id'),
     printerMode: text('printer_mode').notNull().default('specific'), // specific | client_office
     printerId: integer('printer_id'),
+    // 0228 — which gateway printer_id lives on (null = firm default).
+    gatewayId: uuid('gateway_id'),
     copies: integer('copies').notNull().default(1),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -5954,6 +6007,8 @@ export const terminalReaders = pgTable(
     // 0186 — direct-print binding: which gateway printer this reader's
     // receipts go to, and whether to auto-print on payment completion.
     printerId: integer('printer_id'),
+    // 0228 — which gateway printer_id lives on (null = firm default).
+    printerGatewayId: uuid('printer_gateway_id'),
     autoPrintReceipt: boolean('auto_print_receipt').notNull().default(false),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

@@ -72,7 +72,7 @@ export async function queryStatusHistory(
     LEFT JOIN ${engagementStatusConfig} tc
       ON tc.firm_id = c.firm_id AND tc.workflow_state = a.after_json->>'workflowState'
     WHERE ${sql.join(conds, sql` AND `)}
-    ORDER BY a.occurred_at DESC
+    ORDER BY a.occurred_at DESC, a.id DESC
     LIMIT ${limit}
   `);
 

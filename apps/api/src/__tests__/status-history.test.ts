@@ -92,7 +92,11 @@ describe('queryStatusHistory', () => {
       firmId: seed.firmId,
       engagementId: seed.engagementId,
     });
-    expect(rows[0]!.toLabel).toBe('GHOST_STATUS');
+    // Find the row by key rather than position — audit timestamps can tie
+    // at clock granularity under load, and what this test verifies is the
+    // label fallback, not ordering.
+    const ghost = rows.find((r) => r.toKey === 'GHOST_STATUS');
+    expect(ghost?.toLabel).toBe('GHOST_STATUS');
   });
 });
 

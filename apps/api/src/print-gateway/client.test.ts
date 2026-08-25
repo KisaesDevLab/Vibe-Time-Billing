@@ -5,11 +5,13 @@ import { listPrinters, listTemplates, printPdf, printWithTemplate } from './clie
 import type { ResolvedPrintGateway } from './config';
 
 const cfg: ResolvedPrintGateway = {
+  id: 'legacy',
   baseUrl: 'http://printer-host:8080',
   apiKey: 'secret-abc',
   enabled: true,
   defaultPrinterId: null,
   autoPrintSignatureConfirmation: false,
+  officeId: null,
 };
 
 describe('print-gateway client', () => {
