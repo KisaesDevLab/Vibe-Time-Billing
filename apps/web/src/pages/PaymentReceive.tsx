@@ -23,7 +23,9 @@ import { loadStripe, type Stripe } from '@stripe/stripe-js';
 import { Button, Card, Combobox, Input, Pill, Table, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { QrScannerDialog, type ScanFeedback } from '../components/QrScannerDialog';
 import { ReceiptActions } from '../components/ReceiptActions';
+import { extractUuid } from '../lib/qr-scan';
 
 // ---------------------------------------------------------------------
 // Types
@@ -481,6 +483,28 @@ function Inner({
       }
       return next;
     });
+  }
+
+  // 0225 — client-QR scanning. Route sheets print a QR of the client UUID
+  // top-right; an iPad user scans one sheet to set the payer, then keeps
+  // scanning to add included entities. Continuous: the dialog stays open.
+  const [scanOpen, setScanOpen] = useState(false);
+  function handleClientScan(payload: string): ScanFeedback {
+    const uuid = extractUuid(payload);
+    if (!uuid) return { tone: 'error', message: 'Not a client QR code' };
+    const client = allClients.find((c) => c.id === uuid);
+    if (!client) return { tone: 'error', message: 'Client not found (archived or blocked?)' };
+    if (uuid === payerClientId || includedClientIds.includes(uuid)) {
+      return { tone: 'info', message: `${client.name} already added` };
+    }
+    if (!payerClientId) {
+      // Direct set — the Combobox onChange path resets includedClientIds,
+      // which is fine here (empty) but the direct call keeps this obvious.
+      setPayerClientId(uuid);
+      return { tone: 'success', message: `Payer: ${client.name}` };
+    }
+    addEntity(uuid);
+    return { tone: 'success', message: `Added ${client.name}` };
   }
 
   function addEntity(id: string): void {
@@ -1310,8 +1334,19 @@ function Inner({
           )}
 
           <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 11, color: tokens.color.textMuted, marginBottom: 4 }}>
-              Payee
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: 8,
+                marginBottom: 4,
+              }}
+            >
+              <span style={{ fontSize: 11, color: tokens.color.textMuted }}>Payee</span>
+              <Button size="sm" variant="secondary" onClick={() => setScanOpen(true)}>
+                Scan client QR
+              </Button>
             </div>
             <Combobox
               ariaLabel="Payer"
@@ -1330,7 +1365,14 @@ function Inner({
       </div>
 
       {payerClientId && (
-        <Card title="Entities included">
+        <Card
+          title="Entities included"
+          action={
+            <Button size="sm" variant="secondary" onClick={() => setScanOpen(true)}>
+              Scan client QR
+            </Button>
+          }
+        >
           <p style={{ fontSize: 12, color: tokens.color.textMuted, marginTop: 0, marginBottom: 8 }}>
             One payer may cover invoices for multiple entities they own.
           </p>
@@ -1397,6 +1439,37 @@ function Inner({
             />
           </div>
         </Card>
+      )}
+
+      {scanOpen && (
+        <QrScannerDialog
+          open={scanOpen}
+          onClose={() => setScanOpen(false)}
+          onScan={handleClientScan}
+          title="Scan client QR"
+        >
+          {/* Running list — mirrors the Entities card so the iPad user
+              watches clients accumulate without closing the scanner. */}
+          {payerClientId ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Pill tone="accent">
+                {allClients.find((c) => c.id === payerClientId)?.name ?? 'Payer'} · primary
+              </Pill>
+              {includedEntities.map((e) => (
+                <Pill key={e.id} tone="neutral">
+                  {e.name}
+                </Pill>
+              ))}
+            </div>
+          ) : (
+            <p style={{ margin: 0, fontSize: 12, color: tokens.color.textMuted }}>
+              The first client scanned becomes the payer.
+            </p>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <Button onClick={() => setScanOpen(false)}>Done</Button>
+          </div>
+        </QrScannerDialog>
       )}
 
       {outstanding.length > 0 && (

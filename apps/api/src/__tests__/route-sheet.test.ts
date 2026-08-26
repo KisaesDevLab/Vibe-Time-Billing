@@ -198,6 +198,9 @@ describe('POST /print', () => {
     expect(lastHtml).toContain('FILE ROUTING SHEET');
     expect(lastHtml).toContain('Test Client Co');
     expect(lastHtml).toContain('Walk-in drop-off');
+    // Client-UUID QR embedded (real qrcode lib — deterministic data URL).
+    expect(lastHtml).toContain('class="qr"');
+    expect(lastHtml).toContain('data:image/png;base64,');
   });
 
   it('rejects an engagement that is not on the client', async () => {
@@ -293,5 +296,29 @@ describe('renderRouteSheetHtml template', () => {
     expect(html).toContain('Pat Partner');
     // One page-break per sheet (last one auto via :last-child).
     expect((html.match(/class="sheet"/g) ?? []).length).toBe(2);
+    // No options → no QR markup at all (today's exact layout).
+    expect(html).not.toContain('class="qr"');
+    expect(html).not.toContain('class="sheet hasqr"');
+  });
+
+  it('renders the client QR top-right on every page when provided', () => {
+    const item = {
+      engagementId: 'e1',
+      engagementName: 'Form 1040',
+      workflowStateLabel: 'Ready',
+      periodLabel: null,
+      dueDate: null,
+      partnerName: null,
+      managerName: null,
+      assignees: [],
+      client: { name: 'Allen, David', address: null, contacts: [] },
+      note: '',
+    };
+    const html = renderRouteSheetHtml([item, { ...item, engagementId: 'e2' }], {
+      qrDataUrl: 'data:image/png;base64,AAAA',
+    });
+    expect((html.match(/class="qr"/g) ?? []).length).toBe(2);
+    expect((html.match(/class="sheet hasqr"/g) ?? []).length).toBe(2);
+    expect(html).toContain('data:image/png;base64,AAAA');
   });
 });
