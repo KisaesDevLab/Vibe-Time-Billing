@@ -11,13 +11,10 @@ permissions:
 
 jobs:
   build-and-push:
-    name: Build & push multi-arch images
+    name: Build & push appliance image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -47,7 +44,9 @@ jobs:
           # references ./apps/... from there); ops/docker/ only holds
           # compose files + the api entrypoint script.
           file: Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # amd64 only. arm64 was built via QEMU emulation, which roughly
+          # tripled release time, and nothing in the fleet runs on ARM.
+          platforms: linux/amd64
           tags: |
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/vibe-time-billing:${{ steps.meta.outputs.version }}
             ghcr.io/${{ steps.meta.outputs.owner_lc }}/vibe-time-billing:latest

@@ -115,11 +115,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Build image (multi-arch)
+      - name: Build image
         uses: docker/build-push-action@v5
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          # Matches release.yml — amd64 only (see the note there).
+          platforms: linux/amd64
           push: false
           tags: vibe-time-billing:ci-${{ github.sha }}
           cache-from: type=gha
