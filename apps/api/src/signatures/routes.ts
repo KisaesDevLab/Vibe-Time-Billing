@@ -37,6 +37,7 @@ import {
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
+import { resolveAppUserNames } from '../lib/entity-names';
 import { logger } from '../logger';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { blockIfClientRestricted, getBlockedClientIdsCached } from '../clients/access';
@@ -174,6 +175,24 @@ const SaveProfileSchema = z.object({
   /** Defaults to the request's formType when omitted. */
   formType: z.string().trim().min(1).max(40).optional(),
 });
+
+// signature_events.actor is a `system` / `opensign` sentinel, `signer:<uuid>`
+// for a public in-office signing action, or the acting staff member's
+// app_user id. Returns null when an id no longer resolves so the UI falls
+// back to a short-id stub rather than showing a bare uuid.
+function signatureActorName(
+  actor: string,
+  staffNames: Map<string, string>,
+  signerNames: Map<string, string>,
+): string | null {
+  if (actor === 'system') return 'System';
+  if (actor === 'opensign') return 'OpenSign';
+  if (actor.startsWith('signer:')) {
+    const name = signerNames.get(actor.slice('signer:'.length));
+    return name ? `${name} (signer)` : 'Signer';
+  }
+  return staffNames.get(actor) ?? null;
+}
 
 export function createSignaturesRouter(deps: SignaturesDeps): Router {
   const router = express.Router();
@@ -1011,11 +1030,23 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
             ? signerSigningUrl(publicUrl, request.opensignDocumentId, s.opensignSignerId)
             : null,
       }));
+      // signature_events.actor is a bare staff uuid, `signer:<id>`, or a
+      // sentinel. Resolve it here so the Activity card reads as people —
+      // signers come free off the rows we already loaded.
+      const staffNames = await resolveAppUserNames(
+        deps.db,
+        events.map((e) => e.actor),
+      );
+      const signerNames = new Map(signers.map((s) => [s.id, s.name]));
+      const eventsOut = events.map((e) => ({
+        ...e,
+        actorName: signatureActorName(e.actor, staffNames, signerNames),
+      }));
       res.json({
         request,
         signers: signersOut,
         placements,
-        events,
+        events: eventsOut,
         engagement,
         client,
         taxReturn,

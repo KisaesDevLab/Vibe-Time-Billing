@@ -30,6 +30,7 @@ import {
 import { buildStorageClient, readSentinel, writeSentinel, type StorageClient } from '@vibe/storage';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { resolveAppUserNames } from '../lib/entity-names';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { logger } from '../logger';
 
@@ -367,11 +368,21 @@ export function createConflictsRouter(deps: ConflictsDeps): Router {
         )
         .orderBy(folderSyncEvents.detectedAt);
 
+      // folder_sync_events.resolved_by (and the attempt's own actor) are bare
+      // app_user ids; name them so the trail reads as people.
+      const actorNames = await resolveAppUserNames(deps.db, [
+        attempt.attemptedBy,
+        ...trail.map((e) => e.resolvedBy),
+      ]);
+
       res.json({
         attempt: {
           id: attempt.id,
           storage_path: attempt.storagePath,
           attempted_by: attempt.attemptedBy,
+          attempted_by_name: attempt.attemptedBy
+            ? (actorNames.get(attempt.attemptedBy) ?? null)
+            : null,
           attempted_at: attempt.attemptedAt.toISOString(),
           match_confidence: attempt.matchConfidence ? Number(attempt.matchConfidence) : null,
           outcome: attempt.outcome,
@@ -403,6 +414,7 @@ export function createConflictsRouter(deps: ConflictsDeps): Router {
         audit_trail: trail.map((e) => ({
           ts: e.detectedAt.toISOString(),
           actor: e.resolvedBy ?? null,
+          actor_name: e.resolvedBy ? (actorNames.get(e.resolvedBy) ?? null) : null,
           event: e.eventType,
           detail: e.notes ?? null,
         })),

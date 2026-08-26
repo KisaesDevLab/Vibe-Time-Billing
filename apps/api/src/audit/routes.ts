@@ -21,19 +21,9 @@ import {
 } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import {
-  alertDismissals,
-  appUsers,
-  appointments,
-  auditLog,
-  clients,
-  engagements,
-  invoices,
-  mcpTokens,
-  timeEntries,
-  timeTimers,
-  workCodes,
-} from '@vibe/db/schema';
+import { alertDismissals, auditLog } from '@vibe/db/schema';
+
+import { enrichWithNames, resolveEntityNames, entityKey } from '../lib/entity-names';
 
 // Worker-emitted alert kinds surfaced by the Alerts inbox.
 const ALERT_KINDS = [
@@ -45,6 +35,13 @@ const ALERT_KINDS = [
 
 import { logger } from '../logger';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+
+// What an alert row's entity_id points at, per kind — the anomaly job stores
+// the offending actor, the rest store the engagement they fired on.
+function alertSubjectType(kind: string, after: Record<string, unknown> | null): string {
+  if (kind !== 'audit_anomaly_alert') return 'engagement';
+  return after?.['actorKind'] === 'portal' ? 'portal_identity' : 'app_user';
+}
 
 export interface AuditRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -89,149 +86,6 @@ const QuerySchema = z.object({
   page: z.coerce.number().int().min(1).optional(),
   pageSize: z.coerce.number().int().min(1).max(250).optional(),
 });
-
-type AuditRowLike = {
-  actorAppUserId: string | null;
-  actorMcpTokenId: string | null;
-  actorPortalIdentityId: string | null;
-  entityType: string;
-  entityId: string | null;
-};
-
-// Attach human names to audit rows: the actor (staff user / MCP token / portal
-// identity) and the entity (for the common entity types — engagement, client,
-// invoice, app_user). Unmapped types leave entityName null (UI falls back to
-// the full id). Batched to keep it a handful of queries regardless of page size.
-async function enrichWithNames<T extends AuditRowLike>(
-  db: Database,
-  rows: T[],
-): Promise<Array<T & { actorName: string | null; entityName: string | null }>> {
-  const appUserIds = new Set<string>();
-  const tokenIds = new Set<string>();
-  const engIds = new Set<string>();
-  const clientIds = new Set<string>();
-  const invoiceIds = new Set<string>();
-  const entryIds = new Set<string>();
-  const timerIds = new Set<string>();
-  const apptIds = new Set<string>();
-  const workCodeIds = new Set<string>();
-  for (const r of rows) {
-    if (r.actorAppUserId) appUserIds.add(r.actorAppUserId);
-    if (r.actorMcpTokenId) tokenIds.add(r.actorMcpTokenId);
-    if (r.entityId) {
-      if (r.entityType === 'engagement') engIds.add(r.entityId);
-      else if (r.entityType === 'client') clientIds.add(r.entityId);
-      else if (r.entityType === 'invoice') invoiceIds.add(r.entityId);
-      else if (r.entityType === 'app_user' || r.entityType === 'staff_user')
-        appUserIds.add(r.entityId);
-      else if (r.entityType === 'time_entry') entryIds.add(r.entityId);
-      else if (r.entityType === 'time_timer') timerIds.add(r.entityId);
-      else if (r.entityType === 'appointment') apptIds.add(r.entityId);
-      else if (r.entityType === 'work_code') workCodeIds.add(r.entityId);
-    }
-  }
-  const toMap = (rs: Array<{ id: string; name: string | null }>): Map<string, string | null> =>
-    new Map(rs.map((x) => [x.id, x.name]));
-  const empty = (): Map<string, string | null> => new Map();
-  const [users, tokens, engs, clis, invs, entries, timers, appts, wcs] = await Promise.all([
-    appUserIds.size
-      ? db
-          .select({ id: appUsers.id, name: appUsers.fullName })
-          .from(appUsers)
-          .where(inArray(appUsers.id, [...appUserIds]))
-          .then(toMap)
-      : empty(),
-    tokenIds.size
-      ? db
-          .select({ id: mcpTokens.id, name: mcpTokens.name })
-          .from(mcpTokens)
-          .where(inArray(mcpTokens.id, [...tokenIds]))
-          .then(toMap)
-      : empty(),
-    engIds.size
-      ? db
-          .select({ id: engagements.id, name: engagements.name })
-          .from(engagements)
-          .where(inArray(engagements.id, [...engIds]))
-          .then(toMap)
-      : empty(),
-    clientIds.size
-      ? db
-          .select({ id: clients.id, name: clients.name })
-          .from(clients)
-          .where(inArray(clients.id, [...clientIds]))
-          .then(toMap)
-      : empty(),
-    invoiceIds.size
-      ? db
-          .select({ id: invoices.id, name: invoices.invoiceNumber })
-          .from(invoices)
-          .where(inArray(invoices.id, [...invoiceIds]))
-          .then(toMap)
-      : empty(),
-    // time_entry → "Client · 2026-07-12 · 1.50h". Archived entries still
-    // resolve (soft delete); rows for hard-deleted ids fall back to the
-    // short-id stub in the UI.
-    entryIds.size
-      ? db
-          .select({
-            id: timeEntries.id,
-            name: sql<string>`${clients.name} || ' · ' || ${timeEntries.entryDate}::text || ' · ' || ${timeEntries.hours}::text || 'h'`,
-          })
-          .from(timeEntries)
-          .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
-          .innerJoin(clients, eq(clients.id, engagements.clientId))
-          .where(inArray(timeEntries.id, [...entryIds]))
-          .then(toMap)
-      : empty(),
-    // time_timer rows are deleted on save/discard, so most historical
-    // timer events won't resolve — live ones show their classification.
-    timerIds.size
-      ? db
-          .select({
-            id: timeTimers.id,
-            name: sql<string>`'Timer — ' || COALESCE(NULLIF(${timeTimers.description}, ''), ${clients.name}, 'unclassified')`,
-          })
-          .from(timeTimers)
-          .leftJoin(clients, eq(clients.id, timeTimers.clientId))
-          .where(inArray(timeTimers.id, [...timerIds]))
-          .then(toMap)
-      : empty(),
-    apptIds.size
-      ? db
-          .select({ id: appointments.id, name: appointments.title })
-          .from(appointments)
-          .where(inArray(appointments.id, [...apptIds]))
-          .then(toMap)
-      : empty(),
-    workCodeIds.size
-      ? db
-          .select({ id: workCodes.id, name: workCodes.name })
-          .from(workCodes)
-          .where(inArray(workCodes.id, [...workCodeIds]))
-          .then(toMap)
-      : empty(),
-  ]);
-  return rows.map((r) => {
-    let actorName: string | null = null;
-    if (r.actorAppUserId) actorName = users.get(r.actorAppUserId) ?? null;
-    else if (r.actorMcpTokenId) actorName = `MCP token: ${tokens.get(r.actorMcpTokenId) ?? '?'}`;
-    else if (r.actorPortalIdentityId) actorName = 'Portal user';
-    let entityName: string | null = null;
-    if (r.entityId) {
-      if (r.entityType === 'engagement') entityName = engs.get(r.entityId) ?? null;
-      else if (r.entityType === 'client') entityName = clis.get(r.entityId) ?? null;
-      else if (r.entityType === 'invoice') entityName = invs.get(r.entityId) ?? null;
-      else if (r.entityType === 'app_user' || r.entityType === 'staff_user')
-        entityName = users.get(r.entityId) ?? null;
-      else if (r.entityType === 'time_entry') entityName = entries.get(r.entityId) ?? null;
-      else if (r.entityType === 'time_timer') entityName = timers.get(r.entityId) ?? null;
-      else if (r.entityType === 'appointment') entityName = appts.get(r.entityId) ?? null;
-      else if (r.entityType === 'work_code') entityName = wcs.get(r.entityId) ?? null;
-    }
-    return { ...r, actorName, entityName };
-  });
-}
 
 export function createAuditRouter(deps: AuditRoutesDeps): Router {
   const router = express.Router();
@@ -324,7 +178,7 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
         .where(and(eq(auditLog.ip, req.params['ip']!), gte(auditLog.occurredAt, since)))
         .orderBy(desc(auditLog.occurredAt))
         .limit(500);
-      res.json({ items });
+      res.json({ items: await enrichWithNames(deps.db, items) });
     },
   );
 
@@ -347,7 +201,7 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
         .where(and(eq(auditLog.action, 'WEBHOOK_DELIVERY'), gte(auditLog.occurredAt, since)))
         .orderBy(desc(auditLog.occurredAt))
         .limit(500);
-      res.json({ items });
+      res.json({ items: await enrichWithNames(deps.db, items) });
     },
   );
 
@@ -375,7 +229,7 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
         )
         .orderBy(desc(auditLog.occurredAt))
         .limit(500);
-      res.json({ items });
+      res.json({ items: await enrichWithNames(deps.db, items) });
     },
   );
 
@@ -398,7 +252,7 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
         )
         .orderBy(desc(auditLog.occurredAt))
         .limit(200);
-      res.json({ items });
+      res.json({ items: await enrichWithNames(deps.db, items) });
     },
   );
 
@@ -511,7 +365,7 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
           .where(match)
           .orderBy(desc(auditLog.occurredAt))
           .limit(200);
-        res.json({ items });
+        res.json({ items: await enrichWithNames(deps.db, items) });
       } catch (err) {
         logger.error({ err }, 'audit search failed');
         res.status(500).json({ error: 'search_failed' });
@@ -588,7 +442,36 @@ export function createAuditRouter(deps: AuditRoutesDeps): Router {
         .where(and(inArray(auditLog.entityType, ALERT_KINDS), notInArray(auditLog.id, dismissed)))
         .orderBy(desc(auditLog.occurredAt))
         .limit(200);
-      res.json({ items });
+      // The alert's entity_id is an engagement for the three engagement-scoped
+      // kinds and the offending actor for the anomaly kind. Resolve both — plus
+      // the client named in the payload — so the inbox reads as names.
+      const refs = items.map((r) => ({
+        entityType: alertSubjectType(r.entityType, r.afterJson as Record<string, unknown> | null),
+        entityId: r.entityId,
+      }));
+      for (const r of items) {
+        const clientId = (r.afterJson as Record<string, unknown> | null)?.['clientId'];
+        if (typeof clientId === 'string') refs.push({ entityType: 'client', entityId: clientId });
+      }
+      const names = await resolveEntityNames(deps.db, refs);
+      res.json({
+        items: items.map((r) => {
+          const after = r.afterJson as Record<string, unknown> | null;
+          const subjectType = alertSubjectType(r.entityType, after);
+          const clientId = after?.['clientId'];
+          return {
+            ...r,
+            subjectType,
+            subjectName: r.entityId
+              ? (names.get(entityKey(subjectType, r.entityId)) ?? null)
+              : null,
+            clientName:
+              typeof clientId === 'string'
+                ? (names.get(entityKey('client', clientId)) ?? null)
+                : null,
+          };
+        }),
+      });
     },
   );
 

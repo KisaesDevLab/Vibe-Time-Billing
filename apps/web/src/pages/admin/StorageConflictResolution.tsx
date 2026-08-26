@@ -8,12 +8,15 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Card, Pill, tokens } from '@vibe/ui';
 
 import { api, type ApiError } from '../../api-client';
+import { shortId } from '../../lib/display-id';
 
 interface DetailResponse {
   attempt: {
     id: string;
     storage_path: string;
     attempted_by: string;
+    /** Server-resolved staff name for `attempted_by`. */
+    attempted_by_name: string | null;
     attempted_at: string;
     match_confidence: number | null;
     outcome: string;
@@ -51,6 +54,8 @@ interface DetailResponse {
   audit_trail: {
     ts: string;
     actor: string | null;
+    /** Server-resolved staff name for `actor`; null for worker-driven events. */
+    actor_name: string | null;
     event: string;
     detail: string | null;
   }[];
@@ -126,6 +131,13 @@ export function StorageConflictResolutionPage(): JSX.Element {
         Admin → Storage → Conflicts →{' '}
         <code style={{ fontFamily: tokens.font.mono }}>{data.attempt.storage_path}</code>{' '}
         <Pill tone="warning">{data.attempt.outcome}</Pill>
+      </div>
+      <div style={{ fontSize: 12, color: tokens.color.textMuted }}>
+        Attempted by{' '}
+        <span title={data.attempt.attempted_by}>
+          {data.attempt.attempted_by_name ?? shortId(data.attempt.attempted_by)}
+        </span>{' '}
+        on {new Date(data.attempt.attempted_at).toLocaleString()}
       </div>
 
       <Card title="Folder">
@@ -488,7 +500,9 @@ function AuditTrailPanel({ events }: { events: DetailResponse['audit_trail'] }):
           }}
         >
           <span style={{ color: tokens.color.textMuted }}>{new Date(e.ts).toLocaleString()}</span>
-          <span>{e.actor ?? 'system'}</span>
+          <span title={e.actor ?? undefined}>
+            {e.actor ? (e.actor_name ?? shortId(e.actor)) : 'system'}
+          </span>
           <span>
             <Pill tone="neutral">{e.event}</Pill>
           </span>

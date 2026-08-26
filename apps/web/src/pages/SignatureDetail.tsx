@@ -22,6 +22,7 @@ import {
 
 import { api, getCsrfToken, type ApiError } from '../api-client';
 import { usePermission } from '../auth-context';
+import { shortId } from '../lib/display-id';
 import { statusLabel, statusTone } from './Signatures';
 import { FieldEditor } from './signatures/FieldEditor';
 import { InOfficeSigningPanel } from './signatures/InOfficeSigningPanel';
@@ -51,6 +52,8 @@ interface Placement {
 interface SigEvent {
   id: string;
   actor: string;
+  /** Server-resolved staff / signer name; null when the id no longer resolves. */
+  actorName: string | null;
   event: string;
   detail: unknown;
   createdAt: string;
@@ -640,7 +643,9 @@ export function SignatureDetailPage(): JSX.Element {
                 {new Date(e.createdAt).toLocaleString()}
               </span>
               <span style={{ fontWeight: 600 }}>{e.event}</span>
-              <span style={{ color: tokens.color.textMuted }}>{e.actor}</span>
+              <span style={{ color: tokens.color.textMuted }} title={e.actor}>
+                {e.actorName ?? shortId(e.actor)}
+              </span>
             </div>
           ))}
         </div>

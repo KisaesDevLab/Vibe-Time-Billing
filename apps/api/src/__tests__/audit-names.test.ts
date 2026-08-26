@@ -155,4 +155,72 @@ describe('Audit log name resolution', () => {
     expect(body.total).toBe(1);
     expect(body.rows[0]!.entityType).toBe('invoice');
   });
+  it('resolves a `thing.subthing` entity type against the base kind', async () => {
+    await harness.db.insert(auditLog).values({
+      action: 'UPDATE',
+      entityType: 'engagement.status',
+      entityId: seed.engagementId,
+      actorAppUserId: seed.appUserId,
+    });
+    const router = createAuditRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['admin'] as RoleSlug[]]]),
+    });
+    const res = await invoke(router, '/', req());
+    const items = (res.jsonBody as { items: Array<{ entityName: string | null }> }).items;
+    expect(items[0]!.entityName).toBe('Test Engagement');
+  });
+});
+
+describe('Alert inbox name resolution', () => {
+  it('names the engagement an engagement-scoped alert fired on', async () => {
+    await harness.db.insert(auditLog).values({
+      action: 'CREATE',
+      entityType: 'wip_age_alert',
+      entityId: seed.engagementId,
+      afterJson: { engagementId: seed.engagementId, clientId: seed.clientId },
+    });
+    const router = createAuditRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['admin'] as RoleSlug[]]]),
+    });
+    const res = await invoke(router, '/alerts', req());
+    const items = (
+      res.jsonBody as {
+        items: Array<{
+          subjectType: string;
+          subjectName: string | null;
+          clientName: string | null;
+        }>;
+      }
+    ).items;
+    expect(items[0]!.subjectType).toBe('engagement');
+    expect(items[0]!.subjectName).toBe('Test Engagement');
+    expect(items[0]!.clientName).toBe('Test Client Co');
+  });
+
+  it('names the offending staff member on an anomaly alert', async () => {
+    // The anomaly job stores the actor — not an engagement — in entity_id.
+    await harness.db.insert(auditLog).values({
+      action: 'CREATE',
+      entityType: 'audit_anomaly_alert',
+      entityId: seed.appUserId,
+      afterJson: {
+        actorKind: 'staff',
+        actorId: seed.appUserId,
+        threshold: 80,
+        eventsLastHour: 122,
+      },
+    });
+    const router = createAuditRouter({
+      db: harness.db,
+      fakeUserRoles: new Map([[seed.appUserId, ['admin'] as RoleSlug[]]]),
+    });
+    const res = await invoke(router, '/alerts', req());
+    const items = (
+      res.jsonBody as { items: Array<{ subjectType: string; subjectName: string | null }> }
+    ).items;
+    expect(items[0]!.subjectType).toBe('app_user');
+    expect(items[0]!.subjectName).toBe('Sarah Chen');
+  });
 });

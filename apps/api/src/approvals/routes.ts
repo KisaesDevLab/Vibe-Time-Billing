@@ -18,7 +18,11 @@ import {
   approvalRules,
   appUsers,
   billingBatches,
+  clients,
+  engagementLetters,
   engagementRecurrences,
+  engagements,
+  invoices,
   timeEntries,
 } from '@vibe/db/schema';
 
@@ -67,6 +71,80 @@ const DecideSchema = z.object({
   decision: z.enum(['APPROVED', 'REJECTED', 'APPROVED_WITH_EDITS']),
   comments: z.string().max(1000).optional(),
 });
+
+// The queue stores only `{entityType, entityId}`, so the Entity column used
+// to render a bare uuid stub. Resolve one human label per kind — batched,
+// one query per kind actually present on the page.
+async function withEntityLabels<T extends { entityType: string; entityId: string }>(
+  db: Database,
+  rows: T[],
+): Promise<Array<T & { entityLabel: string | null }>> {
+  const idsFor = (type: string): string[] => [
+    ...new Set(rows.filter((r) => r.entityType === type).map((r) => r.entityId)),
+  ];
+  const adjustmentIds = idsFor('ADJUSTMENT');
+  const invoiceIds = idsFor('INVOICE');
+  // A pre-bill is a billing batch, not an invoice — it has no number yet.
+  const batchIds = idsFor('PRE_BILL');
+  const letterIds = idsFor('ENGAGEMENT_LETTER');
+  const renewalIds = idsFor('ENGAGEMENT_RENEWAL');
+
+  const [adjustmentLabels, invoiceLabels, batchLabels, letterLabels, renewalLabels] =
+    await Promise.all([
+      adjustmentIds.length
+        ? db
+            .select({
+              id: adjustments.id,
+              label: sql<string>`${clients.name} || ' · $' || round(${adjustments.totalAmountCents} / 100.0, 2)::text`,
+            })
+            .from(adjustments)
+            .innerJoin(billingBatches, eq(billingBatches.id, adjustments.billingBatchId))
+            .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+            .innerJoin(clients, eq(clients.id, engagements.clientId))
+            .where(inArray(adjustments.id, adjustmentIds))
+        : [],
+      invoiceIds.length
+        ? db
+            .select({ id: invoices.id, label: invoices.invoiceNumber })
+            .from(invoices)
+            .where(inArray(invoices.id, invoiceIds))
+        : [],
+      batchIds.length
+        ? db
+            .select({
+              id: billingBatches.id,
+              label: sql<string>`${clients.name} || ' · ' || ${billingBatches.periodStart}::text || ' – ' || ${billingBatches.periodEnd}::text`,
+            })
+            .from(billingBatches)
+            .innerJoin(engagements, eq(engagements.id, billingBatches.engagementId))
+            .innerJoin(clients, eq(clients.id, engagements.clientId))
+            .where(inArray(billingBatches.id, batchIds))
+        : [],
+      letterIds.length
+        ? db
+            .select({
+              id: engagementLetters.id,
+              label: sql<string>`${engagements.name} || ' · v' || ${engagementLetters.version}::text`,
+            })
+            .from(engagementLetters)
+            .innerJoin(engagements, eq(engagements.id, engagementLetters.engagementId))
+            .where(inArray(engagementLetters.id, letterIds))
+        : [],
+      renewalIds.length
+        ? db
+            .select({ id: engagementRecurrences.id, label: clients.name })
+            .from(engagementRecurrences)
+            .innerJoin(clients, eq(clients.id, engagementRecurrences.clientId))
+            .where(inArray(engagementRecurrences.id, renewalIds))
+        : [],
+    ]);
+
+  const byId = new Map<string, string>();
+  for (const set of [adjustmentLabels, invoiceLabels, batchLabels, letterLabels, renewalLabels]) {
+    for (const r of set) if (r.label) byId.set(r.id, r.label);
+  }
+  return rows.map((r) => ({ ...r, entityLabel: byId.get(r.entityId) ?? null }));
+}
 
 export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
   const router = express.Router();
@@ -117,7 +195,7 @@ export function createApprovalRouter(deps: ApprovalRoutesDeps): Router {
         .where(and(...conds))
         .orderBy(desc(approvalRequests.requestedAt))
         .limit(200);
-      res.json({ items: rows });
+      res.json({ items: await withEntityLabels(deps.db, rows) });
     },
   );
 

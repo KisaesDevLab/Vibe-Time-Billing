@@ -5,12 +5,15 @@ import { Button, Card, Combobox, Input, Pill, Table, tokens, type ComboboxOption
 
 import { api } from '../api-client';
 import { usePermission } from '../auth-context';
+import { shortId } from '../lib/display-id';
 import { StagedNotificationsCard } from './StagedNotificationsCard';
 
 interface PendingRequest {
   id: string;
   entityType: 'ADJUSTMENT' | 'PRE_BILL' | 'INVOICE' | 'ENGAGEMENT_LETTER' | 'RATE_CHANGE';
   entityId: string;
+  /** Server-resolved label for the entity (invoice number, client + amount…). */
+  entityLabel: string | null;
   requesterId: string;
   requesterName: string;
   status: string;
@@ -97,7 +100,12 @@ export function ApprovalsPage(): JSX.Element {
                 key: 'entity',
                 header: 'Entity',
                 mobile: 'meta',
-                render: (r) => <code style={{ fontSize: 11 }}>{r.entityId.slice(0, 8)}…</code>,
+                render: (r) =>
+                  r.entityLabel ? (
+                    <span title={r.entityId}>{r.entityLabel}</span>
+                  ) : (
+                    <code style={{ fontSize: 11 }}>{shortId(r.entityId)}</code>
+                  ),
               },
               {
                 key: 'step',

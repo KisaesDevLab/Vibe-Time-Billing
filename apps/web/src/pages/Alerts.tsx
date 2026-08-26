@@ -6,6 +6,7 @@ import { Button, Card, ColumnFilter, Pill, Table, tokens, type SortDir } from '@
 import { api } from '../api-client';
 import { TableSearch } from '../components/TableSearch';
 import { selectRows, useColumnView } from '../lib/column-view';
+import { shortId } from '../lib/display-id';
 import { useClientPage } from '../lib/use-paged-list';
 
 interface AlertRow {
@@ -14,6 +15,12 @@ interface AlertRow {
   entityType: 'audit_anomaly_alert' | 'scope_creep_alert' | 'wip_age_alert' | 'engagement_rollover';
   entityId: string | null;
   afterJson: Record<string, unknown> | null;
+  /** What `entityId` points at — an engagement, or the offending actor. */
+  subjectType: string;
+  /** Server-resolved name for `entityId`; null when it no longer resolves. */
+  subjectName: string | null;
+  /** Client named in the alert payload, for the engagement-scoped kinds. */
+  clientName: string | null;
 }
 
 const KIND_VALUES = [
@@ -27,7 +34,7 @@ function summarize(r: AlertRow): string {
   const j = r.afterJson ?? {};
   switch (r.entityType) {
     case 'audit_anomaly_alert':
-      return `Actor ${String(j['actorKind'])} ${String(j['actorId']).slice(0, 8)}… exceeded ${j['threshold']}/h (saw ${j['eventsLastHour']})`;
+      return `${r.subjectName ?? `${String(j['actorKind'])} ${shortId(String(j['actorId']))}`} exceeded ${j['threshold']}/h (saw ${j['eventsLastHour']})`;
     case 'scope_creep_alert':
       return `${Number(j['creepPct'] ?? 0).toFixed(1)}% out-of-scope hours over ${j['windowDays']}d`;
     case 'wip_age_alert':
@@ -67,7 +74,8 @@ export function AlertsPage(): JSX.Element {
           when: (r) => r.occurredAt,
           kind: (r) => r.entityType,
         },
-        searchText: (r) => `${r.entityType} ${r.entityId ?? ''}`,
+        searchText: (r) =>
+          `${r.entityType} ${r.subjectName ?? ''} ${r.clientName ?? ''} ${r.entityId ?? ''}`,
       }),
     [items, view],
   );
@@ -190,8 +198,19 @@ export function AlertsPage(): JSX.Element {
             {
               key: 'entity',
               header: 'Subject',
-              render: (r) =>
-                r.entityId ? <code style={{ fontSize: 11 }}>{r.entityId.slice(0, 8)}…</code> : '—',
+              render: (r) => {
+                if (!r.entityId) return '—';
+                if (!r.subjectName)
+                  return <code style={{ fontSize: 11 }}>{shortId(r.entityId)}</code>;
+                return (
+                  <span title={r.entityId}>
+                    {r.subjectName}
+                    {r.clientName && r.clientName !== r.subjectName && (
+                      <span style={{ color: tokens.color.textMuted }}> · {r.clientName}</span>
+                    )}
+                  </span>
+                );
+              },
             },
             {
               key: 'summary',
@@ -292,7 +311,8 @@ function AlertDetailModal({
         </div>
         {alert.entityId && (
           <div style={{ fontSize: 12, marginBottom: 12 }}>
-            Subject id: <code style={{ fontSize: 11 }}>{alert.entityId}</code>
+            Subject: {alert.subjectName ?? '—'}{' '}
+            <code style={{ fontSize: 11, color: tokens.color.textMuted }}>{alert.entityId}</code>
           </div>
         )}
         <div style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 4 }}>
