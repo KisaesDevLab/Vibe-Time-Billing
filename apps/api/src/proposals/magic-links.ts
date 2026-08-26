@@ -52,6 +52,9 @@ export type SendProposalEmail = (args: {
   subject: string;
   body: string;
   html?: string;
+  /** Forwarded to the provider when the caller has a file to enclose (the
+   *  signature-completion confirmation attaches the client's signed copy). */
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }) => Promise<void>;
 
 function generateToken(): { raw: string; hash: string } {

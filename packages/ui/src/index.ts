@@ -29,6 +29,8 @@ export {
   Trash,
   MenuIcon,
   CloseIcon,
+  MailIcon,
+  MessageIcon,
   type IconProps,
 } from './icons';
 export { ErrorBoundary } from './ErrorBoundary';

@@ -46,7 +46,14 @@ import { capturePageGeometry, type PageGeometry } from './geometry';
 import { buildQrSheetHtml } from '../pdf-templates/signature-qr-sheet';
 import { mintInOfficeToken } from './in-office-token';
 import { renderHtmlToPdf } from '../pdf/render';
-import { signerSigningUrl, type SignerMailer } from './notify';
+import {
+  notifySigner,
+  notifySignerSms,
+  signerSigningUrl,
+  type NotifyChannel,
+  type SignerMailer,
+  type SignerTexter,
+} from './notify';
 import { reconcileSignatureRequestByDocument } from './reconcile';
 import {
   applyProfile,
@@ -75,6 +82,8 @@ export interface SignaturesDeps extends RbacDeps {
   expiresInDays?: number;
   /** Delivers each signer their signing link on send (OpenSign won't). */
   sendEmail?: SignerMailer;
+  /** 0231 — same link by text, when the firm picks the SMS/both channel. */
+  sendSms?: SignerTexter;
   /** Portal base URL — the QR sheet encodes `${portalBaseUrl}/in-office/<token>`
    *  per signer so the printed QR works from the draft (before any send). */
   portalBaseUrl?: string;
@@ -95,6 +104,8 @@ const GeometrySchema = z.array(
 const SignerInputSchema = z.object({
   name: z.string().trim().min(1).max(200),
   email: z.string().trim().email().max(320),
+  // 0231 — optional; only needed to text this signer their link.
+  phone: z.string().trim().max(40).nullable().optional(),
   role: z.string().trim().max(80).optional(),
   order: z.number().int().min(1).max(99).optional(),
   // 0133 — provenance when the signer was picked from the client's people
@@ -384,6 +395,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
             requestId,
             name: s.name,
             email: s.email,
+            phone: s.phone?.trim() || null,
             role: s.role ?? null,
             order: s.order ?? i + 1,
             personId: s.personId && linkSets.personIds.has(s.personId) ? s.personId : null,
@@ -435,6 +447,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         z.object({
           name: z.string().min(1).max(200),
           email: z.string().email().max(320),
+          phone: z.string().trim().max(40).nullable().optional(),
           role: z.string().max(60).optional(),
           order: z.number().int().min(1).max(20).optional(),
           personId: z.string().uuid().optional(),
@@ -535,6 +548,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
             requestId: id,
             name: s.name,
             email: s.email,
+            phone: s.phone?.trim() || null,
             // Default to 'client' so the engagement-letter profile matches.
             role: s.role ?? 'client',
             order: s.order ?? i + 1,
@@ -1100,6 +1114,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
             requestId: request.id,
             name: s.name,
             email: s.email,
+            phone: s.phone?.trim() || null,
             role: s.role ?? null,
             order: s.order ?? request.signerCount + 1,
           })
@@ -1576,7 +1591,14 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
       const body = (req.body ?? {}) as {
         inPerson?: boolean;
         identityVerifications?: Array<{ signerId?: string; idType?: string }>;
+        notifyChannel?: string;
       };
+      // 0231 — anything unrecognized falls back to EMAIL rather than 400ing
+      // a send that is otherwise ready to go.
+      const notifyChannel: NotifyChannel =
+        body.notifyChannel === 'SMS' || body.notifyChannel === 'BOTH'
+          ? body.notifyChannel
+          : 'EMAIL';
       const identityVerifications = Array.isArray(body.identityVerifications)
         ? body.identityVerifications
             .filter((v) => typeof v?.signerId === 'string' && typeof v?.idType === 'string')
@@ -1591,6 +1613,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
             client,
             expiresInDays: deps.expiresInDays,
             sendEmail: deps.sendEmail,
+            sendSms: deps.sendSms,
           },
           {
             requestId: req.params['id']!,
@@ -1598,6 +1621,7 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
             actor,
             inPerson: body.inPerson === true,
             identityVerifications,
+            notifyChannel,
           },
         );
       } catch (err) {
@@ -1643,6 +1667,105 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
           res.json({ ok: true, opensignDocumentId: outcome.opensignDocumentId });
           return;
       }
+    },
+  );
+
+  // ---- Resend one signer's link (email and/or text) -----------------
+  //
+  // A signer loses the email, changes their number, or simply needs a
+  // nudge. Re-delivers the SAME per-signer OpenSign URL — nothing is
+  // re-created, so the link a signer may already have keeps working.
+  // Live requests only, and never to someone who already signed.
+  router.post(
+    '/:id/signers/:signerId/resend',
+    requirePermission(deps, 'proposal:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession!.firmId;
+      const actor = req.staffSession!.appUserId;
+      if (!deps.db) {
+        res.status(503).json({ error: 'db_unavailable' });
+        return;
+      }
+      const raw = (req.body ?? {}) as { channel?: string };
+      const channel: 'EMAIL' | 'SMS' = raw.channel === 'SMS' ? 'SMS' : 'EMAIL';
+
+      const request = await loadRequest(deps.db, firmId, req.params['id']!);
+      if (!request) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      if (request.status !== 'sent' && request.status !== 'partially_signed') {
+        res.status(409).json({ error: 'not_live', status: request.status });
+        return;
+      }
+      const [signer] = await deps.db
+        .select()
+        .from(signatureSigners)
+        .where(
+          and(
+            eq(signatureSigners.id, req.params['signerId']!),
+            eq(signatureSigners.requestId, request.id),
+          ),
+        )
+        .limit(1);
+      if (!signer) {
+        res.status(404).json({ error: 'signer_not_found' });
+        return;
+      }
+      if (signer.status === 'signed') {
+        res.status(409).json({ error: 'already_signed' });
+        return;
+      }
+      const publicUrl = getOpenSign()?.publicUrl;
+      if (!publicUrl || !request.opensignDocumentId || !signer.opensignSignerId) {
+        res.status(409).json({ error: 'no_signing_link' });
+        return;
+      }
+      if (channel === 'SMS' && !signer.phone?.trim()) {
+        res.status(422).json({ error: 'no_phone' });
+        return;
+      }
+      const sender = channel === 'SMS' ? deps.sendSms : deps.sendEmail;
+      if (!sender) {
+        res
+          .status(503)
+          .json({ error: channel === 'SMS' ? 'sms_not_configured' : 'email_not_configured' });
+        return;
+      }
+      const notice = {
+        to: signer.email,
+        name: signer.name,
+        title: request.title,
+        signingUrl: signerSigningUrl(
+          publicUrl,
+          request.opensignDocumentId,
+          signer.opensignSignerId,
+        ),
+        phone: signer.phone,
+        db: deps.db,
+        firmId,
+      };
+      const ok =
+        channel === 'SMS'
+          ? await notifySignerSms(deps.sendSms!, notice)
+          : await notifySigner(deps.sendEmail!, notice);
+      await recordEvent(deps.db, request.id, actor, ok ? 'signer_resent' : 'signer_resend_failed', {
+        signerId: signer.id,
+        signerName: signer.name,
+        channel,
+      });
+      if (!ok) {
+        res.status(502).json({ error: 'send_failed' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'signature_request.signer_resent',
+        entityId: request.id,
+        actorAppUserId: actor,
+        after: { signerId: signer.id, channel },
+      });
+      res.json({ ok: true, channel });
     },
   );
 

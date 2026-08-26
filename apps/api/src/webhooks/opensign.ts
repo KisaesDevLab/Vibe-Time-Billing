@@ -57,6 +57,8 @@ export interface OpenSignWebhookDeps {
   webhookSecret: string | null;
   hmacSeed: string | null;
   sendProposalEmail?: SendProposalEmail;
+  /** 0231 — sequential signature hand-off by text, for requests sent that way. */
+  sendSms?: (args: { to: string; body: string }) => Promise<void>;
   portalBaseUrl?: string;
   // Signatures module (0108): low-level client used to reconcile
   // signature_requests by document id. The document-id space is disjoint
@@ -263,6 +265,7 @@ async function dispatch(
           // Reuse the configured mailer to hand off to the next sequential
           // signer, and to send the client a completion confirmation.
           notify: deps.sendProposalEmail,
+          notifySms: deps.sendSms,
           sendEmail: deps.sendProposalEmail,
         },
         envelopeId,
