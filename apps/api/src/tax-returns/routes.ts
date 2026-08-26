@@ -93,6 +93,7 @@ const SignaturePackageSchema = z.object({
       z.object({
         name: z.string().min(1).max(200),
         email: z.string().email(),
+        phone: z.string().trim().max(40).nullable().optional(),
         role: z.string().min(1).max(40),
         personId: z.string().uuid().nullable().optional(),
         clientContactId: z.string().uuid().nullable().optional(),

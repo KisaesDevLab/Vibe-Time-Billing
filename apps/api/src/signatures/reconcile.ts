@@ -26,11 +26,25 @@ import type { StorageClient } from '@vibe/storage';
 import type { OpenSignClient, ParseDoc } from '../esign/opensign-client';
 import { fileExistingObjectIntoClientFolder } from '../clients/file-existing';
 import { notifySignatureCompleted, type CompletionMailer } from './completion-notify';
-import { notifySigner, signerSigningUrl, type SignerMailer } from './notify';
+import {
+  notifySigner,
+  notifySignerSms,
+  signerSigningUrl,
+  wantsEmail,
+  wantsSms,
+  type NotifyChannel,
+  type SignerMailer,
+  type SignerTexter,
+} from './notify';
 
 // Subfolder the signed package is auto-filed into when the request was
 // assembled from a tax return.
 const SIGNED_RETURN_SUBFOLDER = 'Tax Returns';
+// Where every other client-linked signed document lands. Matches the
+// 'Signatures' folder in DEFAULT_FOLDER_TEMPLATE; folders are derived, so a
+// firm that removed it from its template still gets the files (the folder
+// simply reappears because a file lives under it).
+const SIGNED_DOCUMENT_SUBFOLDER = 'Signatures';
 
 export interface ReconcileDeps {
   db: Database;
@@ -40,6 +54,8 @@ export interface ReconcileDeps {
    *  once the prior one signs. Best-effort; absent when mail isn't wired
    *  (the poll path passes none — the webhook is primary for this). */
   notify?: SignerMailer;
+  /** 0231 — same hand-off by text, when the request was sent that way. */
+  notifySms?: SignerTexter;
   /** Sends the client a confirmation email on completion. Best-effort;
    *  absent when mail isn't wired. Staff in-app notifications fire regardless
    *  (they only need the db). */
@@ -114,6 +130,9 @@ export async function reconcileSignatureRequestByDocument(
   // them to our own bucket.
   let signedKey: string | null = null;
   let signedSize = 0;
+  // Kept in scope past the download block so the completion email can attach
+  // the client's copy without a second fetch from storage.
+  let signedPdf: Buffer | null = null;
   let certKey: string | null = null;
   let certSize = 0;
   if (completed) {
@@ -150,6 +169,7 @@ export async function reconcileSignatureRequestByDocument(
     if (signedBuf) {
       signedKey = signedFileKey(request.firmId, request.id);
       signedSize = signedBuf.length;
+      signedPdf = signedBuf;
       await deps.storage.put(signedKey, signedBuf, { contentType: 'application/pdf' });
     }
     if (certBuf) {
@@ -215,12 +235,19 @@ export async function reconcileSignatureRequestByDocument(
   });
 
   // Sequential hand-off: when a signer just signed and the request is still
-  // awaiting others, email the next pending signer their link (OpenSign
+  // awaiting others, send the next pending signer their link (OpenSign
   // sends nothing). Best-effort; only on a real advance to avoid re-spam.
-  if (advancedStatus === 'partially_signed' && request.sendInOrder && deps.notify) {
+  // 0231 — reuses the channel the request went out on, so a text-only send
+  // stays text-only all the way down the signer chain.
+  if (
+    advancedStatus === 'partially_signed' &&
+    request.sendInOrder &&
+    (deps.notify || deps.notifySms)
+  ) {
     const next = signers.find((s) => !isSigned(s.email) && s.opensignSignerId);
     if (next?.opensignSignerId) {
-      await notifySigner(deps.notify, {
+      const channel = (request.notifyChannel ?? 'EMAIL') as NotifyChannel;
+      const notice = {
         to: next.email,
         name: next.name,
         title: request.title,
@@ -229,30 +256,42 @@ export async function reconcileSignatureRequestByDocument(
           opensignDocumentId,
           next.opensignSignerId,
         ),
+        phone: next.phone,
         db,
         firmId: request.firmId,
-      });
+      };
+      if (wantsEmail(channel) && deps.notify) await notifySigner(deps.notify, notice);
+      if (wantsSms(channel) && deps.notifySms) await notifySignerSms(deps.notifySms, notice);
     }
   }
 
-  // Auto-file the signed package into the client's Tax Returns folder when
-  // this request was assembled from a tax return. Runs once — reconcile
-  // short-circuits on an already-terminal request, so only the transition to
-  // 'completed' reaches here. Best-effort: a filing failure (e.g. the client
-  // folder isn't bound) is recorded but never undoes completion.
-  if (
-    advancedStatus === 'completed' &&
-    signedKey &&
-    request.taxReturnId &&
-    request.clientId &&
-    request.createdBy
-  ) {
+  // Auto-file the signed package into the client's folder whenever the
+  // request names a client — a return-assembled package goes to Tax Returns,
+  // anything else to Signatures. Runs once: reconcile short-circuits on an
+  // already-terminal request, so only the transition to 'completed' reaches
+  // here. Best-effort: a filing failure (e.g. the client folder isn't bound)
+  // is recorded but never undoes completion.
+  const filingSubfolder = request.taxReturnId ? SIGNED_RETURN_SUBFOLDER : SIGNED_DOCUMENT_SUBFOLDER;
+  if (advancedStatus === 'completed' && signedKey && request.clientId && !request.createdBy) {
+    // No creator to attribute the upload to (e.g. a request whose author was
+    // deleted). Record why nothing was filed instead of failing silently.
+    await db
+      .insert(signatureEvents)
+      .values({
+        requestId: request.id,
+        actor: 'system',
+        event: 'signed_file_skipped',
+        detail: { reason: 'no_actor' },
+      })
+      .catch(() => undefined);
+  }
+  if (advancedStatus === 'completed' && signedKey && request.clientId && request.createdBy) {
     try {
       const filed = await fileExistingObjectIntoClientFolder(db, deps.storage, {
         firmId: request.firmId,
         clientId: request.clientId,
         actorId: request.createdBy,
-        subfolderPath: SIGNED_RETURN_SUBFOLDER,
+        subfolderPath: filingSubfolder,
         originalFilename: `${request.title} (signed).pdf`,
         sourceKey: signedKey,
         mimeType: 'application/pdf',
@@ -264,17 +303,21 @@ export async function reconcileSignatureRequestByDocument(
         actor: 'system',
         event: filed.ok ? 'signed_filed' : 'signed_file_skipped',
         detail: filed.ok
-          ? { fileId: filed.fileId, taxReturnId: request.taxReturnId }
-          : { reason: filed.code, taxReturnId: request.taxReturnId },
+          ? {
+              fileId: filed.fileId,
+              subfolder: filingSubfolder,
+              taxReturnId: request.taxReturnId,
+            }
+          : { reason: filed.code, subfolder: filingSubfolder, taxReturnId: request.taxReturnId },
       });
-      // File the audit certificate alongside the signed return as its own
-      // document, so the signing certificate is stored with the tax return.
+      // File the audit certificate as its own document alongside the signed
+      // copy, so the signing certificate is stored with what it certifies.
       if (certKey) {
         const filedCert = await fileExistingObjectIntoClientFolder(db, deps.storage, {
           firmId: request.firmId,
           clientId: request.clientId,
           actorId: request.createdBy,
-          subfolderPath: SIGNED_RETURN_SUBFOLDER,
+          subfolderPath: filingSubfolder,
           originalFilename: `${request.title} (certificate).pdf`,
           sourceKey: certKey,
           mimeType: 'application/pdf',
@@ -286,8 +329,16 @@ export async function reconcileSignatureRequestByDocument(
           actor: 'system',
           event: filedCert.ok ? 'certificate_filed' : 'certificate_file_skipped',
           detail: filedCert.ok
-            ? { fileId: filedCert.fileId, taxReturnId: request.taxReturnId }
-            : { reason: filedCert.code, taxReturnId: request.taxReturnId },
+            ? {
+                fileId: filedCert.fileId,
+                subfolder: filingSubfolder,
+                taxReturnId: request.taxReturnId,
+              }
+            : {
+                reason: filedCert.code,
+                subfolder: filingSubfolder,
+                taxReturnId: request.taxReturnId,
+              },
         });
       }
     } catch (err) {
@@ -319,6 +370,7 @@ export async function reconcileSignatureRequestByDocument(
       },
       signers.map((s) => s.email),
       deps.sendEmail,
+      signedPdf,
     ).catch(() => undefined);
   }
 

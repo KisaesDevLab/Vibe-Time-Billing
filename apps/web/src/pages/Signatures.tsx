@@ -299,6 +299,8 @@ export function SignaturesPage(): JSX.Element {
 interface SignerDraft {
   name: string;
   email: string;
+  /** 0231 — needed only when the request is sent by text. */
+  phone: string;
   role: string;
   // Set when the row was added from the client's people list (provenance,
   // sent to the API). `peopleKey` maps the row back to its people entry so the
@@ -326,6 +328,7 @@ interface PersonEntry {
   key: string;
   name: string;
   email: string | null;
+  phone: string | null;
   hint: string;
   personId?: string;
   clientContactId?: string;
@@ -340,6 +343,8 @@ interface PeopleApiEntry {
     personId: string;
     fullName: string;
     email?: string | null;
+    phone?: string | null;
+    mobile?: string | null;
     roleId?: string | null;
     isPrimary?: boolean;
   } | null;
@@ -348,6 +353,7 @@ interface PeopleApiEntry {
     portalIdentityId: string;
     fullName: string;
     primaryEmail?: string | null;
+    primaryPhone?: string | null;
     role?: string | null;
   } | null;
   pendingInvitation: {
@@ -369,11 +375,14 @@ function toPersonEntry(e: PeopleApiEntry): PersonEntry | null {
   if (!name) return null;
   const email =
     e.contact?.email ?? e.access?.primaryEmail ?? e.pendingInvitation?.invitedEmail ?? null;
+  // A signing link is texted, so the mobile wins over the landline.
+  const phone = e.contact?.mobile || e.contact?.phone || e.access?.primaryPhone || null;
   const hint = e.contact?.isPrimary ? 'Primary contact' : (KIND_HINT[e.kind] ?? e.kind);
   return {
     key: e.key,
     name,
     email,
+    phone,
     hint,
     personId: e.contact?.personId,
     clientContactId: e.contact?.id,
@@ -398,7 +407,9 @@ function CreateSignatureDialog({
 }): JSX.Element {
   const [title, setTitle] = useState('');
   const [formType, setFormType] = useState('');
-  const [signers, setSigners] = useState<SignerDraft[]>([{ name: '', email: '', role: '' }]);
+  const [signers, setSigners] = useState<SignerDraft[]>([
+    { name: '', email: '', phone: '', role: '' },
+  ]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // 0221 — optional "start from a letter template": server renders the
@@ -453,7 +464,7 @@ function CreateSignatureDialog({
     // Drop people-derived signers; keep manual ones.
     setSigners((prev) => {
       const manual = prev.filter((s) => !s.peopleKey);
-      return manual.length ? manual : [{ name: '', email: '', role: '' }];
+      return manual.length ? manual : [{ name: '', email: '', phone: '', role: '' }];
     });
     if (!id) return;
     setPeopleLoading(true);
@@ -489,6 +500,7 @@ function CreateSignatureDialog({
           {
             name: p.name,
             email: p.email ?? '',
+            phone: p.phone ?? '',
             role: '',
             peopleKey: p.key,
             personId: p.personId,
@@ -498,7 +510,7 @@ function CreateSignatureDialog({
         ];
       }
       const after = prev.filter((s) => s.peopleKey !== p.key);
-      return after.length ? after : [{ name: '', email: '', role: '' }];
+      return after.length ? after : [{ name: '', email: '', phone: '', role: '' }];
     });
   }
 
@@ -515,6 +527,7 @@ function CreateSignatureDialog({
       const signerPayload = signers.map((s) => ({
         name: s.name.trim(),
         email: s.email.trim(),
+        phone: s.phone.trim() || null,
         role: s.role.trim() || undefined,
         personId: s.personId,
         clientContactId: s.clientContactId,
@@ -679,7 +692,11 @@ function CreateSignatureDialog({
                           <span style={{ flex: 1 }}>
                             {p.name}
                             {p.email ? (
-                              <span style={{ color: tokens.color.textMuted }}> · {p.email}</span>
+                              <span style={{ color: tokens.color.textMuted }}>
+                                {' '}
+                                · {p.email}
+                                {p.phone ? ` · ${p.phone}` : ''}
+                              </span>
                             ) : (
                               <span style={{ color: tokens.color.danger }}>
                                 {' '}
@@ -715,7 +732,7 @@ function CreateSignatureDialog({
             {signers.map((s, i) => (
               <div
                 key={s.peopleKey ?? `manual-${i}`}
-                style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 0.8fr auto', gap: 8 }}
+                style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 0.9fr 0.8fr auto', gap: 8 }}
               >
                 <Input
                   label={i === 0 ? 'Name' : undefined}
@@ -728,6 +745,12 @@ function CreateSignatureDialog({
                   value={s.email}
                   onChange={(e) => updateSigner(i, { email: e.target.value })}
                   placeholder="pat@co.example"
+                />
+                <Input
+                  label={i === 0 ? 'Mobile (to text)' : undefined}
+                  value={s.phone}
+                  onChange={(e) => updateSigner(i, { phone: e.target.value })}
+                  placeholder="(555) 123-4567"
                 />
                 <Input
                   label={i === 0 ? 'Role' : undefined}
@@ -749,7 +772,9 @@ function CreateSignatureDialog({
             <div>
               <Button
                 variant="secondary"
-                onClick={() => setSigners((p) => [...p, { name: '', email: '', role: '' }])}
+                onClick={() =>
+                  setSigners((p) => [...p, { name: '', email: '', phone: '', role: '' }])
+                }
               >
                 + Add signer
               </Button>

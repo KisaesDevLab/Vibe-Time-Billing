@@ -87,7 +87,7 @@ const KINDS: ReadonlyArray<KindEntry> = [
   { key: 'portal_invite', label: 'Portal invite / access granted', channels: ['EMAIL', 'SMS'] },
   { key: 'statement_sent', label: 'Account statement', channels: ['EMAIL'] },
   { key: 'engagement_letter_sent', label: 'Engagement letter sent', channels: ['EMAIL'] },
-  { key: 'signature_request', label: 'Signature requested', channels: ['EMAIL'] },
+  { key: 'signature_request', label: 'Signature requested', channels: ['EMAIL', 'SMS'] },
   { key: 'signature_complete', label: 'Signature completed', channels: ['EMAIL'] },
   { key: 'retainer_activated', label: 'Retainer activated', channels: ['EMAIL'] },
   { key: 'retainer_exhausted', label: 'Retainer exhausted', channels: ['EMAIL'] },
@@ -149,6 +149,7 @@ const SAMPLE_VARIABLES = [
   'link.expires_days',
   // Documents, statements, retainers, payments, events.
   'document.name',
+  'document.copy_note',
   'statement.balance',
   'statement.portal_url',
   'engagement.name',

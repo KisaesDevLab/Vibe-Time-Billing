@@ -8,7 +8,17 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Button, Card, Combobox, Pill, Table, tokens, type TableColumn } from '@vibe/ui';
+import {
+  Button,
+  Card,
+  Combobox,
+  MailIcon,
+  MessageIcon,
+  Pill,
+  Table,
+  tokens,
+  type TableColumn,
+} from '@vibe/ui';
 
 import { api, getCsrfToken, type ApiError } from '../api-client';
 import { usePermission } from '../auth-context';
@@ -20,6 +30,7 @@ interface Signer {
   id: string;
   name: string;
   email: string;
+  phone: string | null;
   role: string | null;
   order: number;
   status: string;
@@ -62,6 +73,8 @@ interface RequestDetail {
   sentAt: string | null;
   expiresAt: string | null;
   certificateFileUrl: string | null;
+  /** 0231 — how the signing links were (or will be) delivered. */
+  notifyChannel: 'EMAIL' | 'SMS' | 'BOTH';
 }
 interface NamedRef {
   id: string;
@@ -112,6 +125,12 @@ export function SignatureDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [profileId, setProfileId] = useState('');
   const [previewOpen, setPreviewOpen] = useState(false);
+  // 0231 — how the signing links go out. Drafts are always EMAIL until the
+  // firm picks otherwise here, so this needs no sync from the loaded row.
+  const [notifyChannel, setNotifyChannel] = useState<'EMAIL' | 'SMS' | 'BOTH'>('EMAIL');
+  // `${signerId}:${channel}` of the in-flight / last successful resend.
+  const [resending, setResending] = useState<string | null>(null);
+  const [resent, setResent] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
@@ -215,12 +234,48 @@ export function SignatureDetailPage(): JSX.Element {
     setBusy(true);
     setError(null);
     try {
-      await api(`/api/staff/signatures/${id}/send`, { method: 'POST' });
+      await api(`/api/staff/signatures/${id}/send`, {
+        method: 'POST',
+        body: JSON.stringify({ notifyChannel }),
+      });
       await load();
     } catch (err) {
       setError(messageFor(err as ApiError));
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Re-deliver one signer's existing link. Keyed by `${signerId}:${channel}`
+  // so only the clicked icon shows its spinner state.
+  async function resend(signerId: string, channel: 'EMAIL' | 'SMS'): Promise<void> {
+    setResending(`${signerId}:${channel}`);
+    setError(null);
+    setResent(null);
+    try {
+      await api(`/api/staff/signatures/${id}/signers/${signerId}/resend`, {
+        method: 'POST',
+        body: JSON.stringify({ channel }),
+      });
+      setResent(`${signerId}:${channel}`);
+      await load();
+    } catch (err) {
+      const msg = (err as ApiError).message;
+      setError(
+        msg === 'no_phone'
+          ? 'That signer has no mobile number on file.'
+          : msg === 'already_signed'
+            ? 'That signer has already signed.'
+            : msg === 'sms_not_configured'
+              ? 'Text messaging isn’t configured on this server.'
+              : msg === 'email_not_configured'
+                ? 'Email isn’t configured on this server.'
+                : msg === 'no_signing_link'
+                  ? 'No signing link exists yet for that signer.'
+                  : messageFor(err as ApiError),
+      );
+    } finally {
+      setResending(null);
     }
   }
 
@@ -260,6 +315,7 @@ export function SignatureDetailPage(): JSX.Element {
   const signerCols: TableColumn<Signer>[] = [
     { key: 'name', header: 'Name', render: (s) => s.name },
     { key: 'email', header: 'Email', render: (s) => s.email },
+    { key: 'phone', header: 'Mobile', render: (s) => s.phone ?? '—' },
     { key: 'role', header: 'Role', render: (s) => s.role ?? '—' },
     {
       key: 'fields',
@@ -272,7 +328,43 @@ export function SignatureDetailPage(): JSX.Element {
       header: 'Status',
       render: (s) => <Pill tone={statusTone(s.status)}>{statusLabel(s.status)}</Pill>,
     },
+    // Resend the signer's existing link. Only meaningful while the request
+    // is live and that signer still owes a signature.
+    {
+      key: 'resend',
+      header: 'Resend',
+      align: 'center',
+      render: (s) => {
+        if (!isLive || !canWrite || s.status === 'signed') return '—';
+        return (
+          <span style={{ display: 'inline-flex', gap: 2 }}>
+            <ResendButton
+              label={`Resend to ${s.name} by email`}
+              icon={<MailIcon size={16} />}
+              busy={resending === `${s.id}:EMAIL`}
+              done={resent === `${s.id}:EMAIL`}
+              onClick={() => void resend(s.id, 'EMAIL')}
+            />
+            <ResendButton
+              label={
+                s.phone ? `Resend to ${s.name} by text` : `${s.name} has no mobile number on file`
+              }
+              icon={<MessageIcon size={16} />}
+              busy={resending === `${s.id}:SMS`}
+              done={resent === `${s.id}:SMS`}
+              disabled={!s.phone}
+              onClick={() => void resend(s.id, 'SMS')}
+            />
+          </span>
+        );
+      },
+    },
   ];
+
+  // 0231 — a text needs a number; surface who can't be reached before send.
+  const textingChosen = notifyChannel !== 'EMAIL';
+  const signersWithoutPhone = signers.filter((s) => !s.phone?.trim()).map((s) => s.name);
+  const noTextableSigner = notifyChannel === 'SMS' && signersWithoutPhone.length === signers.length;
 
   const profileOptions = [
     { value: '', label: 'Choose a profile…' },
@@ -437,6 +529,22 @@ export function SignatureDetailPage(): JSX.Element {
                     requirement (Pub 1345).
                   </div>
                 )}
+                {textingChosen && signersWithoutPhone.length > 0 && (
+                  <div
+                    style={{
+                      fontSize: 13,
+                      color: noTextableSigner ? tokens.color.danger : tokens.color.textMuted,
+                      marginTop: tokens.space.sm,
+                    }}
+                  >
+                    {noTextableSigner
+                      ? 'No signer has a mobile number — add one before sending by text.'
+                      : `No mobile on file for ${signersWithoutPhone.join(', ')}; ` +
+                        (notifyChannel === 'BOTH'
+                          ? 'they will only get the email.'
+                          : 'they will not be notified.')}
+                  </div>
+                )}
                 <div
                   style={{
                     display: 'flex',
@@ -456,12 +564,44 @@ export function SignatureDetailPage(): JSX.Element {
                         Use the <strong>In-office signing</strong> card above to sign this 1040.
                       </span>
                     ) : (
-                      <Button
-                        onClick={() => void send()}
-                        disabled={busy || placements.length === 0}
-                      >
-                        {busy ? 'Sending…' : 'Send for signature'}
-                      </Button>
+                      <>
+                        <label
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            fontSize: 13,
+                            color: tokens.color.textMuted,
+                          }}
+                        >
+                          Deliver by
+                          <select
+                            aria-label="Deliver the signing link by"
+                            value={notifyChannel}
+                            onChange={(e) =>
+                              setNotifyChannel(e.target.value as 'EMAIL' | 'SMS' | 'BOTH')
+                            }
+                            style={{
+                              padding: '6px 8px',
+                              background: tokens.color.surface,
+                              color: tokens.color.text,
+                              border: `1px solid ${tokens.color.border}`,
+                              borderRadius: tokens.radius.sm,
+                              fontSize: 13,
+                            }}
+                          >
+                            <option value="EMAIL">Email</option>
+                            <option value="SMS">Text</option>
+                            <option value="BOTH">Email + text</option>
+                          </select>
+                        </label>
+                        <Button
+                          onClick={() => void send()}
+                          disabled={busy || placements.length === 0 || noTextableSigner}
+                        >
+                          {busy ? 'Sending…' : 'Send for signature'}
+                        </Button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -584,4 +724,48 @@ function messageFor(e: ApiError): string {
   }
   if (body?.error === 'no_source') return 'Upload a source PDF before sending.';
   return e.message || 'request_failed';
+}
+
+/** Icon-only resend action. Shows a check briefly after a successful send so
+ *  the click has visible feedback without a toast system. */
+function ResendButton({
+  label,
+  icon,
+  busy,
+  done,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  icon: JSX.Element;
+  busy: boolean;
+  done: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      title={label}
+      aria-label={label}
+      onClick={onClick}
+      disabled={disabled || busy}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 28,
+        height: 28,
+        padding: 0,
+        background: 'transparent',
+        border: 'none',
+        borderRadius: tokens.radius.sm,
+        color: done ? tokens.color.success : tokens.color.textMuted,
+        opacity: disabled ? 0.35 : 1,
+        cursor: disabled ? 'not-allowed' : busy ? 'progress' : 'pointer',
+      }}
+    >
+      {done ? '✓' : icon}
+    </button>
+  );
 }

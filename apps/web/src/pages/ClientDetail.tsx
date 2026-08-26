@@ -30,6 +30,7 @@ interface Client {
   termsDays: number;
   invoiceConsolidationPreference: 'CONSOLIDATED' | 'SEPARATE';
   partnerInChargeId: string | null;
+  partnerName?: string | null;
   createdAt: string;
   tags?: string[] | null;
   customFields?: Record<string, unknown> | null;

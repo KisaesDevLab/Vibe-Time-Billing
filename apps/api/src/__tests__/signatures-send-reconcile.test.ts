@@ -14,7 +14,7 @@ import { eq } from 'drizzle-orm';
 import { Readable } from 'node:stream';
 import { PDFDocument } from 'pdf-lib';
 
-import { signatureRequests, signatureSigners } from '@vibe/db/schema';
+import { clientFolders, files, signatureRequests, signatureSigners } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
@@ -105,10 +105,16 @@ interface SentMail {
   body: string;
 }
 
+interface SentText {
+  to: string;
+  body: string;
+}
+
 function buildApp(
   client: OpenSignClient,
   storage: StorageClient,
   mailbox?: SentMail[],
+  texts?: SentText[],
 ): express.Express {
   const app = express();
   app.use(express.json());
@@ -129,6 +135,11 @@ function buildApp(
       sendEmail: mailbox
         ? async (a) => {
             mailbox.push({ to: a.to, subject: a.subject, body: a.body });
+          }
+        : undefined,
+      sendSms: texts
+        ? async (a) => {
+            texts.push({ to: a.to, body: a.body });
           }
         : undefined,
     }),
@@ -473,6 +484,355 @@ describe('signatures send + reconcile (phase 6+7)', () => {
     expect(mailbox.map((m) => m.to).sort()).toEqual(['a@co.example', 'b@co.example']);
     // Each email carries that signer's OpenSign signing URL.
     expect(mailbox.every((m) => m.body.includes('/load/recipientSignPdf/doc_sent_1/'))).toBe(true);
+  });
+
+  // 0231 — deliver the signing link by text.
+  async function twoSignerRequest(
+    app: express.Express,
+    signers: Array<{ name: string; email: string; phone?: string | null }>,
+  ): Promise<string> {
+    const create = await request(app)
+      .post('/api/staff/signatures')
+      .send({ title: 'Engagement', signers });
+    const id = create.body.id as string;
+    await request(app)
+      .post(`/api/staff/signatures/${id}/source`)
+      .set('Content-Type', 'application/pdf')
+      .send(await onePagePdf());
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const signerIds = (detail.body.signers as { id: string }[]).map((s) => s.id);
+    await request(app)
+      .put(`/api/staff/signatures/${id}/placements`)
+      .send({
+        placements: signerIds.map((sid) => ({
+          signerId: sid,
+          fieldType: 'signature',
+          pageNumber: 1,
+          nx: 0.1,
+          ny: 0.7,
+          nw: 0.3,
+          nh: 0.05,
+        })),
+      });
+    return id;
+  }
+
+  it('texts the signing link instead of emailing it when notifyChannel=SMS', async () => {
+    const mailbox: SentMail[] = [];
+    const texts: SentText[] = [];
+    const app = buildApp(mockClient(), memStorage(), mailbox, texts);
+    const id = await twoSignerRequest(app, [
+      { name: 'A', email: 'a@co.example', phone: '(555) 123-4567' },
+    ]);
+
+    const res = await request(app)
+      .post(`/api/staff/signatures/${id}/send`)
+      .send({ notifyChannel: 'SMS' });
+    expect(res.status).toBe(200);
+
+    expect(mailbox).toHaveLength(0);
+    expect(texts).toHaveLength(1);
+    // Normalized to E.164 before handing to the SMS provider.
+    expect(texts[0]!.to).toBe('+15551234567');
+    expect(texts[0]!.body).toContain('/load/recipientSignPdf/doc_sent_1/');
+
+    const [row] = await harness.db
+      .select({ notifyChannel: signatureRequests.notifyChannel })
+      .from(signatureRequests)
+      .where(eq(signatureRequests.id, id));
+    expect(row!.notifyChannel).toBe('SMS');
+  });
+
+  it('sends both when notifyChannel=BOTH, and records who had no mobile', async () => {
+    const mailbox: SentMail[] = [];
+    const texts: SentText[] = [];
+    const app = buildApp(mockClient(), memStorage(), mailbox, texts);
+    const id = await twoSignerRequest(app, [
+      { name: 'A', email: 'a@co.example', phone: '555-123-4567' },
+      { name: 'B', email: 'b@co.example' },
+    ]);
+
+    await request(app).post(`/api/staff/signatures/${id}/send`).send({ notifyChannel: 'BOTH' });
+
+    expect(mailbox.map((m) => m.to).sort()).toEqual(['a@co.example', 'b@co.example']);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.to).toBe('+15551234567');
+
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const notified = (detail.body.events as Array<{ event: string; detail: unknown }>).find(
+      (e) => e.event === 'signers_notified',
+    );
+    expect(notified?.detail).toMatchObject({
+      channel: 'BOTH',
+      emailed: 2,
+      texted: 1,
+      noPhone: ['B'],
+    });
+  });
+
+  it('hands off to the next sequential signer on the same channel', async () => {
+    const storage = memStorage();
+    const mailbox: SentMail[] = [];
+    const texts: SentText[] = [];
+    const app = buildApp(mockClient(), storage, mailbox, texts);
+    const create = await request(app)
+      .post('/api/staff/signatures')
+      .send({
+        title: 'Engagement',
+        sendInOrder: true,
+        signers: [
+          { name: 'A', email: 'a@co.example', phone: '555-111-1111' },
+          { name: 'B', email: 'b@co.example', phone: '555-222-2222' },
+        ],
+      });
+    const id = create.body.id as string;
+    await request(app)
+      .post(`/api/staff/signatures/${id}/source`)
+      .set('Content-Type', 'application/pdf')
+      .send(await onePagePdf());
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const signerIds = (detail.body.signers as { id: string }[]).map((s) => s.id);
+    await request(app)
+      .put(`/api/staff/signatures/${id}/placements`)
+      .send({
+        placements: signerIds.map((sid) => ({
+          signerId: sid,
+          fieldType: 'signature',
+          pageNumber: 1,
+          nx: 0.1,
+          ny: 0.7,
+          nw: 0.3,
+          nh: 0.05,
+        })),
+      });
+    await request(app).post(`/api/staff/signatures/${id}/send`).send({ notifyChannel: 'SMS' });
+
+    // Sequential: only the first signer was texted.
+    expect(texts.map((t) => t.to)).toEqual(['+15551111111']);
+
+    // A signs → B gets the hand-off, by text, not email.
+    await reconcileSignatureRequestByDocument(
+      {
+        db: harness.db,
+        storage,
+        client: mockClient({
+          doc: () => ({
+            objectId: 'doc_sent_1',
+            AuditTrail: [{ Activity: 'Signed', UserPtr: { Email: 'a@co.example' } }],
+          }),
+        }),
+        notify: async (a) => {
+          mailbox.push({ to: a.to, subject: a.subject, body: a.body });
+        },
+        notifySms: async (a) => {
+          texts.push({ to: a.to, body: a.body });
+        },
+      },
+      'doc_sent_1',
+    );
+
+    expect(texts.map((t) => t.to)).toEqual(['+15551111111', '+15552222222']);
+    expect(mailbox).toHaveLength(0);
+  });
+
+  it('defaults to email when no channel is given', async () => {
+    const mailbox: SentMail[] = [];
+    const texts: SentText[] = [];
+    const app = buildApp(mockClient(), memStorage(), mailbox, texts);
+    const id = await twoSignerRequest(app, [
+      { name: 'A', email: 'a@co.example', phone: '555-123-4567' },
+    ]);
+
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+
+    expect(mailbox).toHaveLength(1);
+    expect(texts).toHaveLength(0);
+  });
+
+  // ---- resend one signer's link ------------------------------------
+  it('resends a live signer their existing link by email or text', async () => {
+    const mailbox: SentMail[] = [];
+    const texts: SentText[] = [];
+    const app = buildApp(mockClient(), memStorage(), mailbox, texts);
+    const id = await twoSignerRequest(app, [
+      { name: 'A', email: 'a@co.example', phone: '555-123-4567' },
+    ]);
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+    expect(mailbox).toHaveLength(1);
+
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const signerId = (detail.body.signers as { id: string }[])[0]!.id;
+
+    const byEmail = await request(app)
+      .post(`/api/staff/signatures/${id}/signers/${signerId}/resend`)
+      .send({ channel: 'EMAIL' });
+    expect(byEmail.status).toBe(200);
+    expect(mailbox).toHaveLength(2);
+    // The SAME link — resend re-delivers, it never re-creates the document.
+    expect(mailbox[1]!.body).toContain('/load/recipientSignPdf/doc_sent_1/');
+
+    const bySms = await request(app)
+      .post(`/api/staff/signatures/${id}/signers/${signerId}/resend`)
+      .send({ channel: 'SMS' });
+    expect(bySms.status).toBe(200);
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.to).toBe('+15551234567');
+
+    const after = await request(app).get(`/api/staff/signatures/${id}`);
+    const resends = (after.body.events as Array<{ event: string; detail: unknown }>).filter(
+      (e) => e.event === 'signer_resent',
+    );
+    expect(resends).toHaveLength(2);
+    expect(resends.map((e) => (e.detail as { channel: string }).channel).sort()).toEqual([
+      'EMAIL',
+      'SMS',
+    ]);
+  });
+
+  it('refuses a text resend when the signer has no mobile', async () => {
+    const app = buildApp(mockClient(), memStorage(), [], []);
+    const id = await twoSignerRequest(app, [{ name: 'A', email: 'a@co.example' }]);
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const signerId = (detail.body.signers as { id: string }[])[0]!.id;
+
+    const res = await request(app)
+      .post(`/api/staff/signatures/${id}/signers/${signerId}/resend`)
+      .send({ channel: 'SMS' });
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe('no_phone');
+  });
+
+  it('refuses to resend on a draft, or to a signer who already signed', async () => {
+    const app = buildApp(mockClient(), memStorage(), [], []);
+    const id = await twoSignerRequest(app, [
+      { name: 'A', email: 'a@co.example', phone: '555-123-4567' },
+    ]);
+    const draftDetail = await request(app).get(`/api/staff/signatures/${id}`);
+    const signerId = (draftDetail.body.signers as { id: string }[])[0]!.id;
+
+    const onDraft = await request(app)
+      .post(`/api/staff/signatures/${id}/signers/${signerId}/resend`)
+      .send({ channel: 'EMAIL' });
+    expect(onDraft.status).toBe(409);
+    expect(onDraft.body.error).toBe('not_live');
+
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+    await harness.db
+      .update(signatureSigners)
+      .set({ status: 'signed' })
+      .where(eq(signatureSigners.id, signerId));
+
+    const signed = await request(app)
+      .post(`/api/staff/signatures/${id}/signers/${signerId}/resend`)
+      .send({ channel: 'EMAIL' });
+    expect(signed.status).toBe(409);
+    expect(signed.body.error).toBe('already_signed');
+  });
+
+  // ---- auto-file on completion -------------------------------------
+  it('files the signed copy into the client folder when the request names a client', async () => {
+    const storage = memStorage();
+    const app = buildApp(mockClient(), storage);
+    await harness.db
+      .insert(clientFolders)
+      .values({ firmId: seed.firmId, clientId: seed.clientId, storagePath: 'Test Client Co' });
+
+    // preparedRequest() links seed.clientId; no tax return involved.
+    const { id } = await preparedRequest(app);
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+    await reconcileSignatureRequestByDocument(
+      {
+        db: harness.db,
+        storage,
+        client: mockClient({
+          doc: () => ({
+            objectId: 'doc_sent_1',
+            IsCompleted: true,
+            SignedUrl: 'http://os/files/signed.pdf',
+          }),
+        }),
+      },
+      'doc_sent_1',
+    );
+
+    const filed = await harness.db
+      .select({
+        subfolderPath: files.subfolderPath,
+        originalFilename: files.originalFilename,
+        source: files.source,
+      })
+      .from(files)
+      .where(eq(files.clientId, seed.clientId));
+    const signed = filed.find((f) => f.originalFilename.includes('(signed)'));
+    expect(signed).toBeTruthy();
+    // Non-return requests land in Signatures, not Tax Returns (stored
+    // normalized with a trailing slash).
+    expect(signed!.subfolderPath).toBe('Signatures/');
+    expect(signed!.source).toBe('signature');
+
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const ev = (detail.body.events as Array<{ event: string; detail: unknown }>).find(
+      (e) => e.event === 'signed_filed',
+    );
+    expect(ev?.detail).toMatchObject({ subfolder: 'Signatures' });
+  });
+
+  it('records why nothing was filed when the client folder is not bound', async () => {
+    const storage = memStorage();
+    const app = buildApp(mockClient(), storage);
+    const { id } = await preparedRequest(app); // no clientFolders row seeded
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+    await reconcileSignatureRequestByDocument(
+      {
+        db: harness.db,
+        storage,
+        client: mockClient({
+          doc: () => ({
+            objectId: 'doc_sent_1',
+            IsCompleted: true,
+            SignedUrl: 'http://os/files/signed.pdf',
+          }),
+        }),
+      },
+      'doc_sent_1',
+    );
+
+    const detail = await request(app).get(`/api/staff/signatures/${id}`);
+    const ev = (detail.body.events as Array<{ event: string; detail: unknown }>).find(
+      (e) => e.event === 'signed_file_skipped',
+    );
+    expect(ev?.detail).toMatchObject({ reason: 'client_folder_not_bound' });
+  });
+
+  it('does not file anything when the request has no client', async () => {
+    const storage = memStorage();
+    const app = buildApp(mockClient(), storage);
+    await harness.db
+      .insert(clientFolders)
+      .values({ firmId: seed.firmId, clientId: seed.clientId, storagePath: 'Test Client Co' });
+    const id = await twoSignerRequest(app, [{ name: 'A', email: 'a@co.example' }]);
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+    await reconcileSignatureRequestByDocument(
+      {
+        db: harness.db,
+        storage,
+        client: mockClient({
+          doc: () => ({
+            objectId: 'doc_sent_1',
+            IsCompleted: true,
+            SignedUrl: 'http://os/files/signed.pdf',
+          }),
+        }),
+      },
+      'doc_sent_1',
+    );
+
+    const filed = await harness.db
+      .select({ id: files.id })
+      .from(files)
+      .where(eq(files.clientId, seed.clientId));
+    expect(filed).toHaveLength(0);
   });
 
   it('voids a sent request (terminal; reconcile then ignores it)', async () => {

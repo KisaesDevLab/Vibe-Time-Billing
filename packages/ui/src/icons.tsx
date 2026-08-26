@@ -37,6 +37,25 @@ function Svg({
   );
 }
 
+/** Envelope — send / resend by email. */
+export function MailIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <path d="m2 7 10 6 10-6" />
+    </Svg>
+  );
+}
+
+/** Speech bubble — send / resend by text message. */
+export function MessageIcon(props: IconProps): JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 9 9 0 0 1-3.7-.8L3 21l1.9-5.1A8.4 8.4 0 0 1 4 11.5 8.4 8.4 0 0 1 12.5 3 8.4 8.4 0 0 1 21 11.5Z" />
+    </Svg>
+  );
+}
+
 /** Closed padlock — "private" visibility. */
 export function Lock(props: IconProps): JSX.Element {
   return (

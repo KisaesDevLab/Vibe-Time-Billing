@@ -318,7 +318,14 @@ export function createApp(deps: AppDeps): Express {
                 subject: args.subject,
                 body: args.body,
                 html: args.html,
+                // The signature-completion confirmation encloses the
+                // client's signed copy.
+                attachments: args.attachments,
               })
+          : undefined,
+        // 0231 — sequential hand-off by text when the request went out by SMS.
+        sendSms: deps.sendPortalSms
+          ? (a) => deps.sendPortalSms!({ to: a.to, body: a.body })
           : undefined,
         portalBaseUrl: config.PORTAL_BASE_URL,
         printQueue: bullPrintQueue,
@@ -723,6 +730,11 @@ export function createApp(deps: AppDeps): Express {
         : undefined,
     sendEmail: deps.sendStaffMail
       ? (a) => deps.sendStaffMail!({ to: a.to, subject: a.subject, body: a.body, html: a.html })
+      : undefined,
+    // 0231 — texting a signer their link uses the same SMS provider as the
+    // rest of the client-facing messages.
+    sendSms: deps.sendPortalSms
+      ? (a) => deps.sendPortalSms!({ to: a.to, body: a.body })
       : undefined,
     portalBaseUrl: config.PORTAL_BASE_URL,
   });

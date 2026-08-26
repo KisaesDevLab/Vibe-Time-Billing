@@ -3501,7 +3501,7 @@ The list shows each person's name, email, and phone, plus:
 - **Portal** — whether they have an active portal login (shown as an *Enabled* badge) or none; this column has a filter (**Enabled** / **None**).
 - **Kind** — whether the row is a **Directory contact** or **Portal-only** person; this column also has a filter.
 
-Search matches name, email, or phone. Click any name to open the person's detail page.
+Search matches name, email, phone, or mobile. Click any name to open the person's detail page.
 
 ## A person's detail page
 The detail page has the canonical name/email/phone (edit them here and the change applies everywhere that person appears) and a **card grid** of every client they touch. For each client you can:

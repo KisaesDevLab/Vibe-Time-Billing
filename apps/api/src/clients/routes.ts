@@ -240,17 +240,20 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
     const officeIds = csv(req.query['officeId']);
 
     const conds = [eq(clients.firmId, firmId)];
+    const like = `%${q}%`;
     if (q) {
       // 0050 — expand search to name, externalId, custom_fields (any
       // value, via jsonb::text cast), and contacts (email/phone) via
       // EXISTS subquery. GIN index keeps the custom-fields path cheap.
-      const like = `%${q}%`;
-      // 0115 — contact email/phone/mobile live on person (joined here).
+      // 0115 — contact email/phone/mobile live on person (joined here);
+      // the person's name matches too, so staff can find a client by
+      // whoever they actually deal with (spouse, controller, trustee).
       const contactMatch = sql`EXISTS (
         SELECT 1 FROM client_contact cc
         JOIN person p ON p.id = cc.person_id
         WHERE cc.client_id = ${clients.id}
-        AND (p.email ILIKE ${like} OR p.phone ILIKE ${like} OR p.mobile ILIKE ${like})
+        AND (p.full_name ILIKE ${like} OR p.email ILIKE ${like}
+             OR p.phone ILIKE ${like} OR p.mobile ILIKE ${like})
       )`;
       const customMatch = sql`${clients.customFields}::text ILIKE ${like}`;
       const expr = or(
@@ -323,6 +326,28 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
       LIMIT 1
     )`.as('active_portal_access_id');
 
+    // When searching, name the client's people that matched so the row
+    // shows why it's in the results (a hit on a spouse/controller is
+    // otherwise invisible — the client name alone doesn't explain it).
+    // NULL when there's no query, so the projection stays cheap.
+    const matchedPeopleExpr = (
+      q
+        ? sql<string | null>`(
+            SELECT string_agg(m.full_name, ', ')
+            FROM (
+              SELECT DISTINCT p.full_name
+              FROM client_contact cc
+              JOIN person p ON p.id = cc.person_id
+              WHERE cc.client_id = ${clients.id}
+                AND (p.full_name ILIKE ${like} OR p.email ILIKE ${like}
+                     OR p.phone ILIKE ${like} OR p.mobile ILIKE ${like})
+              ORDER BY p.full_name
+              LIMIT 3
+            ) m
+          )`
+        : sql<string | null>`NULL`
+    ).as('matched_people');
+
     const baseSelect = deps.db
       .select({
         id: clients.id,
@@ -344,6 +369,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         restricted: clients.restricted,
         outstandingBalanceCents: outstandingExpr,
         activePortalAccessId: portalAccessExpr,
+        matchedPeople: matchedPeopleExpr,
       })
       .from(clients)
       .leftJoin(appUsers, eq(appUsers.id, clients.partnerInChargeId))
@@ -400,11 +426,17 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         return;
       }
       // 0092 — resolve the office name so the InfoCard can render it
-      // without a second round trip.
+      // without a second round trip. Same for the client owner
+      // (partner-in-charge), which the InfoCard shows read-only.
       const [office] = await deps.db
         .select({ name: offices.name })
         .from(offices)
         .where(eq(offices.id, client.officeId))
+        .limit(1);
+      const [owner] = await deps.db
+        .select({ fullName: appUsers.fullName })
+        .from(appUsers)
+        .where(eq(appUsers.id, client.partnerInChargeId))
         .limit(1);
 
       // 0165 — restriction state for the caller. accessRestricted drives
@@ -431,6 +463,7 @@ export function createClientRouter(deps: ClientRoutesDeps): Router {
         client: {
           ...client,
           officeName: office?.name ?? null,
+          partnerName: owner?.fullName ?? null,
           accessRestricted,
           canManageRestriction,
           ...(designatedUserIds ? { designatedUserIds } : {}),

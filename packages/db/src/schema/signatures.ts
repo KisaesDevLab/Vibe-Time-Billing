@@ -64,6 +64,10 @@ export const signatureRequests = pgTable(
     pageGeometry: jsonb('page_geometry'),
     formType: text('form_type'),
     sendInOrder: boolean('send_in_order').notNull().default(false),
+    // 0231 — how the signing link is delivered. Persisted (not just a send
+    // argument) because a sequential send notifies the remaining signers
+    // later, from reconcile.
+    notifyChannel: text('notify_channel').notNull().default('EMAIL'),
     sentAt: timestamp('sent_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
     expiresAt: timestamp('expires_at', { withTimezone: true }),
@@ -84,6 +88,10 @@ export const signatureRequests = pgTable(
       'signature_requests_signing_mode_ck',
       sql`${t.signingMode} IN ('remote','in_person')`,
     ),
+    notifyChannelCk: check(
+      'signature_requests_notify_channel_ck',
+      sql`${t.notifyChannel} IN ('EMAIL','SMS','BOTH')`,
+    ),
   }),
 );
 
@@ -96,6 +104,8 @@ export const signatureSigners = pgTable(
       .references(() => signatureRequests.id, { onDelete: 'cascade' }),
     name: text('name').notNull(),
     email: text('email').notNull(),
+    // 0231 — optional; required only to text this signer their link.
+    phone: text('phone'),
     role: text('role'),
     order: integer('order').notNull().default(1),
     status: text('status').notNull().default('pending'),

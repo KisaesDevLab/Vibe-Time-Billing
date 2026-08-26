@@ -25,7 +25,16 @@ import type { StorageClient } from '@vibe/storage';
 import type { OpenSignClient } from '../esign/opensign-client';
 import type { PageGeometry } from './geometry';
 import { createSignatureDocument } from './opensign-document';
-import { notifySigner, signerSigningUrl, type SignerMailer } from './notify';
+import {
+  notifySigner,
+  notifySignerSms,
+  signerSigningUrl,
+  wantsEmail,
+  wantsSms,
+  type NotifyChannel,
+  type SignerMailer,
+  type SignerTexter,
+} from './notify';
 import { formRequiresKba } from './profiles';
 import { validatePlacements, type PlacementInput, type ValidationError } from './validation';
 
@@ -40,6 +49,8 @@ export interface SendDeps {
   /** Delivers each signer their signing link (OpenSign won't). Best-effort;
    *  absent when mail isn't configured. */
   sendEmail?: SignerMailer;
+  /** 0231 — same link by text. Absent when SMS isn't configured. */
+  sendSms?: SignerTexter;
 }
 
 export type SendOutcome =
@@ -66,6 +77,9 @@ export interface SendArgs {
   inPerson?: boolean;
   /** Per-signer in-person ID attestation (required for KBA forms in-person). */
   identityVerifications?: IdentityVerification[];
+  /** 0231 — how to deliver the signing links (default EMAIL). Persisted on
+   *  the request so a sequential send keeps using it for later signers. */
+  notifyChannel?: NotifyChannel;
 }
 
 async function streamToBuffer(stream: Readable): Promise<Buffer> {
@@ -88,6 +102,7 @@ export async function sendSignatureRequest(
   now: Date = new Date(),
 ): Promise<SendOutcome> {
   const { db } = deps;
+  const channel: NotifyChannel = args.notifyChannel ?? 'EMAIL';
 
   const [request] = await db
     .select()
@@ -195,6 +210,7 @@ export async function sendSignatureRequest(
         opensignDocumentId: created.opensignDocumentId,
         status: 'sent',
         signingMode: args.inPerson ? 'in_person' : 'remote',
+        notifyChannel: channel,
         sentAt: now,
         expiresAt,
         updatedAt: now,
@@ -249,24 +265,33 @@ export async function sendSignatureRequest(
   // notified from reconcile as each completes. Best-effort: a mail failure
   // never undoes the committed send. In-person sends email NOTHING — the
   // client is in the office and signs on a device / via the QR sheet.
-  if (deps.sendEmail && !args.inPerson) {
+  if (!args.inPerson && (deps.sendEmail || deps.sendSms)) {
     const urlBySigner = new Map(created.signers.map((s) => [s.signerId, s.signingUrl]));
     const toNotify = request.sendInOrder ? signers.slice(0, 1) : signers;
-    let notified = 0;
+    let emailed = 0;
+    let texted = 0;
+    // Signers the firm asked to text but who have no usable number — the
+    // event records them so staff can see why someone wasn't reached.
+    const noPhone: string[] = [];
     for (const s of toNotify) {
       const url = urlBySigner.get(s.id);
       if (!url) continue;
-      if (
-        await notifySigner(deps.sendEmail, {
-          to: s.email,
-          name: s.name,
-          title: request.title,
-          signingUrl: url,
-          db,
-          firmId: request.firmId,
-        })
-      )
-        notified += 1;
+      const notice = {
+        to: s.email,
+        name: s.name,
+        title: request.title,
+        signingUrl: url,
+        phone: s.phone,
+        db,
+        firmId: request.firmId,
+      };
+      if (wantsEmail(channel) && deps.sendEmail) {
+        if (await notifySigner(deps.sendEmail, notice)) emailed += 1;
+      }
+      if (wantsSms(channel) && deps.sendSms) {
+        if (await notifySignerSms(deps.sendSms, notice)) texted += 1;
+        else if (!s.phone) noPhone.push(s.name);
+      }
     }
     await db
       .insert(signatureEvents)
@@ -274,7 +299,15 @@ export async function sendSignatureRequest(
         requestId: request.id,
         actor: 'system',
         event: 'signers_notified',
-        detail: { notified, sequential: request.sendInOrder },
+        detail: {
+          // `notified` kept for the existing readers of this event.
+          notified: channel === 'SMS' ? texted : emailed,
+          emailed,
+          texted,
+          channel,
+          ...(noPhone.length > 0 ? { noPhone } : {}),
+          sequential: request.sendInOrder,
+        },
       })
       .catch(() => undefined);
   }

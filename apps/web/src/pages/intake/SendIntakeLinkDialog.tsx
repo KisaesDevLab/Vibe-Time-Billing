@@ -227,7 +227,7 @@ export function SendIntakeLinkDialog({ onClose }: { onClose: () => void }): JSX.
               <input
                 style={inputStyle}
                 value={personQuery}
-                placeholder="Search name, email, or phone…"
+                placeholder="Search name, email, phone, or mobile…"
                 autoComplete="off"
                 onChange={(e) => setPersonQuery(e.target.value)}
                 onFocus={() => {

@@ -343,13 +343,21 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
       '{{ firm.displayName }}',
   },
   {
+    kind: 'signature_request',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: {{ client.name }}, please sign {{ document.name }}: {{ link.url }}',
+  },
+  {
     kind: 'signature_complete',
     channel: 'EMAIL',
     subject: 'Your document has been fully signed',
     body:
       'Hello,\n\n' +
-      'Thank you — your document with {{ firm.displayName }} has been fully signed and is complete. ' +
-      'A copy is available for your records.\n\n' +
+      'Thank you — {{ document.name }} has been fully signed and is complete.\n\n' +
+      // Resolves to "Your signed copy is attached to this email." when the
+      // PDF could be enclosed, otherwise to who to contact for one. The old
+      // copy promised a copy without saying how to get it.
+      '{{ document.copy_note }}\n\n' +
       'We appreciate your business.\n\n' +
       '{{ firm.displayName }}',
   },

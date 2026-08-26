@@ -9,9 +9,14 @@
 // first signer here and the next signer from reconcile as each one
 // completes. All sends are best-effort (a mail failure never rolls back a
 // committed send — the link is also visible to staff on the detail page).
+//
+// 0231 — the request's notifyChannel picks email, text, or both. A text
+// carries the same per-signer URL; the signing page itself is the gate,
+// so SMS adds no exposure the emailed link doesn't already have.
 
 import type { Database } from '@vibe/db';
 import { firms } from '@vibe/db/schema';
+import { normalizePhone } from '@vibe/core/auth';
 
 import { firmScope, renderTemplate } from '../notifications/templating';
 
@@ -22,11 +27,25 @@ export type SignerMailer = (args: {
   html?: string;
 }) => Promise<void>;
 
+export type SignerTexter = (args: { to: string; body: string }) => Promise<void>;
+
+/** How a request's signing links go out. Mirrors signature_requests.notify_channel. */
+export type NotifyChannel = 'EMAIL' | 'SMS' | 'BOTH';
+
+export function wantsEmail(channel: NotifyChannel): boolean {
+  return channel !== 'SMS';
+}
+export function wantsSms(channel: NotifyChannel): boolean {
+  return channel !== 'EMAIL';
+}
+
 export interface SignerNotice {
   to: string;
   name: string;
   title: string;
   signingUrl: string;
+  /** E.164-able phone; required to text this signer. */
+  phone?: string | null;
   /** When supplied, the email subject/body honor the firm's
    *  `signature_request` template override; otherwise the inline copy is used. */
   db?: Database | null;
@@ -90,6 +109,52 @@ export async function notifySigner(mailer: SignerMailer, notice: SignerNotice): 
   const mail = await buildSignerEmail(notice);
   try {
     await mailer({ to: notice.to, subject: mail.subject, body: mail.body, html: mail.html });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** SMS copy for one signer — one line plus the link, honoring the firm's
+ *  `signature_request` SMS template when it has one. */
+export async function buildSignerSms(n: SignerNotice): Promise<string> {
+  const fallbackBody = `${n.name}, you have a document to sign: "${n.title}". Sign here: ${n.signingUrl}`;
+  if (!n.db) return fallbackBody;
+  let firmId = n.firmId;
+  if (!firmId) {
+    const [firm] = await n.db.select({ id: firms.id }).from(firms).limit(1);
+    firmId = firm?.id;
+  }
+  if (!firmId) return fallbackBody;
+  const rendered = await renderTemplate({
+    db: n.db,
+    firmId,
+    kind: 'signature_request',
+    channel: 'SMS',
+    fallback: { body: fallbackBody },
+    context: {
+      client: { name: n.name },
+      firm: await firmScope(n.db, firmId),
+      document: { name: n.title },
+      link: { url: n.signingUrl },
+    },
+  });
+  return rendered.body;
+}
+
+/**
+ * Best-effort: text one signer their link; never throws. Returns false
+ * when the signer has no usable number — the caller reports that as an
+ * un-notified signer rather than failing the send.
+ */
+export async function notifySignerSms(
+  texter: SignerTexter,
+  notice: SignerNotice,
+): Promise<boolean> {
+  const to = notice.phone ? normalizePhone(notice.phone) : null;
+  if (!to) return false;
+  try {
+    await texter({ to, body: await buildSignerSms(notice) });
     return true;
   } catch {
     return false;

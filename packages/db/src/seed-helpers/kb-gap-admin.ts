@@ -168,7 +168,7 @@ Firm administrators with access to Admin settings.
 - **Accepting** — whether they're currently accepting uploads (visible but paused = listed but not taking new files).
 - **Title** — display title shown to clients (e.g. "Tax Manager"); blank for none.
 - **Order** — display sort order on the page (lower first).
-- **Email / SMS** — whether this person is notified by email and/or text when a client uploads to them.
+- **Email / SMS** — whether this person is notified by email and/or text when a client uploads to them. The email names the submitter and includes the name, email, phone, and any message they typed on the intake form; the text names the submitter and one way to reach them. Files and the rest of the detail stay behind sign-in.
 - **Headshot** — **Upload**/**Replace** the staff photo; accepts PNG, JPEG, WebP.
 - Inactive staff rows appear dimmed.
 

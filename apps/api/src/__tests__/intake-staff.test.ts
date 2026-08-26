@@ -273,6 +273,40 @@ describe('send-a-link', () => {
     expect(res.body.delivered).toBe(true);
   });
 
+  it('prefills the mobile, not the landline, from the people typeahead', async () => {
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Mo Bileson',
+      email: 'mo@example.com',
+      phone: '(555) 111-0000',
+      mobile: '(555) 222-9999',
+    });
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Lan Lineman',
+      email: 'lan@example.com',
+      phone: '(555) 333-0000',
+    });
+
+    const app = buildSendApp({});
+    const withMobile = await request(app).get('/api/staff/intake/people-search?q=Bileson');
+    expect(withMobile.status).toBe(200);
+    // The link goes out by text, so the mobile is what gets prefilled.
+    expect(withMobile.body.people[0]).toMatchObject({
+      name: 'Mo Bileson',
+      phone: '(555) 222-9999',
+    });
+
+    // No mobile on file → fall back to the landline rather than blank.
+    const landlineOnly = await request(app).get('/api/staff/intake/people-search?q=Lineman');
+    expect(landlineOnly.body.people[0]).toMatchObject({
+      name: 'Lan Lineman',
+      phone: '(555) 333-0000',
+    });
+  });
+
   it('reports when the SMS channel is not configured', async () => {
     const res = await request(buildSendApp({ sendEmail: async () => undefined }))
       .post('/api/staff/intake/links')

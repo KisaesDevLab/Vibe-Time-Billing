@@ -27,7 +27,15 @@ export type CompletionMailer = (args: {
   subject: string;
   body: string;
   html?: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }) => Promise<void>;
+
+/**
+ * Largest signed PDF we'll attach to the confirmation. Above this the email
+ * still goes out, but it tells the client how to ask for the copy instead of
+ * silently promising one it doesn't carry.
+ */
+export const MAX_ATTACHED_COPY_BYTES = 10 * 1024 * 1024;
 
 export interface CompletedRequestInfo {
   id: string;
@@ -59,11 +67,34 @@ async function resolveClientEmail(db: Database, clientId: string): Promise<strin
   );
 }
 
+/**
+ * The sentence telling the client how to get their copy. The confirmation
+ * used to say "a copy is available for your records" and stop there, which
+ * left the client with no way to act on it — so this is always resolved to
+ * something concrete: either the copy is attached, or here's who to ask.
+ */
+export function copyNoteFor(args: {
+  attached: boolean;
+  supportEmail?: string | null;
+  supportPhone?: string | null;
+  firmName?: string | null;
+}): string {
+  if (args.attached) return 'Your signed copy is attached to this email.';
+  const reach = [args.supportEmail?.trim(), args.supportPhone?.trim()].filter(Boolean);
+  const who = args.firmName?.trim() || 'your firm';
+  return reach.length > 0
+    ? `For a copy of the signed document, contact ${who} at ${reach.join(' or ')}.`
+    : `For a copy of the signed document, reply to this email and ${who} will send one.`;
+}
+
 export async function notifySignatureCompleted(
   db: Database,
   request: CompletedRequestInfo,
   signerEmails: string[],
   sendEmail?: CompletionMailer,
+  /** The stored signed PDF, when reconcile captured one. Attached to the
+   *  confirmation if it's within MAX_ATTACHED_COPY_BYTES. */
+  signedPdf?: Buffer | null,
 ): Promise<void> {
   // 1. Staff in-app notifications — the creator plus the engagement's team.
   try {
@@ -99,8 +130,19 @@ export async function notifySignatureCompleted(
     try {
       const to = (await resolveClientEmail(db, request.clientId)) ?? signerEmails[0] ?? null;
       if (to) {
+        const firm = await firmScope(db, request.firmId);
+        const attach =
+          signedPdf && signedPdf.byteLength > 0 && signedPdf.byteLength <= MAX_ATTACHED_COPY_BYTES;
+        const copyNote = copyNoteFor({
+          attached: Boolean(attach),
+          supportEmail: firm.support_email,
+          supportPhone: firm.support_phone,
+          firmName: firm.displayName ?? firm.name,
+        });
         const fallbackSubject = `Signed: ${request.title}`;
-        const fallbackBody = `Your documents for "${request.title}" have been signed and received by your firm. No further action is needed — thank you.`;
+        const fallbackBody =
+          `Your documents for "${request.title}" have been signed and received by your firm. ` +
+          `No further action is needed — thank you.\n\n${copyNote}`;
         const rendered = await renderTemplate({
           db,
           firmId: request.firmId,
@@ -108,14 +150,25 @@ export async function notifySignatureCompleted(
           channel: 'EMAIL',
           fallback: { subject: fallbackSubject, body: fallbackBody },
           context: {
-            firm: await firmScope(db, request.firmId),
-            document: { name: request.title },
+            firm,
+            document: { name: request.title, copy_note: copyNote },
           },
         });
         await sendEmail({
           to,
           subject: rendered.subject ?? fallbackSubject,
           body: rendered.body,
+          ...(attach
+            ? {
+                attachments: [
+                  {
+                    filename: `${request.title} (signed).pdf`,
+                    content: signedPdf!,
+                    contentType: 'application/pdf',
+                  },
+                ],
+              }
+            : {}),
         });
       }
     } catch (err) {
