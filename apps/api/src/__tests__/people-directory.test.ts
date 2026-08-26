@@ -96,6 +96,32 @@ describe('people directory — list (0115)', () => {
     expect(byEmail.body.rows[0].fullName).toBe('Bob Brown');
   });
 
+  it('searches by phone and by mobile', async () => {
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Ida Iverson',
+      phone: '555-0100',
+      mobile: '555-0199',
+    });
+    await seedContact(harness.db, {
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      fullName: 'Jon Jarvis',
+      phone: '555-0200',
+      mobile: '555-0299',
+    });
+
+    const byPhone = await request(app()).get('/api/staff/people?q=555-0100');
+    expect(byPhone.body.rows).toHaveLength(1);
+    expect(byPhone.body.rows[0].fullName).toBe('Ida Iverson');
+
+    // The mobile column is searched too — 0299 appears only as a mobile.
+    const byMobile = await request(app()).get('/api/staff/people?q=0299');
+    expect(byMobile.body.rows).toHaveLength(1);
+    expect(byMobile.body.rows[0].fullName).toBe('Jon Jarvis');
+  });
+
   it('reflects active portal access and surfaces portal-only identities', async () => {
     const { personId } = await seedContact(harness.db, {
       firmId: seed.firmId,

@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 
-import { Button, Card, ScrollX, tokens } from '@vibe/ui';
+import { Button, Card, CloseIcon, ScrollX, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { PrintButton } from '../../components/PrintButton';
@@ -134,7 +134,33 @@ export function RouteSheetDialog({
       }}
     >
       <div style={{ width: 'min(720px, 94vw)', maxHeight: '88vh', overflow: 'auto' }}>
-        <Card title={`Route sheet — ${clientName}`}>
+        <Card
+          title={`Route sheet — ${clientName}`}
+          action={
+            <button
+              type="button"
+              aria-label="Close"
+              onClick={onClose}
+              disabled={busy}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 32,
+                height: 32,
+                flexShrink: 0,
+                background: 'transparent',
+                border: 'none',
+                borderRadius: tokens.radius.sm,
+                color: tokens.color.textMuted,
+                cursor: busy ? 'not-allowed' : 'pointer',
+                padding: 0,
+              }}
+            >
+              <CloseIcon size={18} />
+            </button>
+          }
+        >
           {error && (
             <p style={{ color: tokens.color.danger, fontSize: 12, marginBottom: 8 }} role="alert">
               {error}

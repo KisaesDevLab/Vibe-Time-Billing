@@ -50,6 +50,9 @@ interface ClientRow {
   // and clicking the Status pill opens a view-as session against this
   // access row. NULL when no active portal access exists.
   activePortalAccessId: string | null;
+  // Comma-joined names (max 3) of this client's people that matched the
+  // search text. NULL when not searching or when the client itself matched.
+  matchedPeople: string | null;
 }
 
 interface AppUser {
@@ -239,7 +242,7 @@ export function ClientsPage(): JSX.Element {
       >
         <TableSearch
           view={view}
-          placeholder="Search name, external ID, owner, office…"
+          placeholder="Search name, external ID, people, custom fields…"
           width={420}
         />
       </Card>
@@ -375,7 +378,16 @@ export function ClientsPage(): JSX.Element {
                     />
                   </span>
                 ) as unknown as string,
-                render: (c) => <a href={`/clients/${c.id}`}>{c.name}</a>,
+                render: (c) => (
+                  <>
+                    <a href={`/clients/${c.id}`}>{c.name}</a>
+                    {c.matchedPeople && (
+                      <div style={{ fontSize: 11, color: tokens.color.textMuted }}>
+                        {c.matchedPeople}
+                      </div>
+                    )}
+                  </>
+                ),
               },
               {
                 key: 'owner',

@@ -278,11 +278,14 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
 
     let filtered = rows;
     if (q) {
+      // 0224 — mobile is a first-class column (texts go there), so the
+      // directory search covers it alongside the landline.
       filtered = filtered.filter(
         (r) =>
           r.fullName.toLowerCase().includes(q) ||
           (r.email?.toLowerCase().includes(q) ?? false) ||
-          (r.phone?.toLowerCase().includes(q) ?? false),
+          (r.phone?.toLowerCase().includes(q) ?? false) ||
+          (r.mobile?.toLowerCase().includes(q) ?? false),
       );
     }
     if (portalFilter.length > 0) {

@@ -131,7 +131,7 @@ Staff with client read access can browse and export. **Send email** and **Roll d
 
 ## Steps
 1. Open **Clients** from the left navigation.
-2. Search with the box: **Search name, external ID, owner, office…**.
+2. Search with the box: **Search name, external ID, people, custom fields…** — it also matches a client's people by name, email, phone, or mobile, and names the matching person under the client.
 3. Filter from the column headers — **Owner**, **Type**, **Office**, and **Status** each carry a filter; **Name**, **Outstanding Bal.**, and others sort.
 4. Sort by **Outstanding Bal.** to surface clients who owe the most.
 5. Adjust visible columns from the column controls, and export the list with the CSV download.

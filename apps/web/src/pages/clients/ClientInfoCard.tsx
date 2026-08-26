@@ -18,6 +18,8 @@ interface Client {
   termsDays: number;
   invoiceConsolidationPreference: 'CONSOLIDATED' | 'SEPARATE';
   partnerInChargeId: string | null;
+  // Resolved by GET /clients/:id so the read view can name the owner.
+  partnerName?: string | null;
   // 0092 — required on the row; FE allows editing across firm offices.
   officeId?: string | null;
   officeName?: string | null;
@@ -127,7 +129,14 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
         method: 'PATCH',
         body: JSON.stringify(body),
       });
-      onSaved(draft);
+      // partnerName is derived, not a column: patch it locally from the
+      // picked option so the read view doesn't show the previous owner.
+      const patch: Partial<Client> = { ...draft };
+      if (draft.partnerInChargeId !== undefined) {
+        patch.partnerName =
+          partners.find((p) => p.id === draft.partnerInChargeId)?.fullName ?? null;
+      }
+      onSaved(patch);
       setEditing(false);
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'save_failed';
@@ -428,6 +437,8 @@ export function ClientInfoCard({ client, onSaved }: Props): JSX.Element {
               <dd style={{ margin: 0 }}>{client.filingStatus}</dd>
             </>
           )}
+          <dt style={{ color: tokens.color.textMuted }}>Owner</dt>
+          <dd style={{ margin: 0 }}>{client.partnerName ?? '—'}</dd>
           <dt style={{ color: tokens.color.textMuted }}>Office</dt>
           <dd style={{ margin: 0 }}>{client.officeName ?? '—'}</dd>
           <dt style={{ color: tokens.color.textMuted }}>Pipeline</dt>

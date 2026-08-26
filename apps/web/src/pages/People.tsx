@@ -224,7 +224,7 @@ export function PeopleDirectoryPage(): JSX.Element {
         }
       >
         <div style={{ marginBottom: 12 }}>
-          <TableSearch view={view} placeholder="Search by name, email or phone…" />
+          <TableSearch view={view} placeholder="Search by name, email, phone or mobile…" />
         </div>
         {bulkNotice && (
           <p style={{ fontSize: 13, color: tokens.color.text, marginTop: 0 }}>{bulkNotice}</p>
