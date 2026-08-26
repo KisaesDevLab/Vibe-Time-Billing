@@ -142,6 +142,10 @@ function buildApp(
             texts.push({ to: a.to, body: a.body });
           }
         : undefined,
+      // The QR sheet needs a portal base to mint in-office URLs, and a
+      // stand-in renderer (Puppeteer isn't available in this suite).
+      portalBaseUrl: 'https://portal.test',
+      renderPdf: async (html: string) => Buffer.from(`%PDF ${html.length}`),
     }),
   );
   return app;
@@ -834,6 +838,38 @@ describe('signatures send + reconcile (phase 6+7)', () => {
       .where(eq(files.clientId, seed.clientId));
     expect(filed).toHaveLength(0);
   });
+
+  // ---- QR sheet after the request is out ---------------------------
+  it('still renders the QR sheet after a request was sent to the client', async () => {
+    // The per-signer in-office token is HMAC'd with the staff JWT secret.
+    process.env['STAFF_JWT_SECRET'] = 'test-staff-secret';
+    const app = buildApp(mockClient(), memStorage(), [], []);
+    const { id } = await preparedRequest(app);
+
+    // Available from the draft…
+    const asDraft = await request(app).get(`/api/staff/signatures/${id}/qr-sheet.pdf`);
+    expect(asDraft.status).toBe(200);
+
+    // …and still available once it has gone out REMOTELY, which is the
+    // case the UI used to hide (client emailed the link, then walks in).
+    await request(app).post(`/api/staff/signatures/${id}/send`);
+    const [row] = await harness.db
+      .select({ status: signatureRequests.status, signingMode: signatureRequests.signingMode })
+      .from(signatureRequests)
+      .where(eq(signatureRequests.id, id));
+    expect(row!.status).toBe('sent');
+    expect(row!.signingMode).toBe('remote');
+
+    const afterSend = await request(app).get(`/api/staff/signatures/${id}/qr-sheet.pdf`);
+    expect(afterSend.status).toBe(200);
+    expect(afterSend.headers['content-type']).toContain('application/pdf');
+
+    // Terminal requests stop offering it.
+    await request(app).post(`/api/staff/signatures/${id}/void`);
+    const afterVoid = await request(app).get(`/api/staff/signatures/${id}/qr-sheet.pdf`);
+    expect(afterVoid.status).toBe(409);
+    expect(afterVoid.body.error).toBe('request_terminal');
+  }, 20_000);
 
   it('voids a sent request (terminal; reconcile then ignores it)', async () => {
     const storage = memStorage();

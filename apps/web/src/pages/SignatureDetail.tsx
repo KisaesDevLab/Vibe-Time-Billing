@@ -309,7 +309,10 @@ export function SignatureDetailPage(): JSX.Element {
   const canVoid = !isTerminal && request.status !== 'draft';
 
   const isLive = request.status === 'sent' || request.status === 'partially_signed';
-  const showInOfficeCard = (isDraft && canWrite) || (isLive && request.signingMode === 'in_person');
+  // Live requests keep the card whatever channel they went out on — the QR
+  // sheet is the "they showed up in person after all" path, and printing it
+  // neither re-sends nor invalidates the link the client already has.
+  const showInOfficeCard = (isDraft && canWrite) || isLive;
   const requiresIdAttestation = request.formType === '8879';
 
   const signerCols: TableColumn<Signer>[] = [
@@ -439,7 +442,13 @@ export function SignatureDetailPage(): JSX.Element {
       </Card>
 
       {showInOfficeCard && (
-        <Card title="In-office signing">
+        <Card
+          title={
+            isLive && request.signingMode !== 'in_person'
+              ? 'Sign in office instead (QR)'
+              : 'In-office signing'
+          }
+        >
           <InOfficeSigningPanel requestId={id} onChange={() => void load()} />
         </Card>
       )}

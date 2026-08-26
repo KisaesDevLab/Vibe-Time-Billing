@@ -1448,7 +1448,9 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
         documentTitle: request.title,
         signers: sheetSigners,
       });
-      const pdf = await renderHtmlToPdf(html);
+      // Same test seam as the letter-template bridge above — Puppeteer
+      // isn't available in the pglite suites.
+      const pdf = await (deps.renderPdf ?? renderHtmlToPdf)(html);
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', 'inline; filename="signature-qr.pdf"');
       res.setHeader('Cache-Control', 'private, no-store');

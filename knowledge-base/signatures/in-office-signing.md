@@ -25,6 +25,12 @@ You can drive in-office signing in two places: from the **Signatures** detail pa
 5. **Print QR sheet** for a one-page-per-signer PDF (each shows the signer's name and a QR to their signing page), or hand a signer the device with **Sign now**, or **Show QR** on screen.
 6. The signer scans/opens their page and signs on the spot. Click **Refresh status** to pull the result immediately; once everyone has signed, the signed PDF is available to download (and a return-linked request files it to the client's Tax Returns folder automatically).
 
+## The client came in after you already sent it
+
+A request that was emailed or texted to the client keeps the in-office panel — it appears on the detail page as **Sign in office instead (QR)** once the request is live. **Print QR sheet**, **Sign now**, and **Show QR** all work exactly as they do for an in-person request.
+
+Scanning reuses the signing session that already exists: nothing is re-created, nothing is re-sent, and the link the client already has keeps working. The sheet stops being offered once the request reaches a terminal state (completed, declined, expired, voided).
+
 ## Tips
 
 - Each QR encodes that signer's private signing link — treat printed sheets accordingly.

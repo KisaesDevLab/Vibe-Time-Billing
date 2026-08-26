@@ -6,6 +6,11 @@
 // 1345), then print the per-signer QR sheet / hand over a device / refresh
 // status. Used by both the Signatures detail page and the tax-return
 // Signatures card so the two never diverge.
+//
+// The QR sheet is offered on every live request, however it was sent: the
+// API renders it for any non-terminal request, and scanning reuses the
+// existing signing document, so a client who walks in after being emailed
+// the link can still sign on the spot.
 
 import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -94,7 +99,12 @@ export function InOfficeSigningPanel({
   const { request, signers, placements } = data;
   const isDraft = request.status === 'draft';
   const isLive = request.status === 'sent' || request.status === 'partially_signed';
-  const showCard = isLive && request.signingMode === 'in_person';
+  // The QR sheet stays available on ANY live request, not just one set up
+  // in person: a client who was emailed the link often turns up at the
+  // office anyway, and the sheet works there (scanning reuses the existing
+  // signing document — nothing is re-created or re-sent).
+  const showCard = isLive;
+  const sentRemotely = request.signingMode !== 'in_person';
   const requiresIdAttestation = request.formType === '8879';
   const inOfficeReady =
     !requiresIdAttestation ||
@@ -216,7 +226,9 @@ export function InOfficeSigningPanel({
         </div>
       )}
       <div style={{ fontSize: 13, color: tokens.color.textMuted }}>
-        The signer(s) must be physically present. Hand each person their device or scan their QR.
+        {sentRemotely
+          ? 'This request was emailed/texted to the signer, and that link still works. If they came in instead, print the QR sheet or hand them a device — it opens the same signing session, and nothing is re-sent.'
+          : 'The signer(s) must be physically present. Hand each person their device or scan their QR.'}
       </div>
       {signers.map((s) => {
         const signed = s.status === 'signed';
