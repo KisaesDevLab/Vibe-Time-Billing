@@ -47,6 +47,7 @@ import { registerTimeBillingTaskClasses } from './ai/vibe-router';
 import { onAiRuntimeChange, refreshAiRuntime, startAiRuntimeRefresh } from './ai/ai-runtime';
 import { startAutoRenameConsumer } from './files/auto-rename-queue';
 import { startIntakeAiLabelConsumer } from './intake/ai-label-queue';
+import { startIntakeNotifyConsumer } from './intake/notify-queue';
 import type { Worker } from 'bullmq';
 
 const config = loadConfig();
@@ -55,6 +56,7 @@ const { db } = createDb({ connectionString: config.DATABASE_URL });
 const sessionStore = createSessionStore(redis);
 let autoRenameWorker: Worker | null = null;
 let intakeAiLabelWorker: Worker | null = null;
+let intakeNotifyWorker: Worker | null = null;
 
 // Stripe — firm-owned keys per Q7. Prefer the key the firm entered + tested
 // in Admin → Billing → Stripe Connect (encrypted at rest) over the appliance
@@ -516,6 +518,15 @@ const server = app.listen(config.PORT, () => {
     cloudProvider: cloudAiProvider ?? null,
     localProvider: localAiProvider ?? null,
   });
+  // Intake arrival notification — composed here (not in the worker)
+  // because naming the submitter needs the firm key.
+  // INTAKE_NOTIFY_CONSUMER=0 disables.
+  intakeNotifyWorker = startIntakeNotifyConsumer({
+    db,
+    sendEmail: (a) => sendStaffMail({ to: a.to, subject: a.subject, body: a.body }),
+    sendSms: (a) => sendPortalSms({ to: a.to, body: a.body }),
+    appBaseUrl: process.env['APP_BASE_URL'],
+  });
   onAiRuntimeChange((rt) => {
     logger.info(
       { aiMode: rt.mode, source: rt.source, problem: rt.problem },
@@ -607,6 +618,7 @@ function shutdownGracefully(signal: string): void {
   logger.info({ signal }, 'received shutdown signal — closing api server');
   void autoRenameWorker?.close().catch(() => undefined);
   void intakeAiLabelWorker?.close().catch(() => undefined);
+  void intakeNotifyWorker?.close().catch(() => undefined);
   server.close((err) => {
     if (err) logger.warn({ err }, 'server.close errored, exiting anyway');
     process.exit(0);

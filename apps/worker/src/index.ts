@@ -1076,6 +1076,10 @@ function setupIntakeProcessQueue(): void {
   // the firm key) runs in the API process.
   const aiLabelQueue = new Queue<IntakeJobPayload>(INTAKE_AI_LABEL_QUEUE, { connection });
   intakeAiLabelQueueRef = aiLabelQueue;
+  // Producer only, same reason: composing the staff notification needs the
+  // firm key (to name the submitter), which lives in the API process.
+  const notifyQueue = new Queue<IntakeNotifyPayload>(INTAKE_NOTIFY_QUEUE, { connection });
+  intakeNotifyQueueRef = notifyQueue;
   const intakeWorker = new Worker<IntakeJobPayload>(
     INTAKE_PROCESS_QUEUE,
     async (job) => {
@@ -1083,6 +1087,15 @@ function setupIntakeProcessQueue(): void {
         sendEmail: dunningSendEmail,
         sendSms: dunningSendSms,
         appBaseUrl: process.env['APP_BASE_URL'],
+        enqueueNotify: async (payload) => {
+          await notifyQueue.add('notify', payload, {
+            jobId: `intake-notify-${payload.sessionId}`,
+            attempts: 3,
+            backoff: { type: 'exponential', delay: 30_000 },
+            removeOnComplete: { age: 24 * 3600 },
+            removeOnFail: { age: 7 * 24 * 3600 },
+          });
+        },
         enqueueAiLabel: async (payload) => {
           await aiLabelQueue.add('label', payload, {
             // BullMQ forbids ':' in custom job ids — dash form, matching
@@ -1107,10 +1120,15 @@ function setupIntakeProcessQueue(): void {
 }
 
 const INTAKE_AI_LABEL_QUEUE = 'intake-ai-label';
+const INTAKE_NOTIFY_QUEUE = 'intake-notify';
+interface IntakeNotifyPayload extends IntakeJobPayload {
+  fileCount: number;
+}
 let intakeWorkerRef: Worker<IntakeJobPayload> | null = null;
 let intakeQueueRef: Queue<IntakeJobPayload> | null = null;
 let intakeEventsRef: QueueEvents | null = null;
 let intakeAiLabelQueueRef: Queue<IntakeJobPayload> | null = null;
+let intakeNotifyQueueRef: Queue<IntakeNotifyPayload> | null = null;
 
 const FILER_ROUTE_QUEUE = 'filer-route';
 let filerWorkerRef: Worker<FilerRouteJob> | null = null;
@@ -1636,6 +1654,7 @@ async function shutdown(): Promise<void> {
   if (intakeQueueRef) await intakeQueueRef.close();
   if (intakeEventsRef) await intakeEventsRef.close();
   if (intakeAiLabelQueueRef) await intakeAiLabelQueueRef.close();
+  if (intakeNotifyQueueRef) await intakeNotifyQueueRef.close();
   if (filerWorkerRef) await filerWorkerRef.close();
   if (filerQueueRef) await filerQueueRef.close();
   if (filerEventsRef) await filerEventsRef.close();

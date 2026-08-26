@@ -128,6 +128,8 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
 
   // GET /people-search?q= — typeahead over the firm directory so staff can
   // pick a recipient and prefill their email/phone on the send-a-link form.
+  // `phone` is the number to TEXT: the person's mobile when they have one,
+  // the landline only as a fallback.
   router.get(
     '/people-search',
     requirePermission(deps, 'storage:folder:view'),
@@ -171,7 +173,10 @@ export function createIntakeStaffRouter(deps: IntakeStaffDeps): Router {
           id: r.id,
           name: r.name,
           email: r.email ?? '',
-          phone: r.phone ?? r.mobile ?? '',
+          // The link is delivered by SMS, so the mobile wins over the
+          // landline — same preference as the staged notification
+          // pipeline and appointment reminders.
+          phone: r.mobile?.trim() || r.phone?.trim() || '',
         })),
       });
     },

@@ -151,6 +151,59 @@ describe('runIntakeProcess', () => {
     expect(emails).toHaveLength(1);
   });
 
+  it('hands the staff notification to the API instead of sending generic copy', async () => {
+    const { firmId, sessionId } = await seedSession();
+    await addUpload(sessionId, 'image/png', PNG_1x1);
+
+    const emails: Array<{ to: string }> = [];
+    const notifyJobs: Array<{ sessionId: string; firmId: string; fileCount: number }> = [];
+    await runIntakeProcess(
+      harness.db,
+      storage,
+      silentLog,
+      { sessionId, firmId },
+      {
+        scan: async () => ({ status: 'clean' }),
+        sendEmail: async (a) => {
+          emails.push({ to: a.to });
+        },
+        enqueueNotify: async (job) => {
+          notifyJobs.push(job);
+        },
+      },
+    );
+
+    // The API composes it (it can decrypt the submitter's details); the
+    // worker must not also send its own generic copy.
+    expect(notifyJobs).toEqual([{ sessionId, firmId, fileCount: 1 }]);
+    expect(emails).toHaveLength(0);
+  });
+
+  it('falls back to generic copy when the notify enqueue fails', async () => {
+    const { firmId, sessionId } = await seedSession();
+    await addUpload(sessionId, 'image/png', PNG_1x1);
+
+    const emails: Array<{ to: string; subject: string }> = [];
+    await runIntakeProcess(
+      harness.db,
+      storage,
+      silentLog,
+      { sessionId, firmId },
+      {
+        scan: async () => ({ status: 'clean' }),
+        sendEmail: async (a) => {
+          emails.push({ to: a.to, subject: a.subject });
+        },
+        enqueueNotify: async () => {
+          throw new Error('redis down');
+        },
+      },
+    );
+
+    expect(emails).toHaveLength(1);
+    expect(emails[0]!.subject).toBe('New document submission received');
+  });
+
   it('infected path: marks the file infected and the session rejected', async () => {
     const { firmId, sessionId } = await seedSession();
     const fileId = await addUpload(sessionId, 'application/pdf', Buffer.from('%PDF evil'));

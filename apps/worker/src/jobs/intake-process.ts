@@ -9,8 +9,10 @@
 //   3. Otherwise mark uploads 'clean', assemble JPG/PNG pages into one PDF
 //      (pdf-lib), mark the session 'received'.
 //   4. Notify the target staff per their card prefs (in-app audit alert +
-//      email + SMS) — generic copy only; decrypted details live in the
-//      authenticated Intake inbox.
+//      email + SMS). Composition of the email/SMS is handed to the API via
+//      the `intake-notify` queue, because naming the submitter needs the
+//      firm key this process doesn't hold; if that handoff is unavailable
+//      the worker still sends its own generic copy.
 //
 // File bytes are stored plaintext (same at-rest posture as the rest of the
 // File Manager); the per-record MFK DEK protects the session's PII columns
@@ -42,6 +44,12 @@ export interface IntakeProcessDeps {
    * key; the API consumer does the labeling.
    */
   enqueueAiLabel?: (job: { sessionId: string; firmId: string }) => Promise<void>;
+  /**
+   * Hand the staff email/SMS to the API process, which can decrypt the
+   * submitter's name + contact details for the body. Falls back to the
+   * generic copy below when absent or when the enqueue fails.
+   */
+  enqueueNotify?: (job: { sessionId: string; firmId: string; fileCount: number }) => Promise<void>;
 }
 
 export interface IntakeProcessResult {
@@ -273,6 +281,24 @@ async function notifyStaff(
   });
 
   if (!card) return;
+  if (!card.notifyEmail && !card.notifySms) return;
+
+  // Preferred path: the API composes and sends, naming the submitter.
+  if (deps.enqueueNotify) {
+    try {
+      await deps.enqueueNotify({
+        sessionId: args.sessionId,
+        firmId: args.firmId,
+        fileCount: args.fileCount,
+      });
+      return;
+    } catch (err) {
+      log.warn(
+        { err, sessionId: args.sessionId },
+        'intake-process: notify enqueue failed, sending generic copy',
+      );
+    }
+  }
 
   const inboxUrl = deps.appBaseUrl ? `${deps.appBaseUrl.replace(/\/$/, '')}/intake` : null;
   const subject = 'New document submission received';
