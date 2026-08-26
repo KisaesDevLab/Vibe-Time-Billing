@@ -318,8 +318,7 @@ export function createApp(deps: AppDeps): Express {
                 subject: args.subject,
                 body: args.body,
                 html: args.html,
-                // The signature-completion confirmation encloses the
-                // client's signed copy.
+                // Pass-through for senders that enclose a file.
                 attachments: args.attachments,
               })
           : undefined,

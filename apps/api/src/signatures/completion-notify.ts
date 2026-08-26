@@ -20,6 +20,7 @@ import {
 import { logger } from '../logger';
 import { firmScope, renderTemplate } from '../notifications/templating';
 import { printNotificationChannel } from '../notifications/print-channel';
+import { createFileShare } from '../sharing/file-share-helper';
 
 /** Minimal mailer the caller wires from its provider (audit-wrapped). */
 export type CompletionMailer = (args: {
@@ -30,12 +31,8 @@ export type CompletionMailer = (args: {
   attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }) => Promise<void>;
 
-/**
- * Largest signed PDF we'll attach to the confirmation. Above this the email
- * still goes out, but it tells the client how to ask for the copy instead of
- * silently promising one it doesn't carry.
- */
-export const MAX_ATTACHED_COPY_BYTES = 10 * 1024 * 1024;
+/** How long the client's download link stays good. */
+export const COPY_SHARE_DAYS = 30;
 
 export interface CompletedRequestInfo {
   id: string;
@@ -70,16 +67,32 @@ async function resolveClientEmail(db: Database, clientId: string): Promise<strin
 /**
  * The sentence telling the client how to get their copy. The confirmation
  * used to say "a copy is available for your records" and stop there, which
- * left the client with no way to act on it — so this is always resolved to
- * something concrete: either the copy is attached, or here's who to ask.
+ * left the client with no way to act on it — so this always resolves to
+ * something actionable: a secure download link, or who to ask.
+ *
+ * A link rather than an attachment: the completion that actually fires on
+ * the appliance comes from the worker's signatures-poll job, whose mail
+ * dispatch carries no attachments field — so an attached PDF was silently
+ * dropped on that path. The link works from either path, has no size
+ * ceiling, and expires.
  */
 export function copyNoteFor(args: {
-  attached: boolean;
+  downloadUrl?: string | null;
+  expiresAt?: Date | null;
   supportEmail?: string | null;
   supportPhone?: string | null;
   firmName?: string | null;
 }): string {
-  if (args.attached) return 'Your signed copy is attached to this email.';
+  if (args.downloadUrl) {
+    const when = args.expiresAt
+      ? ` This link expires ${args.expiresAt.toISOString().slice(0, 10)}.`
+      : '';
+    return (
+      `Download your signed copy here:\n${args.downloadUrl}\n\n` +
+      `For your security the page will email you a short access code before ` +
+      `the download starts.${when}`
+    );
+  }
   const reach = [args.supportEmail?.trim(), args.supportPhone?.trim()].filter(Boolean);
   const who = args.firmName?.trim() || 'your firm';
   return reach.length > 0
@@ -92,9 +105,11 @@ export async function notifySignatureCompleted(
   request: CompletedRequestInfo,
   signerEmails: string[],
   sendEmail?: CompletionMailer,
-  /** The stored signed PDF, when reconcile captured one. Attached to the
-   *  confirmation if it's within MAX_ATTACHED_COPY_BYTES. */
-  signedPdf?: Buffer | null,
+  /** The signed PDF's file row, once reconcile has filed it into the
+   *  client's folder. Drives the secure download link in the email. */
+  signedFileId?: string | null,
+  /** Public base URL of the portal, for the share landing page. */
+  portalBaseUrl?: string | null,
 ): Promise<void> {
   // 1. Staff in-app notifications — the creator plus the engagement's team.
   try {
@@ -131,10 +146,41 @@ export async function notifySignatureCompleted(
       const to = (await resolveClientEmail(db, request.clientId)) ?? signerEmails[0] ?? null;
       if (to) {
         const firm = await firmScope(db, request.firmId);
-        const attach =
-          signedPdf && signedPdf.byteLength > 0 && signedPdf.byteLength <= MAX_ATTACHED_COPY_BYTES;
+        // Mint the recipient a gated, expiring download link for the copy
+        // that was just filed. Best-effort: a rate-limited or failed share
+        // degrades to the "contact us" wording, never to a broken link.
+        let share: { url: string; expiresAt: Date } | null = null;
+        if (signedFileId && portalBaseUrl) {
+          try {
+            const created = await createFileShare(db, {
+              firmId: request.firmId,
+              clientId: request.clientId,
+              fileId: signedFileId,
+              createdByAppUserId: request.createdBy ?? null,
+              accessLevel: 'download',
+              recipientEmail: to,
+              verifyChannel: 'EMAIL',
+              note: `Signed copy — ${request.title}`,
+              expiresAt: new Date(Date.now() + COPY_SHARE_DAYS * 86_400_000),
+            });
+            if (created.ok) {
+              share = {
+                url: `${portalBaseUrl.replace(/\/$/, '')}/shared/file/${created.token}`,
+                expiresAt: created.expiresAt,
+              };
+            } else {
+              logger.warn(
+                { requestId: request.id, reason: created.error },
+                'signature completion: share link not created',
+              );
+            }
+          } catch (err) {
+            logger.warn({ err, requestId: request.id }, 'signature completion: share link failed');
+          }
+        }
         const copyNote = copyNoteFor({
-          attached: Boolean(attach),
+          downloadUrl: share?.url,
+          expiresAt: share?.expiresAt,
           supportEmail: firm.support_email,
           supportPhone: firm.support_phone,
           firmName: firm.displayName ?? firm.name,
@@ -158,17 +204,6 @@ export async function notifySignatureCompleted(
           to,
           subject: rendered.subject ?? fallbackSubject,
           body: rendered.body,
-          ...(attach
-            ? {
-                attachments: [
-                  {
-                    filename: `${request.title} (signed).pdf`,
-                    content: signedPdf!,
-                    contentType: 'application/pdf',
-                  },
-                ],
-              }
-            : {}),
         });
       }
     } catch (err) {

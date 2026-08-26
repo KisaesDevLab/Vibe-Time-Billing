@@ -719,6 +719,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       storage,
       sendEmail: dunningSendEmail,
       printQueue: bullPrintQueue,
+      portalBaseUrl: process.env['PORTAL_BASE_URL'],
     });
     logger.info({ jobId: job.id, ...result }, 'signatures-poll complete');
   },

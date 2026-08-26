@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
 // The completion confirmation used to tell the client "a copy is available
-// for your records" without saying how to get one. It now either encloses
-// the signed PDF or names who to contact — and the sentence it renders is
-// always consistent with what the email actually carries.
+// for your records" without saying how to get one. It now carries a gated,
+// expiring download link for the signed copy (an attachment was silently
+// dropped on the signatures-poll path, whose mail dispatch has no
+// attachments field), or names who to contact when there's no link to give.
 
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { sql } from 'drizzle-orm';
@@ -16,11 +17,9 @@ import {
   seedMinimalFirm,
   type PgliteHarness,
 } from './_pglite-harness';
-import {
-  copyNoteFor,
-  notifySignatureCompleted,
-  MAX_ATTACHED_COPY_BYTES,
-} from '../signatures/completion-notify';
+import { clientFolders, files, fileShares } from '@vibe/db/schema';
+
+import { copyNoteFor, notifySignatureCompleted } from '../signatures/completion-notify';
 
 let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
@@ -29,7 +28,6 @@ interface Sent {
   to: string;
   subject: string;
   body: string;
-  attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
 }
 
 beforeEach(async () => {
@@ -47,6 +45,29 @@ afterEach(async () => {
   await harness.close();
 });
 
+/** A files row standing in for the auto-filed signed copy. */
+async function seedSignedFile(): Promise<string> {
+  const [folder] = await harness.db
+    .insert(clientFolders)
+    .values({ firmId: seed.firmId, clientId: seed.clientId, storagePath: 'Test Client Co' })
+    .returning({ id: clientFolders.id });
+  const [row] = await harness.db
+    .insert(files)
+    .values({
+      firmId: seed.firmId,
+      clientId: seed.clientId,
+      clientFolderId: folder!.id,
+      subfolderPath: 'Signatures/',
+      originalFilename: 'Engagement Letter (signed).pdf',
+      storageKey: 'Test Client Co/Signatures/Engagement Letter (signed).pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: 11,
+      source: 'signature',
+    })
+    .returning({ id: files.id });
+  return row!.id;
+}
+
 function requestInfo() {
   return {
     id: seed.clientId, // any uuid; the notifier only echoes it
@@ -59,7 +80,8 @@ function requestInfo() {
 }
 
 describe('signature completion confirmation', () => {
-  it('attaches the signed PDF and says so', async () => {
+  it('mints a download link for the filed signed copy', async () => {
+    const fileId = await seedSignedFile();
     const sent: Sent[] = [];
     await notifySignatureCompleted(
       harness.db,
@@ -68,21 +90,32 @@ describe('signature completion confirmation', () => {
       async (a) => {
         sent.push(a);
       },
-      Buffer.from('%PDF signed'),
+      fileId,
+      'https://portal.test',
     );
 
     expect(sent).toHaveLength(1);
     const mail = sent[0]!;
     expect(mail.to).toBe('dana@example.com');
-    expect(mail.attachments).toHaveLength(1);
-    expect(mail.attachments![0]!.filename).toBe('Engagement Letter (signed).pdf');
-    expect(mail.attachments![0]!.contentType).toBe('application/pdf');
-    expect(mail.body).toContain('Your signed copy is attached to this email.');
+    expect(mail.body).toContain('Download your signed copy here:');
+    expect(mail.body).toContain('https://portal.test/shared/file/');
+    expect(mail.body).toContain('access code');
     // The old copy promised a copy and left the client with no next step.
     expect(mail.body).not.toContain('A copy is available for your records.');
+
+    // A real, gated, download-level share pointing at that file.
+    const shares = await harness.db.select().from(fileShares);
+    expect(shares).toHaveLength(1);
+    expect(shares[0]!.fileId).toBe(fileId);
+    expect(shares[0]!.accessLevel).toBe('download');
+    expect(shares[0]!.gated).toBe(true);
+    expect(shares[0]!.recipientEmail).toBe('dana@example.com');
+    // The emailed token must match the share row it was minted from.
+    const token = /shared\/file\/(\S+)/.exec(mail.body)![1]!;
+    expect(token.split('.')[0]).toBe(shares[0]!.id);
   });
 
-  it('tells the client who to contact when there is no PDF to attach', async () => {
+  it('tells the client who to contact when there is no filed copy to link', async () => {
     const sent: Sent[] = [];
     await notifySignatureCompleted(
       harness.db,
@@ -92,14 +125,16 @@ describe('signature completion confirmation', () => {
         sent.push(a);
       },
       null,
+      'https://portal.test',
     );
 
-    expect(sent[0]!.attachments).toBeUndefined();
     expect(sent[0]!.body).toContain('For a copy of the signed document');
-    expect(sent[0]!.body).not.toContain('attached to this email');
+    expect(sent[0]!.body).not.toContain('/shared/file/');
+    expect(await harness.db.select().from(fileShares)).toHaveLength(0);
   });
 
-  it('does not attach a PDF over the size cap, and adjusts the wording', async () => {
+  it('falls back to the contact wording when no portal URL is configured', async () => {
+    const fileId = await seedSignedFile();
     const sent: Sent[] = [];
     await notifySignatureCompleted(
       harness.db,
@@ -108,14 +143,17 @@ describe('signature completion confirmation', () => {
       async (a) => {
         sent.push(a);
       },
-      Buffer.alloc(MAX_ATTACHED_COPY_BYTES + 1),
+      fileId,
+      null,
     );
 
-    expect(sent[0]!.attachments).toBeUndefined();
+    // No half-built link — a share is not even created.
     expect(sent[0]!.body).toContain('For a copy of the signed document');
+    expect(await harness.db.select().from(fileShares)).toHaveLength(0);
   });
 
   it('renders the firm template through {{ document.copy_note }}', async () => {
+    const fileId = await seedSignedFile();
     await harness.db.execute(
       sql`INSERT INTO notification_template (firm_id, kind, channel, subject, body, enabled)
           VALUES (${seed.firmId}, 'signature_complete', 'EMAIL', 'All signed',
@@ -129,11 +167,12 @@ describe('signature completion confirmation', () => {
       async (a) => {
         sent.push(a);
       },
-      Buffer.from('%PDF signed'),
+      fileId,
+      'https://portal.test',
     );
 
     expect(sent[0]!.subject).toBe('All signed');
-    expect(sent[0]!.body).toBe('Done. Your signed copy is attached to this email.');
+    expect(sent[0]!.body).toContain('Done. Download your signed copy here:');
   });
 });
 
@@ -179,10 +218,18 @@ describe('migration 0232 — existing template rows', () => {
 });
 
 describe('copyNoteFor', () => {
-  it('names the firm and both support channels when nothing is attached', () => {
+  it('gives the link and its expiry date when there is one', () => {
+    const note = copyNoteFor({
+      downloadUrl: 'https://portal.test/shared/file/abc.def',
+      expiresAt: new Date('2026-09-25T12:00:00Z'),
+    });
+    expect(note).toContain('https://portal.test/shared/file/abc.def');
+    expect(note).toContain('This link expires 2026-09-25.');
+  });
+
+  it('names the firm and both support channels when there is no link', () => {
     expect(
       copyNoteFor({
-        attached: false,
         supportEmail: 'help@firm.example',
         supportPhone: '555-0100',
         firmName: 'Kisaes CPA',
@@ -193,7 +240,7 @@ describe('copyNoteFor', () => {
   });
 
   it('falls back to replying when the firm published no support contact', () => {
-    expect(copyNoteFor({ attached: false, firmName: 'Kisaes CPA' })).toBe(
+    expect(copyNoteFor({ firmName: 'Kisaes CPA' })).toBe(
       'For a copy of the signed document, reply to this email and Kisaes CPA will send one.',
     );
   });

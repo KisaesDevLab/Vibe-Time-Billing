@@ -1797,7 +1797,13 @@ export function createSignaturesRouter(deps: SignaturesDeps): Router {
       }
       try {
         const outcome = await reconcileSignatureRequestByDocument(
-          { db: deps.db, client, storage },
+          {
+            db: deps.db,
+            client,
+            storage,
+            sendEmail: deps.sendEmail,
+            portalBaseUrl: deps.portalBaseUrl,
+          },
           request.opensignDocumentId,
         );
         const [fresh] = await deps.db

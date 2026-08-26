@@ -156,6 +156,9 @@ services:
       VOICE_TWILIO_AUTH_TOKEN: ${VOICE_TWILIO_AUTH_TOKEN:-}
       VOICE_TWILIO_FROM: ${VOICE_TWILIO_FROM:-}
       APP_BASE_URL: ${APP_BASE_URL}
+      # The signatures-poll completion email mints a secure download link
+      # for the signed copy, which lives on the portal realm.
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL}
       FEATURE_CALENDAR_WRITE: ${FEATURE_CALENDAR_WRITE:-true}
       CLAMD_HOST: ${CLAMD_HOST:-}
       CLAMD_PORT: ${CLAMD_PORT:-3310}

@@ -197,6 +197,9 @@ services:
       # 0085 — worker polls the sidecar's metrics endpoint over the
       # docker network and writes a snapshot to the DB.
       CLOUDFLARED_METRICS_URL: http://cloudflared:2000
+      # The signatures-poll completion email mints a secure download link
+      # for the signed copy, which lives on the portal realm.
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL}
       # Q35 — the worker runs the OpenSign completion poll (safety net for
       # the webhook). Same OPENSIGN_* set as the api (Parse App-Id +
       # Master-Key, not a shared secret); the poll skips cleanly when

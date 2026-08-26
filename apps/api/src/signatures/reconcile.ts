@@ -56,6 +56,9 @@ export interface ReconcileDeps {
   notify?: SignerMailer;
   /** 0231 — same hand-off by text, when the request was sent that way. */
   notifySms?: SignerTexter;
+  /** Public portal base URL — the completion email's secure download link
+   *  points at that realm's /shared/file/:token landing page. */
+  portalBaseUrl?: string | null;
   /** Sends the client a confirmation email on completion. Best-effort;
    *  absent when mail isn't wired. Staff in-app notifications fire regardless
    *  (they only need the db). */
@@ -130,9 +133,9 @@ export async function reconcileSignatureRequestByDocument(
   // them to our own bucket.
   let signedKey: string | null = null;
   let signedSize = 0;
-  // Kept in scope past the download block so the completion email can attach
-  // the client's copy without a second fetch from storage.
-  let signedPdf: Buffer | null = null;
+  // The files row the signed copy lands in, once auto-filed — the completion
+  // email mints the client a download link against it.
+  let signedFileId: string | null = null;
   let certKey: string | null = null;
   let certSize = 0;
   if (completed) {
@@ -169,7 +172,6 @@ export async function reconcileSignatureRequestByDocument(
     if (signedBuf) {
       signedKey = signedFileKey(request.firmId, request.id);
       signedSize = signedBuf.length;
-      signedPdf = signedBuf;
       await deps.storage.put(signedKey, signedBuf, { contentType: 'application/pdf' });
     }
     if (certBuf) {
@@ -298,6 +300,7 @@ export async function reconcileSignatureRequestByDocument(
         sizeBytes: signedSize,
         source: 'signature',
       });
+      if (filed.ok) signedFileId = filed.fileId;
       await db.insert(signatureEvents).values({
         requestId: request.id,
         actor: 'system',
@@ -370,7 +373,8 @@ export async function reconcileSignatureRequestByDocument(
       },
       signers.map((s) => s.email),
       deps.sendEmail,
-      signedPdf,
+      signedFileId,
+      deps.portalBaseUrl,
     ).catch(() => undefined);
   }
 

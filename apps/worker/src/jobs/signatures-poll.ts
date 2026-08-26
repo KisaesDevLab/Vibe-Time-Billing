@@ -39,7 +39,13 @@ const BATCH = 50;
 export async function runSignaturesPollTick(
   db: Database,
   log: Logger,
-  args: { storage: StorageClient | null; sendEmail?: CompletionMailer; printQueue?: PrintQueue },
+  args: {
+    storage: StorageClient | null;
+    sendEmail?: CompletionMailer;
+    printQueue?: PrintQueue;
+    /** Portal base URL for the completion email's secure download link. */
+    portalBaseUrl?: string | null;
+  },
   now: Date = new Date(),
 ): Promise<SignaturesPollResult> {
   const result: SignaturesPollResult = { scanned: 0, updated: 0, expired: 0, errors: 0 };
@@ -73,7 +79,13 @@ export async function runSignaturesPollTick(
     const documentId = row.documentId!;
     try {
       const outcome = await reconcileSignatureRequestByDocument(
-        { db, client, storage: args.storage, sendEmail: args.sendEmail },
+        {
+          db,
+          client,
+          storage: args.storage,
+          sendEmail: args.sendEmail,
+          portalBaseUrl: args.portalBaseUrl,
+        },
         documentId,
         now,
       );

@@ -267,6 +267,7 @@ async function dispatch(
           notify: deps.sendProposalEmail,
           notifySms: deps.sendSms,
           sendEmail: deps.sendProposalEmail,
+          portalBaseUrl: deps.portalBaseUrl,
         },
         envelopeId,
       );
