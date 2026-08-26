@@ -10,7 +10,14 @@ import { z } from 'zod';
 import { and, desc, eq } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
-import { fileShares, files, firms } from '@vibe/db/schema';
+import {
+  fileAccessLog,
+  fileShareEvents,
+  fileShares,
+  files,
+  firms,
+  portalIdentity,
+} from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -363,6 +370,143 @@ export function createStaffFileShareRouter(deps: StaffFileShareDeps): Router {
         .from(fileShares)
         .where(and(eq(fileShares.fileId, req.params['id']!), eq(fileShares.firmId, session.firmId)))
         .orderBy(desc(fileShares.createdAt));
+      res.json({ items: rows });
+    },
+  );
+
+  // GET /client/:clientId/shares — every share of that client's files, for
+  // the Files tab's Shares card. One row per share, newest first, with the
+  // file it points at (a bundle share has file_id NULL — those list under
+  // the bundle label rather than a single filename).
+  router.get(
+    '/client/:clientId/shares',
+    requirePermission(deps, 'storage:file:publish'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: fileShares.id,
+          fileId: fileShares.fileId,
+          filename: files.originalFilename,
+          recipientName: fileShares.recipientName,
+          recipientEmail: fileShares.recipientEmail,
+          organization: fileShares.organization,
+          accessLevel: fileShares.accessLevel,
+          watermark: fileShares.watermark,
+          status: fileShares.status,
+          expiresAt: fileShares.expiresAt,
+          createdAt: fileShares.createdAt,
+          revokedAt: fileShares.revokedAt,
+          deliveredAt: fileShares.deliveredAt,
+          accessCount: fileShares.accessCount,
+          lastViewedAt: fileShares.lastViewedAt,
+        })
+        .from(fileShares)
+        .leftJoin(files, eq(files.id, fileShares.fileId))
+        .where(
+          and(
+            eq(fileShares.clientId, req.params['clientId']!),
+            eq(fileShares.firmId, session.firmId),
+          ),
+        )
+        .orderBy(desc(fileShares.createdAt))
+        .limit(200);
+      res.json({ items: rows });
+    },
+  );
+
+  // GET /shares/:shareId/events — the recipient-side trail for one share:
+  // access code sent / verified / failed, the download itself, and every
+  // denial. Staff had no way to see this; the rows were only ever written.
+  router.get(
+    '/shares/:shareId/events',
+    requirePermission(deps, 'storage:file:publish'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ share: null, events: [] });
+        return;
+      }
+      const [share] = await deps.db
+        .select({
+          id: fileShares.id,
+          fileId: fileShares.fileId,
+          filename: files.originalFilename,
+          recipientName: fileShares.recipientName,
+          recipientEmail: fileShares.recipientEmail,
+          accessLevel: fileShares.accessLevel,
+          status: fileShares.status,
+          createdAt: fileShares.createdAt,
+          deliveredAt: fileShares.deliveredAt,
+          expiresAt: fileShares.expiresAt,
+          revokedAt: fileShares.revokedAt,
+          accessCount: fileShares.accessCount,
+          lastViewedAt: fileShares.lastViewedAt,
+        })
+        .from(fileShares)
+        .leftJoin(files, eq(files.id, fileShares.fileId))
+        .where(
+          and(eq(fileShares.id, req.params['shareId']!), eq(fileShares.firmId, session.firmId)),
+        )
+        .limit(1);
+      if (!share) {
+        res.status(404).json({ error: 'share_not_found' });
+        return;
+      }
+      const events = await deps.db
+        .select({
+          id: fileShareEvents.id,
+          at: fileShareEvents.occurredAt,
+          outcome: fileShareEvents.outcome,
+          ip: fileShareEvents.ip,
+          userAgent: fileShareEvents.userAgent,
+        })
+        .from(fileShareEvents)
+        .where(eq(fileShareEvents.fileShareId, share.id))
+        .orderBy(desc(fileShareEvents.occurredAt))
+        .limit(500);
+      res.json({ share, events });
+    },
+  );
+
+  // GET /client/:clientId/portal-activity — what the CLIENT did in the
+  // portal with their own files (distinct from a share link, which goes to
+  // an outside recipient). Same card, second section.
+  router.get(
+    '/client/:clientId/portal-activity',
+    requirePermission(deps, 'storage:file:publish'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ items: [] });
+        return;
+      }
+      const rows = await deps.db
+        .select({
+          id: fileAccessLog.id,
+          at: fileAccessLog.occurredAt,
+          fileId: fileAccessLog.fileId,
+          filename: files.originalFilename,
+          requestedStorageKey: fileAccessLog.requestedStorageKey,
+          outcome: fileAccessLog.outcome,
+          ip: fileAccessLog.ip,
+          who: portalIdentity.fullName,
+        })
+        .from(fileAccessLog)
+        .leftJoin(files, eq(files.id, fileAccessLog.fileId))
+        .leftJoin(portalIdentity, eq(portalIdentity.id, fileAccessLog.portalIdentityId))
+        .where(
+          and(
+            eq(fileAccessLog.clientId, req.params['clientId']!),
+            eq(fileAccessLog.firmId, session.firmId),
+          ),
+        )
+        .orderBy(desc(fileAccessLog.occurredAt))
+        .limit(200);
       res.json({ items: rows });
     },
   );

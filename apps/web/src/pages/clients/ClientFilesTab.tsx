@@ -51,6 +51,7 @@ import { useAiStatus } from '../../hooks/useAiStatus';
 import { AiRenameDialog } from './AiRenameDialog';
 import { ShareFileDialog } from './ShareFileDialog';
 import { BulkShareDialog } from './BulkShareDialog';
+import { ClientSharesCard } from './ClientSharesCard';
 import { UnlinkedEmptyState } from './fmv2/UnlinkedEmptyState';
 import { IndexingToast } from './fmv2/IndexingToast';
 import { IndexingProgressBar } from './fmv2/IndexingProgressBar';
@@ -1801,6 +1802,10 @@ export function ClientFilesTab({
           }}
         />
       )}
+
+      {/* Who has this client's files been shared with, and what did the
+          recipient (or the client, in the portal) actually do with them. */}
+      <ClientSharesCard clientId={clientId} />
     </div>
   );
 }

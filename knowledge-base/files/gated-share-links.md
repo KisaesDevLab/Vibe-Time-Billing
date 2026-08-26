@@ -26,6 +26,15 @@ Select multiple files in the Files tab and use the toolbar **Share** action. All
 
 The code expires after a few minutes, allows a handful of attempts, and has a resend cool-down. Repeated failures lock the challenge and eventually revoke the share automatically.
 
+## Tracking what happened
+
+The Files tab has a **File sharing activity** card at the bottom, in two parts:
+
+- **Secure links sent to outside recipients** — a row per share: file, recipient, access level (and whether it was watermarked), status (Sent / Opened / Expired / Revoked), when it went out, when it was last opened and how many times, and the expiry. **Activity** opens the full trail for that share — access code emailed, code verified, wrong code, lockout, the download itself, and every block — each with time, IP, and browser. **Revoke** kills the link immediately.
+- **Client portal activity** — what the client themselves did with their own files while signed in to the portal: which file, who, downloaded or blocked (and why), when, and from what IP. This is separate from share links: no link, no code, they were authenticated.
+
+Nothing here is retroactive-only — both trails have been recorded all along, so shares and portal downloads from before this card existed appear too.
+
 ## Tips
 
 - Because the code goes to the recipient's own email/phone, a forwarded link is useless without it.
