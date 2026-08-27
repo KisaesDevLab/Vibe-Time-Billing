@@ -97,6 +97,12 @@ interface BatchDetail {
   retainer?: { featureEnabled: boolean; defaultBillerToggleOn: boolean };
 }
 
+// Today as YYYY-MM-DD — matches the default `periodEnd` the create form
+// seeds itself with.
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 interface ReasonCode {
   id: string;
   category: 'WRITE_DOWN' | 'WRITE_UP' | 'TRANSFER';
@@ -140,6 +146,12 @@ function BatchListPage(): JSX.Element {
   // 0050 — batch kind picker (Standard vs Retainer)
   const [kind, setKind] = useState<'STANDARD' | 'RETAINER'>('STANDARD');
   const [retainerTargetDollars, setRetainerTargetDollars] = useState('');
+  // 0233 — `allDates=1` (the /time "Bill" CTA) means "bill everything that
+  // hasn't been billed yet": widen the period to the full span of unbilled
+  // activity instead of the month-to-date default. Explained under the
+  // date fields so the widened window isn't a surprise.
+  const allDates = search.get('allDates') === '1';
+  const [spanNotice, setSpanNotice] = useState<string | null>(null);
   const navigate = useNavigate();
 
   async function load(): Promise<void> {
@@ -161,6 +173,39 @@ function BatchListPage(): JSX.Element {
     void load();
   }, []);
 
+  // 0233 — resolve the unbilled span once, on mount, for the engagement (or
+  // client) the CTA passed in. The server reports MIN/MAX date over every
+  // unbilled time entry AND expense, so this covers all timekeepers' work,
+  // not just the rows the caller could see.
+  useEffect(() => {
+    if (!allDates) return;
+    void (async () => {
+      const qs = new URLSearchParams();
+      if (seedEng) qs.set('engagementId', seedEng);
+      else if (clientId) qs.set('clientId', clientId);
+      else return;
+      try {
+        const r = await api<{
+          span: { oldestDate: string | null; newestDate: string | null } | null;
+        }>(`/api/staff/billing-batches/unbilled-span?${qs.toString()}`);
+        const start = r.span?.oldestDate;
+        const newest = r.span?.newestDate;
+        if (!start || !newest) {
+          setSpanNotice('Nothing unbilled found — showing the default period.');
+          return;
+        }
+        const today = todayIso();
+        const end = newest > today ? newest : today;
+        setPeriodStart(start);
+        setPeriodEnd(end);
+        setSpanNotice(`Period widened to cover all unbilled activity (${start} → ${end}).`);
+      } catch {
+        // Non-fatal — the month-to-date default stays in place.
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const filteredEngagements = useMemo(
     () => engagements.filter((e) => !clientId || e.clientId === clientId),
     [engagements, clientId],
@@ -170,9 +215,13 @@ function BatchListPage(): JSX.Element {
   // don't belong to the new client. Keeps the list internally
   // consistent without surprising the user.
   useEffect(() => {
+    // Wait for the picker to load first: pruning against an empty list would
+    // drop an engagement seeded from the URL (the WIP / client / time "Bill"
+    // CTAs) before it could ever be validated.
+    if (engagements.length === 0) return;
     const allowed = new Set(filteredEngagements.map((e) => e.id));
     setSelectedEngagementIds((prev) => prev.filter((id) => allowed.has(id)));
-  }, [filteredEngagements]);
+  }, [filteredEngagements, engagements.length]);
 
   // Per-column filter value lists for the Billing batches table.
   const engValues = useMemo(() => {
@@ -303,6 +352,10 @@ function BatchListPage(): JSX.Element {
               />
             </div>
           </div>
+
+          {spanNotice && (
+            <p style={{ fontSize: 11, color: tokens.color.textMuted, margin: 0 }}>{spanNotice}</p>
+          )}
 
           {/* 0086 — multi-engagement checkbox list. One bill can cover
               many engagements for the same client. Retainer batches

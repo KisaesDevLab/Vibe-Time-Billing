@@ -1549,6 +1549,88 @@ export function createBillingBatchRouter(deps: BillingBatchRoutesDeps): Router {
   );
 
   // -----------------------------------------------------------------
+  // 0233 — span of everything still unbilled for an engagement (or a
+  // whole client). The /time "Bill" CTA seeds the batch period from it
+  // so a bill opened from a time row sweeps up every unbilled entry and
+  // expense, not just the current month. Deliberately NOT the
+  // wip-dashboard rollup: that one is ACTIVE-engagements-only and time-
+  // only, both of which would silently drop billable work here.
+  // -----------------------------------------------------------------
+  router.get(
+    '/unbilled-span',
+    requirePermission(deps, 'billing_batch:read'),
+    async (req: Request, res: Response) => {
+      const session = req.staffSession!;
+      if (!deps.db) {
+        res.json({ span: null });
+        return;
+      }
+      const clientId = uuidQueryParam(req.query['clientId']);
+      const engagementId = uuidQueryParam(req.query['engagementId']);
+      if (clientId === 'invalid' || engagementId === 'invalid') {
+        res.status(400).json({ error: 'invalid_uuid_param' });
+        return;
+      }
+      if (!clientId && !engagementId) {
+        res.status(400).json({ error: 'client_or_engagement_required' });
+        return;
+      }
+      // Firm scoping runs through client — same join the rest of this
+      // router uses to keep one firm out of another's rows.
+      const scope = [eq(clients.firmId, session.firmId)];
+      if (clientId) scope.push(eq(clients.id, clientId));
+      if (engagementId) scope.push(eq(engagements.id, engagementId));
+
+      const [time] = await deps.db
+        .select({
+          count: sql<number>`COUNT(*)`,
+          oldest: sql<string | null>`MIN(${timeEntries.entryDate})`,
+          newest: sql<string | null>`MAX(${timeEntries.entryDate})`,
+        })
+        .from(timeEntries)
+        .innerJoin(engagements, eq(engagements.id, timeEntries.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(
+            isNull(timeEntries.billingBatchId),
+            sql`${timeEntries.status} <> 'ARCHIVED'`,
+            ...scope,
+          ),
+        );
+
+      // 0199 — batch creation pulls unbilled expenses in the period too,
+      // so the span has to cover them or they'd fall outside the window.
+      const [expense] = await deps.db
+        .select({
+          count: sql<number>`COUNT(*)`,
+          oldest: sql<string | null>`MIN(${engagementExpenses.expenseDate})`,
+          newest: sql<string | null>`MAX(${engagementExpenses.expenseDate})`,
+        })
+        .from(engagementExpenses)
+        .innerJoin(engagements, eq(engagements.id, engagementExpenses.engagementId))
+        .innerJoin(clients, eq(clients.id, engagements.clientId))
+        .where(
+          and(
+            isNull(engagementExpenses.billingBatchId),
+            eq(engagementExpenses.status, 'ACTIVE'),
+            ...scope,
+          ),
+        );
+
+      const oldest = [time?.oldest, expense?.oldest].filter((d): d is string => !!d).sort();
+      const newest = [time?.newest, expense?.newest].filter((d): d is string => !!d).sort();
+      res.json({
+        span: {
+          entryCount: Number(time?.count ?? 0),
+          expenseCount: Number(expense?.count ?? 0),
+          oldestDate: oldest[0] ?? null,
+          newestDate: newest[newest.length - 1] ?? null,
+        },
+      });
+    },
+  );
+
+  // -----------------------------------------------------------------
   // Firm-wide WIP dashboard (Phase 11 #25). Returns per-engagement
   // unbilled-time totals ordered by largest first.
   // -----------------------------------------------------------------

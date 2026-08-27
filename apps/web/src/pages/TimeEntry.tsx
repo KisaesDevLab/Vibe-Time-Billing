@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import {
   AiPanel,
@@ -18,6 +18,7 @@ import {
 } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { usePermission } from '../auth-context';
 import {
   elapsedToHours,
   formatClock,
@@ -429,6 +430,10 @@ function LogView({
   // 0226 — warn-only payroll overdraw notice from the last save.
   const [payrollNotice, setPayrollNotice] = useState<string | null>(null);
   const narrow = useIsNarrow();
+  const navigate = useNavigate();
+  // 0233 — row-level "Bill" CTA. Hidden for timekeepers who can't open a
+  // batch anyway (same permission the POST enforces).
+  const canBill = usePermission('billing_batch:write');
 
   // v2 Sprint E — client-first workflow. The CPA picks a client, then
   // engagement is filtered to that client's ACTIVE engagements. If the
@@ -1673,6 +1678,31 @@ function LogView({
                     />
                   );
                   if (!editable) return continueBtn;
+                  // 0233 — "Bill" opens the billing-batch create flow for
+                  // this row's engagement with the period widened to every
+                  // unbilled entry on it (allDates=1), so nothing older than
+                  // the current month is left behind. Only on rows that are
+                  // still unbilled themselves.
+                  const billBtn =
+                    canBill && e.clientId ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          const qs = new URLSearchParams({
+                            clientId: e.clientId!,
+                            engagementId: e.engagementId,
+                            allDates: '1',
+                          }).toString();
+                          navigate(`/billing?${qs}`);
+                        }}
+                        title={`Open a billing batch for ${
+                          e.engagementName ?? 'this engagement'
+                        } covering all unbilled activity`}
+                      >
+                        Bill
+                      </Button>
+                    ) : null;
                   if (editingId === e.id) {
                     return (
                       <span style={{ display: 'inline-flex', gap: 4 }}>
@@ -1693,6 +1723,7 @@ function LogView({
                   return (
                     <span style={{ display: 'inline-flex', gap: 4 }}>
                       {continueBtn}
+                      {billBtn}
                       <Button
                         size="sm"
                         variant="ghost"
