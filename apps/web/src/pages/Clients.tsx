@@ -76,6 +76,7 @@ export function ClientsPage(): JSX.Element {
   const [routeSheetClient, setRouteSheetClient] = useState<ClientRow | null>(null);
   const [wizardOpen, setWizardOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [bulkUpdateOpen, setBulkUpdateOpen] = useState(false);
   const [rollOpen, setRollOpen] = useState(false);
   const [officeOptions, setOfficeOptions] = useState<
     Array<{ id: string; name: string; isDefault: boolean }>
@@ -236,6 +237,9 @@ export function ClientsPage(): JSX.Element {
             <Button variant="secondary" onClick={() => setImportOpen(true)}>
               Import clients
             </Button>
+            <Button variant="secondary" onClick={() => setBulkUpdateOpen(true)}>
+              Update clients
+            </Button>
             <Button onClick={() => setWizardOpen(true)}>+ New client</Button>
           </div>
         }
@@ -260,6 +264,20 @@ export function ClientsPage(): JSX.Element {
       <ImportClientsWizard
         open={importOpen}
         onClose={() => setImportOpen(false)}
+        onCreated={() => {
+          list.reload();
+          void loadAux();
+        }}
+        users={users}
+        offices={officeOptions}
+      />
+
+      {/* Same wizard in update-only mode: paste a Client ID / Name / Type
+          list, review, and rewrite only the fields the list carries. */}
+      <ImportClientsWizard
+        mode="update"
+        open={bulkUpdateOpen}
+        onClose={() => setBulkUpdateOpen(false)}
         onCreated={() => {
           list.reload();
           void loadAux();

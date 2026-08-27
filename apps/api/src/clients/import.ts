@@ -15,6 +15,15 @@
 // "Data Mining" export layout (Client ID, "1040, Tp first name",
 // "Contact, Sp email address", "Preparer name", …) so that workbook can be
 // uploaded as exported.
+//
+// `updateOnly` turns the same machinery into the admin "Update clients"
+// tool: rows are matched to existing clients and only rewrite fields, a row
+// that matches nothing is reported as `not_in_platform` rather than
+// creating a client (unless the caller opts in with `createMissing`), and
+// the Name column is treated as a match key — not a value to write — so a
+// tax-software roster's spelling can't silently rename the whole client
+// list. The preview also reports the reverse gap (clients in the platform
+// that the pasted list doesn't mention).
 
 import { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
@@ -45,11 +54,29 @@ export interface ClientImportDeps extends RbacDeps {
 // ---------------------------------------------------------------- CSV parse
 
 /**
+ * Delimiter of a pasted/uploaded table: tab when the header line carries
+ * more tabs than commas. A spreadsheet range pasted out of Excel arrives as
+ * TSV, and client names routinely contain commas ("Watley Holdings, LLC"),
+ * so guessing wrong mangles every row.
+ */
+export function sniffDelimiter(text: string): ',' | '\t' {
+  const nl = text.search(/\r?\n/);
+  const first = nl === -1 ? text : text.slice(0, nl);
+  const tabs = (first.match(/\t/g) ?? []).length;
+  const commas = (first.match(/,/g) ?? []).length;
+  return tabs > commas ? '\t' : ',';
+}
+
+/**
  * RFC-4180-aware CSV parser. Handles quoted fields with embedded commas,
  * escaped quotes (""), and CRLF/LF line endings. Returns the header row
- * plus the data rows as string arrays (ragged rows are tolerated).
+ * plus the data rows as string arrays (ragged rows are tolerated). Pass
+ * `delimiter` (see sniffDelimiter) to parse tab-separated text.
  */
-export function parseCsv(text: string): { header: string[]; rows: string[][] } {
+export function parseCsv(
+  text: string,
+  delimiter: ',' | '\t' = ',',
+): { header: string[]; rows: string[][] } {
   const records: string[][] = [];
   let field = '';
   let row: string[] = [];
@@ -73,7 +100,7 @@ export function parseCsv(text: string): { header: string[]; rows: string[][] } {
     }
     if (c === '"') {
       inQuotes = true;
-    } else if (c === ',') {
+    } else if (c === delimiter) {
       row.push(field);
       field = '';
     } else if (c === '\n' || c === '\r') {
@@ -686,10 +713,75 @@ const ENTITY_CODES: Record<
   '709': { clientType: 'BUSINESS', entityType: 'GIFT_709' },
 };
 
+// Human spellings of the entity types as tax software and staff write them
+// ("S Corporation", "Fiduciary (1041)", "Exempt Organization (990E)"),
+// normalised the same way as the input: upper-cased, non-alphanumerics
+// collapsed to `_`. Keyed to the enum value each one means.
+const ENTITY_LABELS: Record<
+  string,
+  { clientType: 'INDIVIDUAL' | 'BUSINESS'; entityType: string | null }
+> = {};
+function label(entityType: string | null, ...spellings: string[]): void {
+  for (const sp of spellings)
+    ENTITY_LABELS[sp] = {
+      clientType: entityType === null ? 'INDIVIDUAL' : 'BUSINESS',
+      entityType,
+    };
+}
+label(
+  'S_CORP_1120S',
+  'S_CORPORATION',
+  'S_CORP',
+  'S_CORPORATION_1120S',
+  'SUB_S',
+  'SUBCHAPTER_S',
+  'S_CORPORATION_1120_S',
+);
+// A consolidated C return is still a C corporation on the client record —
+// the consolidation lives on the return, which this column doesn't model.
+label(
+  'C_CORP_1120',
+  'C_CORPORATION',
+  'C_CORP',
+  'CORPORATION',
+  'CONSOLIDATED_C',
+  'CONSOLIDATED_C_CORPORATION',
+  'CONSOLIDATED',
+);
+label(
+  'PARTNERSHIP_1065',
+  'PARTNERSHIP',
+  'LLC_PARTNERSHIP',
+  'GENERAL_PARTNERSHIP',
+  'LIMITED_PARTNERSHIP',
+);
+label('TRUST_1041', 'FIDUCIARY', 'FIDUCIARY_1041', 'TRUST', 'FIDUCIARY_TRUST', 'ESTATE_1041');
+label(
+  'EXEMPT_ORG_990',
+  'EXEMPT_ORGANIZATION',
+  'EXEMPT_ORGANIZATION_990E',
+  'EXEMPT_ORGANIZATION_990EZ',
+  'EXEMPT_ORGANIZATION_990PF',
+  'EXEMPT_ORGANIZATION_990T',
+  'EXEMPT_ORG',
+  'NONPROFIT',
+  'NON_PROFIT',
+  '990E',
+  '990EZ',
+  '990PF',
+  '990T',
+);
+label('SOLE_PROPRIETOR', 'SOLE_PROPRIETOR', 'SOLE_PROPRIETORSHIP', 'SCHEDULE_C', 'SCH_C');
+label('JOINT_VENTURE', 'JOINT_VENTURE');
+label('ESTATE_706', 'ESTATE', 'ESTATE_706');
+label('GIFT_709', 'GIFT', 'GIFT_709');
+label(null, 'INDIVIDUAL_1040', 'INDIVIDUAL_TAX', 'PERSONAL');
+
 /**
  * Normalise a spreadsheet entity value. Accepts the enum spellings
- * ("S-Corp 1120S" → S_CORP_1120S) and tax-software codes (I/S/C/P/F/X,
- * 1040/1120S/…). Returns null when unrecognised.
+ * ("S-Corp 1120S" → S_CORP_1120S), the human labels ("S Corporation",
+ * "Fiduciary (1041)") and tax-software codes (I/S/C/P/F/X, 1040/1120S/…).
+ * Returns null when unrecognised.
  */
 function normalizeEntity(
   raw: string,
@@ -700,6 +792,8 @@ function normalizeEntity(
     .replace(/^_+|_+$/g, '');
   if (!norm) return { clientType: null, entityType: null };
   if (ENTITY_TYPES.has(norm)) return { clientType: 'BUSINESS', entityType: norm };
+  const spelled = ENTITY_LABELS[norm];
+  if (spelled) return spelled;
   const code = ENTITY_CODES[norm.replace(/_/g, '')];
   if (code) return { clientType: code.clientType, entityType: code.entityType };
   return null;
@@ -713,6 +807,8 @@ interface ClientContactState {
 /** Current values of the columns the importer may rewrite on update. */
 interface ExistingClient {
   id: string;
+  /** ACTIVE | ARCHIVED — archived clients stay out of the reverse-gap list. */
+  status?: string;
   name: string;
   clientFacingName: string | null;
   externalId: string | null;
@@ -784,7 +880,7 @@ export type RowOutcome =
       fieldsChanged: string[];
       warnings: string[];
     }
-  | { row: number; action: 'skip'; name: string; reason: string };
+  | { row: number; action: 'skip'; name: string; reason: string; externalId?: string };
 
 interface ValidationResult {
   outcomes: RowOutcome[];
@@ -792,11 +888,22 @@ interface ValidationResult {
   willCreate: number;
   willUpdate: number;
   willSkip: number;
+  /** Ids of the existing clients some row in the file matched. */
+  matchedClientIds: Set<string>;
 }
 
 export interface ValidateOptions {
   /** Rewrite mapped client columns on rows that match an existing client. */
   updateExisting?: boolean;
+  /**
+   * Admin bulk-update mode: implies updateExisting, and a row matching no
+   * client is reported (`not_in_platform`) instead of creating one.
+   */
+  updateOnly?: boolean;
+  /** Update-only escape hatch: create the unmatched rows after all. */
+  createMissing?: boolean;
+  /** Update-only: also rewrite client names from the list (off by default). */
+  updateNames?: boolean;
 }
 
 function cell(row: string[], idx: number | undefined): string {
@@ -843,6 +950,10 @@ export function validateImportRows(
   opts: ValidateOptions = {},
 ): ValidationResult {
   const contactCols = mapContactColumns(header);
+  // Update-only always rewrites fields — that is the whole point of the
+  // admin tool — so callers don't have to pass both flags.
+  const updateExisting = Boolean(opts.updateExisting) || Boolean(opts.updateOnly);
+  const matchedClientIds = new Set<string>();
   const outcomes: RowOutcome[] = [];
   const prepared: Array<{ rowIndex: number; prepared: PreparedRow }> = [];
   const seenExternalIds = new Set<string>();
@@ -880,8 +991,24 @@ export function validateImportRows(
       : (ctx.clientIdByName.get(nameKey) ?? null);
     const existing = existingClientId ? (ctx.clientById.get(existingClientId) ?? null) : null;
     const isUpdate = Boolean(existing);
+    if (existing) matchedClientIds.add(existing.id);
 
-    if (existing && !opts.updateExisting) {
+    // Update-only: never invent a client from a roster row. The row is
+    // reported so the operator can see what their list carries that the
+    // platform doesn't, and re-run with createMissing if they want them.
+    if (!existing && opts.updateOnly && !opts.createMissing) {
+      outcomes.push({
+        row: i,
+        action: 'skip',
+        name,
+        reason: 'not_in_platform',
+        ...(externalId ? { externalId } : {}),
+      });
+      willSkip++;
+      return;
+    }
+
+    if (existing && !updateExisting) {
       // Contacts-only upsert onto the existing client (no client edits).
       const { contacts, warnings: cw } = extractContacts(
         row,
@@ -945,10 +1072,20 @@ export function validateImportRows(
 
     // Enum validation.
     let clientType = cell(row, mapping.client_type).toUpperCase();
-    if (clientType && !CLIENT_TYPES.has(clientType)) return skip('invalid_client_type');
+    let entityCell = cell(row, mapping.entity_type);
+    if (clientType && !CLIENT_TYPES.has(clientType)) {
+      // A column headed plain "Type" almost always carries the entity in a
+      // CPA roster ("S Corporation", "Fiduciary (1041)") rather than
+      // INDIVIDUAL/BUSINESS, so read it as one before giving up on the row.
+      const asEntity = normalizeEntity(clientType);
+      if (!asEntity) return skip('invalid_client_type');
+      if (!entityCell) entityCell = clientType;
+      clientType = asEntity.clientType ?? '';
+    }
     // Accept the friendlier spellings a spreadsheet is likely to carry
-    // ("S-Corp 1120S", "s_corp_1120s") and tax-software codes (I/S/C/P…).
-    const entity = normalizeEntity(cell(row, mapping.entity_type));
+    // ("S-Corp 1120S", "s_corp_1120s", "S Corporation") and tax-software
+    // codes (I/S/C/P…).
+    const entity = normalizeEntity(entityCell);
     if (!entity) return skip('invalid_entity_type');
     const entityType = entity.entityType;
     if (!clientType && entity.clientType) clientType = entity.clientType;
@@ -1003,8 +1140,7 @@ export function validateImportRows(
     }
     if (clientType) values['clientType'] = clientType;
     if (entityType) values['entityType'] = entityType;
-    else if (clientType === 'INDIVIDUAL' && cell(row, mapping.entity_type))
-      values['entityType'] = null;
+    else if (clientType === 'INDIVIDUAL' && entityCell) values['entityType'] = null;
     if (externalId) values['externalId'] = externalId.slice(0, 120);
     const facing = cell(row, mapping.client_facing_name);
     if (facing) values['clientFacingName'] = facing.slice(0, 200);
@@ -1045,6 +1181,19 @@ export function validateImportRows(
       const fieldsChanged: string[] = [];
       for (const col of UPDATABLE_COLUMNS) {
         if (!(col in values)) continue;
+        // Update-only treats Name as a match/verify key, not a value to
+        // write: a tax-software roster spells names its own way ("Smith,
+        // John" vs "John Smith"), and silently renaming every matched
+        // client would be miserable to undo. Mismatches warn instead.
+        if (
+          opts.updateOnly &&
+          !opts.updateNames &&
+          (col === 'name' || col === 'clientFacingName')
+        ) {
+          if (col === 'name' && existing.name.trim().toLowerCase() !== nameKey)
+            warnings.push('name_differs');
+          continue;
+        }
         const next = values[col];
         const cur = existing[col];
         if ((cur ?? null) === (next ?? null)) continue;
@@ -1091,7 +1240,7 @@ export function validateImportRows(
     willCreate++;
   });
 
-  return { outcomes, prepared, willCreate, willUpdate, willSkip };
+  return { outcomes, prepared, willCreate, willUpdate, willSkip, matchedClientIds };
 }
 
 // ---------------------------------------------------------------- lookups
@@ -1153,6 +1302,7 @@ async function buildContext(
   const clientRows = await db
     .select({
       id: clients.id,
+      status: clients.status,
       name: clients.name,
       clientFacingName: clients.clientFacingName,
       externalId: clients.externalId,
@@ -1250,6 +1400,9 @@ const PreviewSchema = z
     defaultOwnerId: z.string().uuid().optional(),
     defaultOfficeName: z.string().max(200).optional(),
     updateExisting: z.boolean().optional(),
+    updateOnly: z.boolean().optional(),
+    createMissing: z.boolean().optional(),
+    updateNames: z.boolean().optional(),
   })
   .refine((d) => Boolean(d.csv) !== Boolean(d.xlsxBase64), {
     message: 'exactly one of csv or xlsxBase64 is required',
@@ -1258,6 +1411,29 @@ const PreviewSchema = z
 type PreviewInput = z.infer<typeof PreviewSchema>;
 
 const MAX_ROWS = 5000;
+/** Cap on the reverse-gap list returned to the browser (count is exact). */
+const MAX_NOT_IN_LIST = 1000;
+
+/**
+ * Active clients that no row of the uploaded list matched — the "in the
+ * platform, not in your list" side of a bulk update. Purely informational.
+ */
+function notInList(
+  ctx: LookupContext,
+  matched: Set<string>,
+): { total: number; clients: Array<{ id: string; externalId: string | null; name: string }> } {
+  const out: Array<{ id: string; externalId: string | null; name: string }> = [];
+  let total = 0;
+  for (const c of ctx.clientById.values()) {
+    if (matched.has(c.id)) continue;
+    if (c.status === 'ARCHIVED') continue;
+    total++;
+    if (out.length < MAX_NOT_IN_LIST)
+      out.push({ id: c.id, externalId: c.externalId, name: c.name });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return { total, clients: out };
+}
 
 function ip(req: Request): string {
   return (req.headers['x-forwarded-for']?.toString().split(',')[0] ?? req.ip ?? '0.0.0.0').trim();
@@ -1286,7 +1462,8 @@ export function readUpload(
       throw err;
     }
   }
-  const t = parseCsv(input.csv ?? '');
+  const text = input.csv ?? '';
+  const t = parseCsv(text, sniffDelimiter(text));
   return { ok: true, header: t.header, rows: t.rows };
 }
 
@@ -1337,6 +1514,9 @@ async function prepare(
   );
   const result = validateImportRows(ctx, header, rows, mapping, {
     updateExisting: Boolean(input.updateExisting),
+    updateOnly: Boolean(input.updateOnly),
+    createMissing: Boolean(input.createMissing),
+    updateNames: Boolean(input.updateNames),
   });
   return { input, header, rows, mapping, ctx, result };
 }
@@ -1367,7 +1547,7 @@ export function mountClientImportRoutes(router: Router, deps: ClientImportDeps):
       }
       const p = await prepare(req, res, deps.db);
       if (!p) return;
-      const { header, rows, mapping, result } = p;
+      const { header, rows, mapping, result, ctx, input } = p;
       res.json({
         columns: header,
         mappedColumns: Object.keys(mapping),
@@ -1376,6 +1556,9 @@ export function mountClientImportRoutes(router: Router, deps: ClientImportDeps):
         willUpdate: result.willUpdate,
         willSkip: result.willSkip,
         rows: result.outcomes,
+        // The reverse gap: active clients no row in the list mentioned.
+        // Informational only — nothing here is ever written.
+        ...(input.updateOnly ? { notInList: notInList(ctx, result.matchedClientIds) } : {}),
       });
     },
   );
@@ -1513,7 +1696,11 @@ export function mountClientImportRoutes(router: Router, deps: ClientImportDeps):
         entityId: createdIds[0],
         actorAppUserId: session.appUserId,
         after: {
-          kind: p.input.xlsxBase64 ? 'xlsx_import' : 'csv_import',
+          kind: p.input.updateOnly
+            ? 'client_bulk_update'
+            : p.input.xlsxBase64
+              ? 'xlsx_import'
+              : 'csv_import',
           created: createdIds.length,
           updated,
           fieldUpdates: fieldUpdates.length,
@@ -1532,7 +1719,7 @@ export function mountClientImportRoutes(router: Router, deps: ClientImportDeps):
           entityId: u.clientId,
           actorAppUserId: session.appUserId,
           before: u.before,
-          after: { ...u.after, kind: 'import_update' },
+          after: { ...u.after, kind: p.input.updateOnly ? 'bulk_update' : 'import_update' },
           ip: ip(req),
           userAgent,
         }).catch((err: unknown) => logger.error({ err }, 'audit emit failed'));

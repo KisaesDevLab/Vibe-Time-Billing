@@ -21,6 +21,7 @@ import {
   buildImportTemplateCsv,
   looseNameKey,
   parseCsv,
+  sniffDelimiter,
 } from '../clients/import';
 
 let harness: PgliteHarness;
@@ -1101,5 +1102,215 @@ describe('UltraTax data-mining import', () => {
       '29371 Highway 52',
     );
     expect((audits[0]!.after as { mailingStreet1: string }).mailingStreet1).toBe('1 New Rd');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Admin "Update clients": paste a Client ID / Name / Type list, rewrite only
+// the fields the list carries, never invent a client from a roster row.
+// ---------------------------------------------------------------------------
+
+describe('sniffDelimiter', () => {
+  it('picks tab for a spreadsheet paste whose names contain commas', () => {
+    const tsv = 'Client ID\tName\tType\nWATL0781\tWatley Holdings, LLC\tPartnership (1065)';
+    expect(sniffDelimiter(tsv)).toBe('\t');
+    const { header, rows } = parseCsv(tsv, sniffDelimiter(tsv));
+    expect(header).toEqual(['Client ID', 'Name', 'Type']);
+    expect(rows[0]).toEqual(['WATL0781', 'Watley Holdings, LLC', 'Partnership (1065)']);
+  });
+  it('still picks comma for ordinary CSV', () => {
+    expect(sniffDelimiter('name,external_id\nAcme,A1')).toBe(',');
+  });
+});
+
+describe('client bulk update (updateOnly)', () => {
+  // Two existing clients, created through the importer itself.
+  async function seedTwo() {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const csv = [
+      'name,external_id,client_type',
+      'Watley Holdings LLC,WATL0781,BUSINESS',
+      'Stow Farms LLC,STOW8693,BUSINESS',
+    ].join('\n');
+    await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, { csv, defaultOwnerId: seed.appUserId }),
+    );
+    return { seed, r };
+  }
+  const rowsOf = (res: FakeRes) =>
+    (
+      res.jsonBody as {
+        rows: Array<{
+          row: number;
+          action: string;
+          reason?: string;
+          externalId?: string;
+          fieldsChanged?: string[];
+          warnings?: string[];
+        }>;
+      }
+    ).rows;
+  const clientBy = async (firmId: string, externalId: string) =>
+    (
+      await harness.db
+        .select()
+        .from(clients)
+        .where(and(eq(clients.firmId, firmId), eq(clients.externalId, externalId)))
+    )[0]!;
+
+  // The pasted list: one matched row, one row for a client that isn't here.
+  const LIST = [
+    'Client ID\tName\tType',
+    'WATL0781\tWatley Holdings, LLC\tPartnership (1065)',
+    'YONK4593\tYonkerville Country Junction, LLC\tS Corporation',
+  ].join('\n');
+
+  it('updates the type on matched rows and reports unmatched rows without creating them', async () => {
+    const { seed, r } = await seedTwo();
+    const body = { csv: LIST, updateOnly: true };
+    const preview = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(seed.firmId, seed.appUserId, body),
+    );
+    expect(preview.statusCode).toBe(200);
+    const rows = rowsOf(preview);
+    expect(rows[0]!.action).toBe('update');
+    expect(rows[0]!.fieldsChanged).toEqual(['entityType']);
+    expect(rows[1]!.action).toBe('skip');
+    expect(rows[1]!.reason).toBe('not_in_platform');
+    expect(rows[1]!.externalId).toBe('YONK4593');
+    expect((preview.jsonBody as { willCreate: number }).willCreate).toBe(0);
+
+    const commit = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, body),
+    );
+    expect((commit.jsonBody as { created: number; fieldUpdates: number }).created).toBe(0);
+    expect((commit.jsonBody as { fieldUpdates: number }).fieldUpdates).toBe(1);
+    expect((await clientBy(seed.firmId, 'WATL0781')).entityType).toBe('PARTNERSHIP_1065');
+    // The unmatched roster row did not become a client (the harness's own
+    // seeded client plus the two created above, and nothing more).
+    const all = await harness.db.select().from(clients).where(eq(clients.firmId, seed.firmId));
+    expect(all).toHaveLength(3);
+  });
+
+  it('accepts the human type spellings a tax-software roster uses', async () => {
+    const seed = await seedMinimalFirm(harness.db);
+    const r = router(harness.db, seed.appUserId);
+    const csv = [
+      'name,external_id,entity_type',
+      'A Co,A1,S Corporation',
+      'B Co,B1,C Corporation',
+      'C Co,C1,Fiduciary (1041)',
+      'D Co,D1,Exempt Organization (990E)',
+      'E Co,E1,Consolidated C',
+      'F Co,F1,Partnership (1065)',
+    ].join('\n');
+    const res = await invoke(
+      r,
+      'post',
+      '/import/commit',
+      req(seed.firmId, seed.appUserId, { csv, defaultOwnerId: seed.appUserId }),
+    );
+    expect((res.jsonBody as { created: number; skipped: unknown[] }).skipped).toEqual([]);
+    const got = async (id: string) => (await clientBy(seed.firmId, id)).entityType;
+    expect(await got('A1')).toBe('S_CORP_1120S');
+    expect(await got('B1')).toBe('C_CORP_1120');
+    expect(await got('C1')).toBe('TRUST_1041');
+    expect(await got('D1')).toBe('EXEMPT_ORG_990');
+    expect(await got('E1')).toBe('C_CORP_1120');
+    expect(await got('F1')).toBe('PARTNERSHIP_1065');
+  });
+
+  it('never renames a matched client from the list — it warns instead — unless updateNames is set', async () => {
+    const { seed, r } = await seedTwo();
+    const body = { csv: LIST, updateOnly: true };
+    const rows = rowsOf(
+      await invoke(r, 'post', '/import/preview', req(seed.firmId, seed.appUserId, body)),
+    );
+    // The list spells it "Watley Holdings, LLC"; the platform has no comma.
+    expect(rows[0]!.fieldsChanged).not.toContain('name');
+    expect(rows[0]!.warnings).toContain('name_differs');
+    await invoke(r, 'post', '/import/commit', req(seed.firmId, seed.appUserId, body));
+    expect((await clientBy(seed.firmId, 'WATL0781')).name).toBe('Watley Holdings LLC');
+
+    const withNames = { csv: LIST, updateOnly: true, updateNames: true };
+    await invoke(r, 'post', '/import/commit', req(seed.firmId, seed.appUserId, withNames));
+    expect((await clientBy(seed.firmId, 'WATL0781')).name).toBe('Watley Holdings, LLC');
+  });
+
+  it('createMissing turns the unmatched rows into clients', async () => {
+    const { seed, r } = await seedTwo();
+    const body = {
+      csv: LIST,
+      updateOnly: true,
+      createMissing: true,
+      defaultOwnerId: seed.appUserId,
+    };
+    const preview = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(seed.firmId, seed.appUserId, body),
+    );
+    expect((preview.jsonBody as { willCreate: number }).willCreate).toBe(1);
+    await invoke(r, 'post', '/import/commit', req(seed.firmId, seed.appUserId, body));
+    const created = await clientBy(seed.firmId, 'YONK4593');
+    expect(created.name).toBe('Yonkerville Country Junction, LLC');
+    expect(created.entityType).toBe('S_CORP_1120S');
+  });
+
+  it('reports the reverse gap: active clients the list never mentions', async () => {
+    const { seed, r } = await seedTwo();
+    const preview = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(seed.firmId, seed.appUserId, { csv: LIST, updateOnly: true }),
+    );
+    const gap = (
+      preview.jsonBody as { notInList: { total: number; clients: Array<{ name: string }> } }
+    ).notInList;
+    // Stow Farms plus the harness's seeded client — neither is in the list.
+    expect(gap.total).toBe(2);
+    expect(gap.clients.map((c) => c.name)).toContain('Stow Farms LLC');
+
+    // Archived clients stay out of the gap list.
+    await harness.db
+      .update(clients)
+      .set({ status: 'ARCHIVED' })
+      .where(and(eq(clients.firmId, seed.firmId), eq(clients.externalId, 'STOW8693')));
+    const after = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(seed.firmId, seed.appUserId, { csv: LIST, updateOnly: true }),
+    );
+    const afterGap = (
+      after.jsonBody as { notInList: { total: number; clients: Array<{ name: string }> } }
+    ).notInList;
+    expect(afterGap.total).toBe(1);
+    expect(afterGap.clients.map((c) => c.name)).not.toContain('Stow Farms LLC');
+  });
+
+  it('an ordinary import (no updateOnly) still creates unmatched rows and reports no gap', async () => {
+    const { seed, r } = await seedTwo();
+    const res = await invoke(
+      r,
+      'post',
+      '/import/preview',
+      req(seed.firmId, seed.appUserId, { csv: LIST, defaultOwnerId: seed.appUserId }),
+    );
+    const body = res.jsonBody as { willCreate: number; notInList?: unknown };
+    expect(body.willCreate).toBe(1);
+    expect(body.notInList).toBeUndefined();
   });
 });
