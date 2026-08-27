@@ -109,6 +109,11 @@ const Schema = z.object({
   GLM_OCR_URL: z.string().url().optional(),
   GLM_OCR_MODEL: z.string().default('glm-ocr'),
   GLM_OCR_API_KEY: z.string().optional(),
+  // DS-3 — desktop shell auto-update / installer download. A directory on
+  // the appliance holding `latest.json` (Tauri updater manifest) plus the
+  // signed installers it references. Unset → /desktop/latest.json answers
+  // 404 and the Account page hides the download card.
+  DESKTOP_RELEASES_DIR: z.string().optional(),
   GLM_OCR_TIMEOUT_MS: z.coerce.number().int().positive().default(120000),
   VIBE_CONNECT_URL: z.string().optional(),
   VIBE_CONNECT_API_KEY: z.string().optional(),

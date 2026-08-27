@@ -15,6 +15,7 @@ import { firmSettingsProposals } from '@vibe/db/schema';
 const sqlOne = drizzleSql`SELECT 1`;
 
 import { loadConfig } from './config';
+import { createDesktopReleasesRouter } from './desktop/releases';
 import { logger } from './logger';
 import { createStaffAuthRouter, type StaffRoutesDeps } from './auth/staff-routes';
 import { staffAuthDeps } from './auth/middleware';
@@ -568,6 +569,17 @@ export function createApp(deps: AppDeps): Express {
     requireCsrf: auth.requireCsrf,
   });
   app.use('/api/auth', authRouter);
+
+  // DS-3 — desktop auto-update manifest + installers. Public by design:
+  // the Tauri updater sends no cookies, and the payload is version strings
+  // plus minisign-signed binaries, no firm data.
+  app.use(
+    '/desktop',
+    createDesktopReleasesRouter({
+      releasesDir: config.DESKTOP_RELEASES_DIR ?? null,
+      baseUrl: config.APP_BASE_URL,
+    }),
+  );
 
   // Protect everything else under /api/staff/* with requireAuth.
   app.use('/api/staff', auth.requireAuth, auth.requireCsrf);
