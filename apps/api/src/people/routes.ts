@@ -32,6 +32,7 @@ import { normalizePhone } from '@vibe/core/auth';
 import { resolveMergeTokens, type MergeContext } from '@vibe/core/proposals';
 
 import { emitAudit } from '../auth/audit';
+import { mountPeopleBulkUpdateRoutes } from './bulk-update';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 import { updatePerson } from '../clients/person-helpers';
 import { addUuidIdGuard } from '../lib/uuid-guard';
@@ -79,6 +80,10 @@ const PatchSchema = z.object({
 export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
   const router = express.Router();
   addUuidIdGuard(router);
+
+  // Admin "Update people": paste a directory list, write the contact
+  // fields onto the people already here (see people/bulk-update.ts).
+  mountPeopleBulkUpdateRoutes(router, deps);
 
   // ---------------------------------------------------------------
   // GET / — firm-wide directory list. Optional `clientId` switches on

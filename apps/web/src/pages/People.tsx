@@ -19,6 +19,7 @@ import { Button, Card, ColumnFilter, Combobox, Input, Modal, Pill, Table, tokens
 import { RichTextEditor } from '../proposal-editor/RichTextEditor';
 
 import { api } from '../api-client';
+import { UpdatePeopleWizard } from './people/UpdatePeopleWizard';
 import { usePermission } from '../auth-context';
 import { TableSearch } from '../components/TableSearch';
 import { useColumnView, viewToPagedQuery } from '../lib/column-view';
@@ -107,6 +108,7 @@ export function PeopleDirectoryPage(): JSX.Element {
   const [emailOpen, setEmailOpen] = useState(false);
   // 0221 — merge duplicates dialog (persons only).
   const [mergeOpen, setMergeOpen] = useState(false);
+  const [updateOpen, setUpdateOpen] = useState(false);
   const selectedPersonKeys = Array.from(selected).filter((k) => k.startsWith('p:'));
 
   const pageKeys = list.rows.map((r) => r.key);
@@ -206,21 +208,26 @@ export function PeopleDirectoryPage(): JSX.Element {
           </span>
         }
         action={
-          view.anyFilterActive ? (
-            <button
-              type="button"
-              onClick={view.clearFilters}
-              style={{
-                background: 'none',
-                border: 'none',
-                color: tokens.color.accent,
-                fontSize: 12,
-                cursor: 'pointer',
-              }}
-            >
-              Clear filters
-            </button>
-          ) : undefined
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {view.anyFilterActive && (
+              <button
+                type="button"
+                onClick={view.clearFilters}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: tokens.color.accent,
+                  fontSize: 12,
+                  cursor: 'pointer',
+                }}
+              >
+                Clear filters
+              </button>
+            )}
+            <Button size="sm" variant="secondary" onClick={() => setUpdateOpen(true)}>
+              Update people
+            </Button>
+          </div>
         }
       >
         <div style={{ marginBottom: 12 }}>
@@ -509,6 +516,11 @@ export function PeopleDirectoryPage(): JSX.Element {
             empty="No people match the current filters."
           />
         )}
+        <UpdatePeopleWizard
+          open={updateOpen}
+          onClose={() => setUpdateOpen(false)}
+          onUpdated={() => list.reload()}
+        />
         {mergeOpen && (
           <MergePeopleDialog
             people={list.rows.filter((r) => selected.has(r.key))}
