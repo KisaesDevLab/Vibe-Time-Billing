@@ -53,7 +53,9 @@
 	encode gzip zstd
 
 	# /desktop/* = desktop shell update manifest + installers (API-served).
-	handle /api/* /desktop/* {
+	# `handle` takes a single matcher, so the two paths go through a named one.
+	@api_or_desktop path /api/* /desktop/*
+	handle @api_or_desktop {
 		reverse_proxy api:3001 {
 			header_up X-Real-IP {remote_host}
 			header_up X-Vibe-Realm app
