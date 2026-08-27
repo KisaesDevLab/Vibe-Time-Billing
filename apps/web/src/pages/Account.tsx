@@ -12,6 +12,7 @@ import { Button, Card, Pill, tokens } from '@vibe/ui';
 import { api } from '../api-client';
 import { useAuth } from '../auth-context';
 import { MyCalendarsCard } from './account/MyCalendars';
+import { DesktopDownloadCard } from './account/DesktopDownloadCard';
 
 interface CredentialRow {
   id: string;
@@ -222,6 +223,7 @@ export function AccountPage(): JSX.Element {
       </Card>
 
       <MyCalendarsCard />
+      <DesktopDownloadCard />
 
       <Card title="Sessions">
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Sign out the current session.</p>
