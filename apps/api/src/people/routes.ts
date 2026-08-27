@@ -34,6 +34,7 @@ import { resolveMergeTokens, type MergeContext } from '@vibe/core/proposals';
 import { emitAudit } from '../auth/audit';
 import { mountPeopleBulkUpdateRoutes } from './bulk-update';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
+import { looseNameKey } from '../clients/import';
 import { updatePerson } from '../clients/person-helpers';
 import { addUuidIdGuard } from '../lib/uuid-guard';
 import { markdownToHtml } from '../lib/markdown';
@@ -218,6 +219,8 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       bulkEmailOptOut: boolean;
       smsOptOut: boolean;
       doNotCall: boolean;
+      /** How many directory rows share this person's name (1 = unique). */
+      duplicateCount?: number;
       onThisClient?: boolean;
       alsoOn?: { clientId: string; name: string }[];
     }
@@ -269,6 +272,23 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       });
     }
 
+    // Duplicate names. The key ignores punctuation and middle names —
+    // "Tyler L. Waterman", "Tyler L Waterman" and "Tyler Waterman" are one
+    // group — because those near-misses are exactly what the merge tool is
+    // for; identical spellings would be the easy half of the problem.
+    // Counted over the whole reconciled directory BEFORE any filter, so
+    // searching or filtering can never hide one half of a pair and make a
+    // duplicate look unique.
+    // Same key the bulk-update matcher uses, so "shows as a duplicate here"
+    // and "matched the same person there" can never disagree.
+    const dupKey = looseNameKey;
+    const nameCounts = new Map<string, number>();
+    for (const r of rows) {
+      const k = dupKey(r.fullName);
+      if (k) nameCounts.set(k, (nameCounts.get(k) ?? 0) + 1);
+    }
+    for (const r of rows) r.duplicateCount = nameCounts.get(dupKey(r.fullName)) ?? 1;
+
     // Column filters (multi-select → comma-separated) + sort, applied to the
     // reconciled set before the page slice so paging is correct firm-wide.
     const csv = (v: unknown): string[] =>
@@ -282,6 +302,9 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
     const kindFilter = csv(req.query['kind']); // 'person' | 'portal_identity'
 
     let filtered = rows;
+    // `duplicates=1` — only people whose name is shared with someone else.
+    const onlyDuplicates = req.query['duplicates'] === '1';
+    if (onlyDuplicates) filtered = filtered.filter((r) => (r.duplicateCount ?? 1) > 1);
     if (q) {
       // 0224 — mobile is a first-class column (texts go there), so the
       // directory search covers it alongside the landline.
@@ -342,6 +365,13 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       }
     };
     filtered.sort((a, b) => {
+      // In the duplicates view the point is to compare the members of a
+      // group side by side, so the group key orders first and the chosen
+      // sort orders within it.
+      if (onlyDuplicates) {
+        const g = dupKey(a.fullName).localeCompare(dupKey(b.fullName));
+        if (g !== 0) return g;
+      }
       const c = cmp(a, b) * sortDir;
       return c !== 0 ? c : a.fullName.localeCompare(b.fullName);
     });

@@ -84,3 +84,58 @@ describe('GET /people — server-side filters + pagination', () => {
     expect(names[0]).toBe('Zelda');
   });
 });
+
+describe('GET /people?duplicates=1 — duplicate-name view', () => {
+  it('returns only shared names, counts them, and groups near-misses together', async () => {
+    await person('Tyler L Waterman', 'tyler@x.test');
+    await person('Tyler Waterman', 'tyler2@x.test');
+    await person('Dusty Hayes', 'dusty@x.test');
+    await portalOnlyIdentity('Tyler L. Waterman');
+
+    const all = await request(app()).get('/api/staff/people?pageSize=100');
+    expect(all.body.total).toBe(4);
+    const dupes = await request(app()).get('/api/staff/people?duplicates=1&pageSize=100');
+    // The three Watermans — spelled three ways — are one group; Dusty is out.
+    expect(dupes.body.total).toBe(3);
+    expect(
+      dupes.body.rows.map((r: { fullName: string; duplicateCount: number }) => r.duplicateCount),
+    ).toEqual([3, 3, 3]);
+    expect(dupes.body.rows.every((r: { fullName: string }) => /Waterman/.test(r.fullName))).toBe(
+      true,
+    );
+  });
+
+  it('counts across the whole directory, so a search cannot make a duplicate look unique', async () => {
+    await person('Tyler L Waterman', 'tyler@x.test');
+    await person('Tyler Waterman', 'tyler2@x.test');
+    // The search narrows to one row, but the count still reports the pair.
+    const r = await request(app()).get('/api/staff/people?q=tyler%40x.test');
+    expect(r.body.total).toBe(1);
+    expect(r.body.rows[0].duplicateCount).toBe(2);
+  });
+
+  it('does not group unrelated people who merely share a suffix', async () => {
+    await person('Robert W Moeller Jr.', 'moeller@x.test');
+    await person('Robert W Thomas Jr', 'thomas@x.test');
+    const r = await request(app()).get('/api/staff/people?duplicates=1');
+    expect(r.body.total).toBe(0);
+  });
+
+  it('still groups the same person written with and without a suffix', async () => {
+    await person('Robert W Thomas Jr', 'thomas@x.test');
+    await person('Robert Thomas', 'thomas2@x.test');
+    const r = await request(app()).get('/api/staff/people?duplicates=1');
+    expect(r.body.total).toBe(2);
+  });
+
+  it('leaves unique names alone', async () => {
+    await person('Dusty Hayes', 'dusty@x.test');
+    await person('Aaron Shockley', 'aaron@x.test');
+    const r = await request(app()).get('/api/staff/people?duplicates=1');
+    expect(r.body.total).toBe(0);
+    const all = await request(app()).get('/api/staff/people');
+    expect(all.body.rows.every((x: { duplicateCount: number }) => x.duplicateCount === 1)).toBe(
+      true,
+    );
+  });
+});

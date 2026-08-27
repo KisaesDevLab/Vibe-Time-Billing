@@ -41,6 +41,8 @@ interface PersonRow {
   // 0224 — channel blocks shown as an icon next to the handle.
   smsOptOut: boolean;
   doNotCall: boolean;
+  /** How many directory rows share this name (1 = unique). */
+  duplicateCount?: number;
 }
 
 /** Small "blocked" marker next to a contact handle. */
@@ -81,9 +83,12 @@ export function PeopleDirectoryPage(): JSX.Element {
   // Filter/sort/search state (sessionStorage-persisted); filtering, sorting,
   // and paging run SERVER-side. `.v2` drops stale pre-migration state.
   const view = useColumnView('vibe.people.view.v2', { sortCol: 'name', sortDir: 'asc' });
+  // Duplicate-name view: server-side, counted across the whole directory
+  // so a search or column filter can't hide half of a pair.
+  const [onlyDuplicates, setOnlyDuplicates] = useState(false);
   const query = useMemo(
-    () =>
-      viewToPagedQuery(view, {
+    () => ({
+      ...viewToPagedQuery(view, {
         filterMap: {
           portal: 'portal',
           kind: 'kind',
@@ -92,7 +97,9 @@ export function PeopleDirectoryPage(): JSX.Element {
           mobile: 'mobile',
         },
       }),
-    [view],
+      ...(onlyDuplicates ? { duplicates: '1' } : {}),
+    }),
+    [view, onlyDuplicates],
   );
   const list = usePagedList<PersonRow>('/api/staff/people', { query });
   const loading = list.loading;
@@ -224,6 +231,24 @@ export function PeopleDirectoryPage(): JSX.Element {
                 Clear filters
               </button>
             )}
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                fontSize: 12,
+                color: tokens.color.textMuted,
+                cursor: 'pointer',
+              }}
+              title="People whose name is shared with someone else, grouped together — initials and punctuation ignored"
+            >
+              <input
+                type="checkbox"
+                checked={onlyDuplicates}
+                onChange={(e) => setOnlyDuplicates(e.target.checked)}
+              />
+              Duplicate names only
+            </label>
             <Button size="sm" variant="secondary" onClick={() => setUpdateOpen(true)}>
               Update people
             </Button>
@@ -348,15 +373,25 @@ export function PeopleDirectoryPage(): JSX.Element {
                   </span>
                 ) as unknown as string,
                 render: (p) => (
-                  <a
-                    href={`/people/${p.id}`}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      navigate(`/people/${p.id}`);
-                    }}
-                  >
-                    {p.fullName}
-                  </a>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <a
+                      href={`/people/${p.id}`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        navigate(`/people/${p.id}`);
+                      }}
+                    >
+                      {p.fullName}
+                    </a>
+                    {(p.duplicateCount ?? 1) > 1 && (
+                      <span
+                        title={`${p.duplicateCount} people share this name`}
+                        style={{ fontSize: 11, color: tokens.color.warning }}
+                      >
+                        ×{p.duplicateCount}
+                      </span>
+                    )}
+                  </span>
                 ),
               },
               {

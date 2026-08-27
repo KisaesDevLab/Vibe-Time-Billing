@@ -663,11 +663,29 @@ function autoMap(header: string[]): Partial<Record<CanonicalField, number>> {
   return map;
 }
 
+// Generational and credential suffixes. Without stripping these, first +
+// last collapses "Robert W Moeller Jr." and "Robert W Thomas Jr" to the
+// same key ("robert jr") — two unrelated people looking like one.
+const NAME_SUFFIXES = new Set([
+  'jr',
+  'sr',
+  'ii',
+  'iii',
+  'iv',
+  'md',
+  'dds',
+  'dmd',
+  'cpa',
+  'esq',
+  'phd',
+]);
+
 /**
- * "Kurt W. Krueger" → "kurt krueger": lowercase, strip punctuation, keep
- * first + last token. Used as a second-chance owner match for tax-software
- * preparer names whose middle initial / punctuation differ from the staff
- * record's full_name.
+ * "Kurt W. Krueger" → "kurt krueger": lowercase, strip punctuation and any
+ * trailing suffix, keep first + last token. Used as a second-chance match
+ * for names whose middle initial / punctuation differ from the stored
+ * record — tax-software preparer names against staff, roster rows against
+ * the person directory, and the duplicate-name view.
  */
 export function looseNameKey(name: string): string {
   const parts = name
@@ -675,6 +693,8 @@ export function looseNameKey(name: string): string {
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter(Boolean);
+  // Only strip a suffix when a real surname survives it.
+  while (parts.length > 2 && NAME_SUFFIXES.has(parts[parts.length - 1]!)) parts.pop();
   if (parts.length <= 2) return parts.join(' ');
   return `${parts[0]} ${parts[parts.length - 1]}`;
 }
