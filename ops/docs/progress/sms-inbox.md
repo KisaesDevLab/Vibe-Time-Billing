@@ -48,3 +48,7 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 
 - Done: engagement panel, client SMS tab, contact actions, new-conversation dialog, Tauri notification plugin + web bridge + Account toggle.
 - Notes: the desktop shell is CI-built (no Rust toolchain here) — the Cargo/capability changes are untested locally.
+
+## Phase 10 — compliance
+
+- Done: consent endpoints + provenance, booking/portal capture, consent-needed notification, tests.

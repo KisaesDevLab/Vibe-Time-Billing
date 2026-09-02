@@ -13,7 +13,9 @@ import IORedis from 'ioredis';
 import { pino } from 'pino';
 
 import { createDb, type Database } from '@vibe/db';
-import { firms } from '@vibe/db/schema';
+import { and, eq } from 'drizzle-orm';
+
+import { appointments, firms, staffNotifications } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
 
 import { runRecurringBillingTick } from './jobs/recurring-billing';
@@ -287,6 +289,42 @@ const workerFallbackSms: SmsProvider | null = db
       },
     }
   : null;
+async function notifyConsentNeeded(
+  appointmentId: string,
+  firmId: string,
+  personId: string | null,
+): Promise<void> {
+  if (!db) return;
+  const [existing] = await db
+    .select({ id: staffNotifications.id })
+    .from(staffNotifications)
+    .where(
+      and(
+        eq(staffNotifications.type, 'sms_consent_needed'),
+        eq(staffNotifications.entityId, appointmentId),
+      ),
+    )
+    .limit(1);
+  if (existing) return;
+  const [appt] = await db
+    .select({ leadAppUserId: appointments.leadAppUserId, title: appointments.title })
+    .from(appointments)
+    .where(eq(appointments.id, appointmentId))
+    .limit(1);
+  if (!appt?.leadAppUserId) return;
+  await db.insert(staffNotifications).values({
+    firmId,
+    recipientAppUserId: appt.leadAppUserId,
+    type: 'sms_consent_needed',
+    entityType: 'appointment',
+    entityId: appointmentId,
+    title: 'Text reminder held — no SMS consent on file',
+    body: `A reminder for "${appt.title ?? 'appointment'}" was not texted because the contact has not agreed to receive texts. Record verbal consent on their person record to send it.`,
+    actionUrl: personId ? `/people/${personId}` : `/appointments`,
+    metadata: { appointmentId, personId },
+  });
+}
+
 const workerSmsSend = createSmsSendService({
   db,
   log: logger,
@@ -865,6 +903,13 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
         r.reason === 'a2p_unregistered' ||
         r.reason === 'no_line'
       ) {
+        // 0234 / D8a — tell the appointment lead once that a reminder was
+        // held for missing consent so they can record verbal consent.
+        if (r.reason === 'no_consent' && m.appointmentId) {
+          await notifyConsentNeeded(m.appointmentId, m.firmId, r.personId ?? null).catch(
+            (err: unknown) => logger.warn({ err }, 'consent-needed notification failed'),
+          );
+        }
         return { skipped: r.reason };
       }
       throw new Error(r.error ?? 'sms_failed');

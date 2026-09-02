@@ -26,6 +26,7 @@ import {
   publicBookingLinkNotify,
   staffNotifications,
   staffPublicBookingLinks,
+  persons,
 } from '@vibe/db/schema';
 
 import { findOrCreatePerson } from '../clients/person-helpers';
@@ -534,6 +535,8 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
     const name = typeof body['name'] === 'string' ? body['name'].trim() : '';
     const email = typeof body['email'] === 'string' ? body['email'].trim() : '';
     const phone = typeof body['phone'] === 'string' ? body['phone'].trim() : '';
+    // 0234 / D8a — "you may text me about this appointment" checkbox.
+    const smsConsent = body['smsConsent'] === true;
     const notes = typeof body['notes'] === 'string' ? body['notes'].trim().slice(0, 2000) : '';
     const startsAtRaw = typeof body['startsAt'] === 'string' ? body['startsAt'] : '';
     const typeId =
@@ -672,6 +675,15 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
       email,
       phone: phone || null,
     }).catch(() => null);
+    if (personId && smsConsent && phone) {
+      await d
+        .update(persons)
+        .set({ smsConsentAt: new Date(), smsConsentSource: 'booking', updatedAt: new Date() })
+        .where(and(eq(persons.id, personId), sql`${persons.smsConsentAt} IS NULL`))
+        .catch((err: unknown) =>
+          logger.warn({ err, personId }, 'booking sms consent write failed'),
+        );
+    }
 
     // Serialize on the staff member, re-check conflict + an existing hold, then
     // insert the PENDING hold — so two concurrent requests can't both take it.

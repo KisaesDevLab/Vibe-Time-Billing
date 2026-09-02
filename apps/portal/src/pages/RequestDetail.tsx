@@ -77,6 +77,8 @@ export function RequestDetailPage(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [reply, setReply] = useState('');
+  // 0234 / D8a — optional "you may text me about this" affirmation.
+  const [smsConsent, setSmsConsent] = useState(false);
   const [needsInfo, setNeedsInfo] = useState('');
   const [perItemText, setPerItemText] = useState<Record<string, string>>({});
 
@@ -107,7 +109,7 @@ export function RequestDetailPage(): JSX.Element {
     try {
       await api(`/api/portal/requests/${id}/reply`, {
         method: 'POST',
-        body: JSON.stringify({ text: reply.trim() }),
+        body: JSON.stringify({ text: reply.trim(), smsConsent: smsConsent || undefined }),
       });
       setReply('');
       await load();
@@ -358,6 +360,27 @@ export function RequestDetailPage(): JSX.Element {
             placeholder="Type a reply to send to your firm…"
             style={{ width: '100%', padding: tokens.space.sm }}
           />
+          <label
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'flex-start',
+              marginTop: 8,
+              fontSize: 12,
+              color: tokens.color.textMuted,
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={smsConsent}
+              onChange={(e) => setSmsConsent(e.target.checked)}
+              style={{ marginTop: 2 }}
+            />
+            <span>
+              You may text me about this request. Message and data rates may apply; reply STOP to
+              opt out.
+            </span>
+          </label>
           <div style={{ marginTop: 6, display: 'flex', gap: 6 }}>
             <Button onClick={() => void sendReply()} disabled={busy === 'reply' || !reply.trim()}>
               Send reply

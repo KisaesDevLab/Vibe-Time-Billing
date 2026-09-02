@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 9 — complete.** Next: Phase 10 (compliance).
+**Phase 10 — complete.** Next: Phase 11 (PII, roles, retention, backup).
 
 ## Phase checklist
 
@@ -122,3 +122,10 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - `NewSmsConversationDialog` — line picker (only surface with one; hidden when a single line), client → people-with-numbers picker or a typed number, engagement picker, `SmsComposer mode="new"`, 409 → consent/opt-out/A2P banners; used by the inbox "New text", the client tab, the engagement panel, and contact records. `GET /api/staff/sms/lines` (read permission) backs the picker.
 - Desktop notifications (D13a): `tauri-plugin-notification` added to `apps/desktop` (Cargo.toml, `.plugin(...)` in `lib.rs`, `notification:default` capability — CI-built, not compiled here); `apps/web/src/lib/desktop.ts` gains `notificationsSupported` / `requestNotifyPermission` / `notifyDesktop` (Tauri plugin commands via the global, browser `Notification` fallback). `Shell` hooks the stream's `onInbound`: fetches the conversation, applies `shouldNotifyInbound` (dedupe + assigned-to-me-or-unassigned), skips when that thread is open and visible, click navigates to the thread. Preference toggle: Account → Notifications (`SmsNotificationsCard`, localStorage, default on in the desktop shell).
 - Merged to `main` (fast-forward, local) at the end of Phase 8 — milestones 1 and 2. Not pushed.
+
+## Phase 10 notes
+
+- Consent capture points (D8a): inbound text (Phase 4, `inbound`); public booking form checkbox → `smsConsent` on submit → `person.sms_consent_source='booking'` (`apps/intake` Book page); portal request reply checkbox → `POST /api/portal/requests/:id/reply {smsConsent}` → `'portal'`; portal contact preferences — turning texts back on, or `{smsConsent:true}` → `'portal'` (GET returns `smsConsent`); staff `POST /api/staff/people/:id/sms-consent {source: verbal|staff, note?}` + `DELETE` (audited `consent_recorded` / `consent_revoked`); staff opt-out toggles now carry `sms_opt_out_at/source='staff'`. `GET /people/:id` exposes `smsOptOutAt/Source`, `smsConsentAt/Source`.
+- Reminder held for missing consent → one `staff_notification` (`sms_consent_needed`) to the appointment lead per appointment, linking to the person record.
+- Opt-out: STOP/START (Phase 4), 21610 (Phases 3/5), staff/portal toggles with provenance. Advanced Opt-Out isn't readable via API — settings page shows the console checklist.
+- A2P: send-service block (`unregistered` + US long code, override flag), 6-hourly refresh in the poll tick, manual `POST /settings/a2p/refresh`, banners in inbox/settings/composer (Phases 3/5/7/8).

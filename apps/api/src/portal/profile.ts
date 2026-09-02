@@ -734,6 +734,7 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
         optOut: persons.bulkEmailOptOut,
         smsOptOut: persons.smsOptOut,
         doNotCall: persons.doNotCall,
+        smsConsentAt: persons.smsConsentAt,
       })
       .from(persons)
       .where(eq(persons.id, ident.personId))
@@ -744,6 +745,8 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
       // 0224 — SMS + voice opt-outs, same self-service surface.
       smsOptOut: person?.smsOptOut ?? false,
       doNotCall: person?.doNotCall ?? false,
+      // 0234 — whether the firm has SMS consent on file (D8a).
+      smsConsent: Boolean(person?.smsConsentAt),
     });
   });
 
@@ -756,8 +759,23 @@ export function createPortalProfileRouter(deps: PortalProfileDeps): Router {
     }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const set: Partial<typeof persons.$inferInsert> = {};
+    const now = new Date();
     if (typeof body['bulkEmailOptOut'] === 'boolean') set.bulkEmailOptOut = body['bulkEmailOptOut'];
-    if (typeof body['smsOptOut'] === 'boolean') set.smsOptOut = body['smsOptOut'];
+    if (typeof body['smsOptOut'] === 'boolean') {
+      set.smsOptOut = body['smsOptOut'];
+      // 0234 — provenance; a client turning texts back ON is consent (D8a).
+      set.smsOptOutAt = body['smsOptOut'] ? now : null;
+      set.smsOptOutSource = body['smsOptOut'] ? 'portal' : null;
+      if (!body['smsOptOut']) {
+        set.smsConsentAt = now;
+        set.smsConsentSource = 'portal';
+      }
+    }
+    // 0234 — explicit "you may text me" affirmation from the portal.
+    if (body['smsConsent'] === true) {
+      set.smsConsentAt = now;
+      set.smsConsentSource = 'portal';
+    }
     if (typeof body['doNotCall'] === 'boolean') set.doNotCall = body['doNotCall'];
     if (Object.keys(set).length === 0) {
       res.status(400).json({ error: 'no_preferences' });

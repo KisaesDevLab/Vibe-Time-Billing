@@ -14,6 +14,8 @@ import {
   clientRequests,
   engagements,
   files,
+  persons,
+  portalIdentity,
 } from '@vibe/db/schema';
 import { and, asc, ne, sql } from 'drizzle-orm';
 import {
@@ -39,7 +41,11 @@ const FulfillSchema = z.object({
   fileId: z.string().uuid().nullable().optional(),
 });
 
-const ReplySchema = z.object({ text: z.string().min(1).max(2000) });
+const ReplySchema = z.object({
+  text: z.string().min(1).max(2000),
+  // 0234 / D8a — optional "you may text me about this" affirmation.
+  smsConsent: z.boolean().optional(),
+});
 
 const AttachmentSchema = z.object({
   fileId: z.string().uuid(),
@@ -171,6 +177,20 @@ export function createPortalRequestsRouter(deps: PortalRequestsDeps): Router {
       .update(clientRequests)
       .set({ clientReplyText: parsed.data.text, clientReplySeenAt: null, updatedAt: new Date() })
       .where(eq(clientRequests.id, scoped.id));
+    if (parsed.data.smsConsent === true) {
+      const [ident] = await deps.db
+        .select({ personId: portalIdentity.personId })
+        .from(portalIdentity)
+        .where(eq(portalIdentity.id, session.portalIdentityId))
+        .limit(1);
+      if (ident?.personId) {
+        await deps.db
+          .update(persons)
+          .set({ smsConsentAt: new Date(), smsConsentSource: 'portal', updatedAt: new Date() })
+          .where(eq(persons.id, ident.personId))
+          .catch(() => undefined);
+      }
+    }
     await emitAudit(deps.db, {
       action: 'UPDATE',
       entityType: 'client_request',

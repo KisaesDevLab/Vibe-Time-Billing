@@ -418,6 +418,11 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
         bulkEmailOptOut: persons.bulkEmailOptOut,
         smsOptOut: persons.smsOptOut,
         doNotCall: persons.doNotCall,
+        // 0234 — SMS consent / opt-out provenance (D8a)
+        smsOptOutAt: persons.smsOptOutAt,
+        smsOptOutSource: persons.smsOptOutSource,
+        smsConsentAt: persons.smsConsentAt,
+        smsConsentSource: persons.smsConsentSource,
       };
       let person =
         (
@@ -476,6 +481,10 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
             bulkEmailOptOut: person.bulkEmailOptOut,
             smsOptOut: person.smsOptOut,
             doNotCall: person.doNotCall,
+            smsOptOutAt: person.smsOptOutAt,
+            smsOptOutSource: person.smsOptOutSource,
+            smsConsentAt: person.smsConsentAt,
+            smsConsentSource: person.smsConsentSource,
           }
         : {
             id: identity!.id,
@@ -974,6 +983,102 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
   // updates the shared person row (propagates to every client); for a
   // standalone portal identity it edits the login record.
   // ---------------------------------------------------------------
+  // 0234 / D8a — SMS consent on file. Outbound-initiated texts are blocked
+  // without one; texting first records it automatically (source=inbound),
+  // staff can record verbal consent here (audited), and DELETE revokes it.
+  router.post(
+    '/:id/sms-consent',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const parsed = z
+        .object({
+          source: z.enum(['verbal', 'staff']).default('verbal'),
+          note: z.string().trim().max(500).optional(),
+        })
+        .safeParse(req.body ?? {});
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const id = req.params['id']!;
+      const now = new Date();
+      const updated = await deps.db
+        .update(persons)
+        .set({
+          smsConsentAt: now,
+          smsConsentSource: parsed.data.source,
+          smsConsentByUserId: req.staffSession!.appUserId,
+          updatedAt: now,
+        })
+        .where(and(eq(persons.id, id), eq(persons.firmId, firmId)))
+        .returning({ id: persons.id, smsOptOut: persons.smsOptOut });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'person',
+        entityId: id,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: {
+          smsAction: 'consent_recorded',
+          source: parsed.data.source,
+          note: parsed.data.note ?? null,
+        },
+        ip: req.ip,
+        userAgent: req.get('user-agent') ?? null,
+      }).catch(() => undefined);
+      res.json({
+        ok: true,
+        smsConsentAt: now,
+        smsConsentSource: parsed.data.source,
+        // consent does not override a STOP — the UI shows both
+        smsOptOut: updated[0]!.smsOptOut,
+      });
+    },
+  );
+
+  router.delete(
+    '/:id/sms-consent',
+    requirePermission(deps, 'client:write'),
+    async (req: Request, res: Response) => {
+      const firmId = req.staffSession?.firmId;
+      if (!firmId || !deps.db) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      const id = req.params['id']!;
+      const updated = await deps.db
+        .update(persons)
+        .set({
+          smsConsentAt: null,
+          smsConsentSource: null,
+          smsConsentByUserId: null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(persons.id, id), eq(persons.firmId, firmId)))
+        .returning({ id: persons.id });
+      if (updated.length === 0) {
+        res.status(404).json({ error: 'not_found' });
+        return;
+      }
+      await emitAudit(deps.db, {
+        action: 'UPDATE',
+        entityType: 'person',
+        entityId: id,
+        actorAppUserId: req.staffSession!.appUserId,
+        after: { smsAction: 'consent_revoked' },
+      }).catch(() => undefined);
+      res.json({ ok: true });
+    },
+  );
+
   router.patch(
     '/:id',
     requirePermission(deps, 'client:write'),
@@ -1006,7 +1111,12 @@ export function createPeopleRouter(deps: PeopleRoutesDeps): Router {
       if (person) {
         const flags: Partial<typeof persons.$inferInsert> = {};
         if (data.bulkEmailOptOut !== undefined) flags.bulkEmailOptOut = data.bulkEmailOptOut;
-        if (data.smsOptOut !== undefined) flags.smsOptOut = data.smsOptOut;
+        if (data.smsOptOut !== undefined) {
+          flags.smsOptOut = data.smsOptOut;
+          // 0234 — provenance: staff-set opt-out; clearing it re-opens texting.
+          flags.smsOptOutAt = data.smsOptOut ? new Date() : null;
+          flags.smsOptOutSource = data.smsOptOut ? 'staff' : null;
+        }
         if (data.doNotCall !== undefined) flags.doNotCall = data.doNotCall;
         const {
           bulkEmailOptOut: _skip,

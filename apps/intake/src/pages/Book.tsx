@@ -268,6 +268,8 @@ export function Book(): JSX.Element {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  // 0234 / D8a — opt-in to text reminders for this appointment.
+  const [smsConsent, setSmsConsent] = useState(false);
   const [notes, setNotes] = useState('');
   // Which detail fields the visitor has interacted with (controls error text).
   const [touched, setTouched] = useState<{ name: boolean; email: boolean; phone: boolean }>({
@@ -507,6 +509,7 @@ export function Book(): JSX.Element {
           name: name.trim(),
           email: email.trim(),
           phone: phone.trim() || undefined,
+          smsConsent: phone.trim() ? smsConsent : undefined,
           notes: notes.trim() || undefined,
           startsAt: selectedSlot.start,
           typeId: typeId ?? undefined,
@@ -1133,6 +1136,29 @@ export function Book(): JSX.Element {
               onBlur={() => setTouched((t) => ({ ...t, phone: true }))}
             />
             {touched.phone && !phoneValid && fieldErrorText('Please enter a valid phone number.')}
+            {phone.trim() !== '' && (
+              <label
+                style={{
+                  ...fieldLabelStyle,
+                  display: 'flex',
+                  gap: 8,
+                  alignItems: 'flex-start',
+                  marginTop: 8,
+                  fontWeight: 400,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={smsConsent}
+                  onChange={(e) => setSmsConsent(e.target.checked)}
+                  style={{ marginTop: 3 }}
+                />
+                <span>
+                  You may text me about this appointment (reminders and confirmations). Message and
+                  data rates may apply; reply STOP to opt out.
+                </span>
+              </label>
+            )}
           </div>
         </div>
 
