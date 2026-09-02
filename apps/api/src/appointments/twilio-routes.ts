@@ -10,13 +10,14 @@ import express, { type NextFunction, type Request, type Response, type Router } 
 import { and, asc, eq, gt, lt } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
-import { checkAndIncrement } from '@vibe/core/auth';
+import { checkAndIncrement, normalizePhone } from '@vibe/core/auth';
 import type { Database } from '@vibe/db';
 import {
   appointmentParticipants,
   appointments,
   clientCommunications,
   clientContacts,
+  firms,
   persons,
   voiceCalls,
 } from '@vibe/db/schema';
@@ -25,6 +26,8 @@ import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 import { loadFirmSmsProvider } from '../messaging/sms-resolver';
 import { isSmsOptedOut } from '../people/sms-gate';
+import type { InboundSms, IngestResult } from '../sms/ingest';
+import { findPersonsByE164 } from '../sms/lookup';
 import type { SmsSendService } from '../sms/send-service';
 import { createTwilioTokenResolver, twilioSignatureValid } from '../sms/twilio-signature';
 
@@ -38,6 +41,14 @@ export interface AppointmentTwilioDeps {
   now?: () => Date;
   /** 0234 — voice-fallback texts go through the inbox send service when present. */
   smsSend?: SmsSendService;
+  /**
+   * 0234 — the SMS inbox owns inbound texts now. When wired, every text
+   * hitting this legacy URL is ingested first (conversation, unread,
+   * association, Communications row); the confirm-keyword logic below
+   * still runs so reminder replies keep flipping RSVPs until Phase 12
+   * moves that into the ingest hook.
+   */
+  ingest?: (msg: InboundSms) => Promise<IngestResult>;
 }
 
 const IP_WINDOW_SECONDS = 60;
@@ -147,29 +158,20 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
       .catch((err: unknown) => logger.warn({ err }, 'inbound reply log failed'));
   }
 
-  /** Resolve a sender phone to (firmId, clientId) via the person directory:
-   *  last-10-digit match on person.phone/mobile → their first ACTIVE client
-   *  contact. Returns null when the number isn't a known contact. */
+  /** Resolve a sender phone to (firmId, clientId) via the indexed
+   *  person.mobile_e164 / phone_e164 columns (0234) → their first ACTIVE
+   *  client contact. Returns null when the number isn't a known contact. */
   async function resolveSenderClient(
     db: Database,
     from: string,
   ): Promise<{ firmId: string; clientId: string } | null> {
-    const key = last10(from);
-    if (key.length < 7) return null;
-    const rows = await db
-      .select({
-        firmId: persons.firmId,
-        clientId: clientContacts.clientId,
-        phone: persons.phone,
-        mobile: persons.mobile,
-        status: clientContacts.status,
-      })
-      .from(persons)
-      .innerJoin(clientContacts, eq(clientContacts.personId, persons.id))
-      .where(eq(clientContacts.status, 'ACTIVE'))
-      .limit(500);
-    const match = rows.find((r) => last10(r.mobile) === key || last10(r.phone) === key);
-    return match ? { firmId: match.firmId, clientId: match.clientId } : null;
+    const e164 = normalizePhone(from);
+    if (!e164) return null;
+    const [firm] = await db.select({ id: firms.id }).from(firms).limit(1);
+    if (!firm) return null;
+    const matches = await findPersonsByE164(db, firm.id, e164);
+    const withClient = matches.find((m) => m.clients.length > 0);
+    return withClient ? { firmId: firm.id, clientId: withClient.clients[0]!.clientId } : null;
   }
 
   /** Flip a participant's RSVP to confirmed. Returns true when a row changed. */
@@ -209,10 +211,34 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
     const from = typeof req.body?.From === 'string' ? req.body.From : '';
     const bodyText = typeof req.body?.Body === 'string' ? req.body.Body : '';
     const keyword = bodyText.trim().toUpperCase().split(/\s+/)[0] ?? '';
+    // 0234 — the SMS inbox ingests first (it writes the Communications row
+    // itself). Only when the inbox isn't wired / the number isn't one of
+    // the firm's ingesting lines do we fall back to the 0206 timeline log.
+    let ingested = false;
+    if (deps.ingest && from) {
+      const to = typeof req.body?.To === 'string' ? req.body.To : '';
+      const sid = typeof req.body?.MessageSid === 'string' ? req.body.MessageSid : '';
+      if (to && sid) {
+        try {
+          const r = await deps.ingest({
+            providerMessageId: sid,
+            from,
+            to,
+            body: bodyText,
+            numMedia: 0,
+            media: [],
+            optOutType: typeof req.body?.OptOutType === 'string' ? req.body.OptOutType : null,
+          });
+          ingested = r.status === 'created' || r.status === 'duplicate';
+        } catch (err) {
+          logger.warn({ err, sid }, 'legacy sms webhook: inbox ingest failed');
+        }
+      }
+    }
     // 0206 — every inbound text from a known contact lands on the client's
     // Communications timeline, keyword or not (a "can we do 3pm instead?"
     // used to vanish here).
-    if (from && bodyText.trim()) {
+    if (!ingested && from && bodyText.trim()) {
       const sender = await resolveSenderClient(db, from);
       if (sender) {
         await logInboundReply(db, {

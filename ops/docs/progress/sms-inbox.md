@@ -17,3 +17,8 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 
 - Done: `SmsSendService`, API + worker wiring, signed status callback, tests (service gates/rows/21610/line pick; status webhook proxy-URL + non-regression).
 - Surprises: worker typecheck pulled `settings-routes.ts` (zod + `req.staffSession`) through the send service → `syncLines` extracted to `sms/lines.ts`. Test fetch stub must mint unique sids.
+
+## Phase 4 — inbound webhook + MMS
+
+- Done: signed inbound webhook, idempotent ingest, association engine, D13a notifications, MMS queue/consumer, Intake session helper, legacy alias, tests.
+- Notes: intake sessions need the firm key (DEK wrap) — the consumer runs in the API process and the unit test exercises the locked/deferred path when no key manager is present.

@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 3 — complete.** Next: Phase 4 (inbound webhook + MMS).
+**Phase 4 — complete.** Next: Phase 5 (polling reconciler + gap detection).
 
 ## Phase checklist
 
@@ -75,3 +75,12 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - Wiring: API `server.ts` `smsSend` (fallback = the audit-wrapped env/firm provider); `sendPortalSms` accepts an optional `context` and defaults to `notification/other`; `sendSmsOtp` → `security`. Worker `index.ts` `workerSmsSend` + `workerSendSms` adapter replaces every `dunningSendSms` wiring (reminders, request reminders, dunning, staged notifications, intake, internal-message notify). Reminders return `{skipped}` on policy blocks and the ledger records `delivery_status = skipped_<reason>`. Booking visitor confirmations carry `booking/bookingRequestId`; client-request reminders carry `client_request/…`; voice fallback goes through the service when present.
 - Status callback: signed `POST /api/sms/twilio/status` (`apps/api/src/sms/webhook-routes.ts`) — 204 first, updates `sms_message` (never regresses terminal states), 21610 opt-out, `sms_last_status_webhook_at`, and calls `applyTwilioDeliveryStatus` so `notification_log` stays in sync. The old shared-secret `/api/webhooks/notifications/twilio` is untouched.
 - `syncLines` moved to zod-free `apps/api/src/sms/lines.ts` (the worker imports the send service, and `settings-routes.ts` pulls zod + the Express session augmentation).
+
+## Phase 4 notes
+
+- `POST /api/sms/twilio/inbound` (`apps/api/src/sms/webhook-routes.ts`): signature-verified against the public-origin candidates, parses `MessageSid/From/To/Body/NumMedia/MediaUrlN/MediaContentTypeN/OptOutType`, always answers `<Response/>` (503 only when ingestion throws so Twilio retries).
+- `apps/api/src/sms/ingest.ts` `ingestInboundMessage(deps, msg, {source})` — dedupe on sid → line lookup (auto-discovers an unknown firm number as an ingesting line, flagged in `sms_health.lines.autoDiscovered`) → conversation upsert (+unread, reopen closed) + message insert in one transaction (`ON CONFLICT DO NOTHING` rolls back the unread bump on a race) → association → consent (`inbound`) → STOP/START (`OptOutType` or first word; bare YES only counts as START when Twilio says so) → Communications row (client known) → `sms_media` rows + jobs → hooks (`detectPii`, `onInbound` for Phase 11/12) → D13a notifications → health/events. Lines with `ingest=false` are ignored.
+- `apps/api/src/sms/associate.ts` — full §3 engine (manual never overridden; reply-context ≤14 d via appointment / client-request / engagement on a prior outbound; unique phone match → link + suggested engagement when the client has exactly one ACTIVE engagement; several → `needs_triage` + candidates). Phase 6 adds the endpoints.
+- `apps/api/src/sms/notify.ts` — recipients: assignee → line default assignee → all ACTIVE users with the inbox-read permission (`messaging:read` until Phase 11 introduces `sms:read`); `staff_notification` rows `type='sms_inbound'`, `actionUrl=/messages?tab=sms&c=<id>`.
+- MMS: `media-queue.ts` (`sms-media`, jobId `sms-media-<id>`, 5 attempts) + API-process consumer `media-consumer.ts` (`SMS_MEDIA_CONSUMER=0` disables): fetch (auth only on api.twilio.com) → sha256 → `system/sms-media/{firm}/{conv}/{msg}/{mediaSid}.<ext>` → `createIntakeSessionWithFiles` (new `apps/api/src/intake/create-session.ts`, `source='sms'`, target staff = assignee → line default → first firm user, `matchedClientId`) → `deleteMedia`; delete failures leave `remote_deleted=false` for the Phase 5 sweep; a locked appliance defers the hand-off (retry).
+- Legacy `/api/public/appointments/twilio/sms` now ingests first (skips its own Communications log when ingested) and still runs the CONFIRM keyword logic until Phase 12 moves it into the ingest hook. `resolveSenderClient` now uses the indexed `findPersonsByE164`.

@@ -35,7 +35,9 @@ import { createFirmUsersRouter } from './staff/firm-users';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
 import { createSmsSettingsRouter } from './sms/settings-routes';
-import type { SmsSendContext, SmsSendService } from './sms/send-service';
+import { ingestInboundMessage, type IngestDeps } from './sms/ingest';
+import { enqueueSmsMedia } from './sms/media-queue';
+import type { SmsEvent, SmsSendContext, SmsSendService } from './sms/send-service';
 import { createSmsWebhookRouter } from './sms/webhook-routes';
 import { createTemplateRouter } from './admin/templates';
 import { createRequestTemplateRouter } from './requests/templates';
@@ -229,6 +231,8 @@ export interface AppDeps {
   sendPortalSms?: (args: { to: string; body: string; context?: SmsSendContext }) => Promise<void>;
   /** 0234 — the SMS send service itself, for callers that need the result. */
   smsSend?: SmsSendService;
+  /** 0234 — real-time fan-out for inbox events (Phase 6 wires Redis). */
+  smsPublish?: (evt: SmsEvent) => Promise<void> | void;
   /**
    * EmailIt URL-attachment store (MAIL_EMAILIT_ATTACHMENT_MODE=url).
    * When present, /api/mail-assets/:token serves stashed attachment
@@ -1333,6 +1337,16 @@ export function createApp(deps: AppDeps): Express {
   // 0121 — PUBLIC Twilio inbound webhooks for two-way reminder confirmation
   // (signature-verified). Mounted on the more-specific prefix FIRST so it wins
   // over the token router below.
+  // 0234 — inbound ingestion shared by the inbox webhook, the legacy
+  // appointment webhook (alias) and the worker's polling reconciler.
+  const smsIngestDeps: IngestDeps | null = deps.db
+    ? {
+        db: deps.db,
+        log: logger,
+        enqueueMedia: enqueueSmsMedia,
+        publish: deps.smsPublish,
+      }
+    : null;
   app.use(
     '/api/public/appointments/twilio',
     createAppointmentTwilioRouter({
@@ -1340,12 +1354,15 @@ export function createApp(deps: AppDeps): Express {
       redis: deps.redis,
       baseUrl: config.APP_BASE_URL,
       smsSend: deps.smsSend,
+      ingest: smsIngestDeps
+        ? (msg) => ingestInboundMessage(smsIngestDeps, msg, { source: 'webhook' })
+        : undefined,
     }),
   );
 
-  // 0233/0234 — PUBLIC Twilio webhooks for the two-way SMS inbox (status
-  // callbacks now, inbound in Phase 4). Signature-verified against the
-  // firm's public origin candidates.
+  // 0233/0234 — PUBLIC Twilio webhooks for the two-way SMS inbox (inbound +
+  // status callbacks). Signature-verified against the firm's public origin
+  // candidates, never the internal request host.
   app.use(
     '/api/sms/twilio',
     createSmsWebhookRouter({
@@ -1353,6 +1370,8 @@ export function createApp(deps: AppDeps): Express {
       redis: deps.redis,
       log: logger,
       config: { PUBLIC_BASE_URL: config.PUBLIC_BASE_URL, APP_BASE_URL: config.APP_BASE_URL },
+      ingest: smsIngestDeps ? ingestInboundMessage : undefined,
+      ingestDeps: smsIngestDeps ?? undefined,
     }),
   );
 

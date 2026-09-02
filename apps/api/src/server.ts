@@ -49,6 +49,7 @@ import { onAiRuntimeChange, refreshAiRuntime, startAiRuntimeRefresh } from './ai
 import { startAutoRenameConsumer } from './files/auto-rename-queue';
 import { startIntakeAiLabelConsumer } from './intake/ai-label-queue';
 import { startIntakeNotifyConsumer } from './intake/notify-queue';
+import { startSmsMediaConsumer } from './sms/media-consumer';
 import type { Worker } from 'bullmq';
 
 const config = loadConfig();
@@ -58,6 +59,7 @@ const sessionStore = createSessionStore(redis);
 let autoRenameWorker: Worker | null = null;
 let intakeAiLabelWorker: Worker | null = null;
 let intakeNotifyWorker: Worker | null = null;
+let smsMediaWorker: Worker | null = null;
 
 // Stripe — firm-owned keys per Q7. Prefer the key the firm entered + tested
 // in Admin → Billing → Stripe Connect (encrypted at rest) over the appliance
@@ -544,6 +546,10 @@ const server = app.listen(config.PORT, () => {
   // Intake arrival notification — composed here (not in the worker)
   // because naming the submitter needs the firm key.
   // INTAKE_NOTIFY_CONSUMER=0 disables.
+  // 0234 — inbound MMS media: fetch → object storage → Intake → delete
+  // from Twilio. Runs here (not the worker) because Intake needs the firm
+  // key. SMS_MEDIA_CONSUMER=0 disables.
+  smsMediaWorker = startSmsMediaConsumer({ db, log: logger });
   intakeNotifyWorker = startIntakeNotifyConsumer({
     db,
     sendEmail: (a) => sendStaffMail({ to: a.to, subject: a.subject, body: a.body }),
@@ -642,6 +648,7 @@ function shutdownGracefully(signal: string): void {
   void autoRenameWorker?.close().catch(() => undefined);
   void intakeAiLabelWorker?.close().catch(() => undefined);
   void intakeNotifyWorker?.close().catch(() => undefined);
+  void smsMediaWorker?.close().catch(() => undefined);
   server.close((err) => {
     if (err) logger.warn({ err }, 'server.close errored, exiting anyway');
     process.exit(0);
