@@ -1,0 +1,11 @@
+{
+  "MessageSid": "MM22222222222222222222222222222222",
+  "AccountSid": "ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "From": "+13125550148",
+  "To": "+12025550100",
+  "Body": "",
+  "NumMedia": "1",
+  "MediaUrl0": "https://api.twilio.com/2010-04-01/Accounts/ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/Messages/MM22222222222222222222222222222222/Media/MEaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "MediaContentType0": "image/jpeg",
+  "SmsStatus": "received"
+}

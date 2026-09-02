@@ -42,6 +42,8 @@ import { wrapMailWithBranding } from './notifications/branding-mail';
 import { wrapMailWithFirmConfig } from './messaging/mail-resolver';
 import { wrapSmsWithFirmConfig } from './messaging/sms-resolver';
 import { createSmsPublisher } from './sms/events';
+import { startSmsRetryConsumer } from './sms/retry-consumer';
+import { enqueueSmsRetry } from './sms/retry-queue';
 import { createSmsSendService, type SmsSendContext } from './sms/send-service';
 import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
@@ -61,6 +63,7 @@ let autoRenameWorker: Worker | null = null;
 let intakeAiLabelWorker: Worker | null = null;
 let intakeNotifyWorker: Worker | null = null;
 let smsMediaWorker: Worker | null = null;
+let smsRetryWorker: Worker | null = null;
 
 // Stripe — firm-owned keys per Q7. Prefer the key the firm entered + tested
 // in Admin → Billing → Stripe Connect (encrypted at rest) over the appliance
@@ -354,6 +357,7 @@ const smsSend = createSmsSendService({
   fallback: smsProvider,
   config: { PUBLIC_BASE_URL: config.PUBLIC_BASE_URL, APP_BASE_URL: config.APP_BASE_URL },
   publish: smsPublish,
+  enqueueRetry: enqueueSmsRetry,
 });
 
 const sendPortalSms = async (args: {
@@ -554,6 +558,13 @@ const server = app.listen(config.PORT, () => {
   // from Twilio. Runs here (not the worker) because Intake needs the firm
   // key. SMS_MEDIA_CONSUMER=0 disables.
   smsMediaWorker = startSmsMediaConsumer({ db, log: logger });
+  // 0234 Phase 13 — outbound retry with backoff → dead letter.
+  smsRetryWorker = startSmsRetryConsumer({
+    db,
+    log: logger,
+    config: { PUBLIC_BASE_URL: config.PUBLIC_BASE_URL, APP_BASE_URL: config.APP_BASE_URL },
+    publish: smsPublish,
+  });
   intakeNotifyWorker = startIntakeNotifyConsumer({
     db,
     sendEmail: (a) => sendStaffMail({ to: a.to, subject: a.subject, body: a.body }),
@@ -653,6 +664,7 @@ function shutdownGracefully(signal: string): void {
   void intakeAiLabelWorker?.close().catch(() => undefined);
   void intakeNotifyWorker?.close().catch(() => undefined);
   void smsMediaWorker?.close().catch(() => undefined);
+  void smsRetryWorker?.close().catch(() => undefined);
   server.close((err) => {
     if (err) logger.warn({ err }, 'server.close errored, exiting anyway');
     process.exit(0);

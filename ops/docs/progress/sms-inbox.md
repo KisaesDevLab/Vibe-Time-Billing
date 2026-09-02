@@ -61,3 +61,8 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 
 - Done: reply hook (confirm / reschedule), confirm helper extraction, time-entry prefill + create, dialog + close prompt, tests.
 - Surprises: the time-entry core needs a staff rate snapshot (`no_rate_resolves`) — the test seeds one like the appointments→time-entry test.
+
+## Phase 13 — hardening, tests, docs
+
+- Done: retry queue + consumer + manual retry, fixtures + signing helper, load test, KB/runbook docs, P27 note, QUESTIONS Q66–Q70.
+- Milestone 3: all phases complete on `feat/sms-inbox`.

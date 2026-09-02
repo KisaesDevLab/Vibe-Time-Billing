@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 12 — complete.** Next: Phase 13 (hardening, tests, docs).
+**All 13 phases complete (milestone 3).** Remaining: push + deploy (operator), live Twilio smoke (see Verification in the plan), desktop CI build for the notification plugin.
 
 ## Phase checklist
 
@@ -143,3 +143,17 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - Reply parsing (D13) as an ingest hook (`apps/api/src/sms/reminder-replies.ts`, wired in the API webhook and the worker poll): appointment resolved from reply-context (≤14 d outbound with `appointment_id`) else an upcoming SCHEDULED appointment for the number; **C/Y/YES/CONFIRM** → participant confirmed, `parsed_intent='confirm'`, text marked read, auto-reply via `auto_reply` context from notification template kind `appointment_confirmed_reply` (SMS; fallback copy); **R/RESCHEDULE/RESCHED/CHANGE** → `appointment_reschedule_request` row, `parsed_intent='reschedule'`, stays unread, `staff_notification` (`sms_reschedule_request`) to the assignee else the appointment lead. Confirm helpers extracted to `apps/api/src/appointments/confirm.ts`; the legacy `/api/public/appointments/twilio/sms` URL is now a pure alias once ingest handles the text.
 - Time entry (D12): `GET /api/staff/sms/conversations/:id/time-entry/prefill` (engagement, client, work code = `firm_settings.sms_default_work_code_id` → engagement's first in-scope code, hours = ⌈messages × 2 min⌉ to the firm rounding increment, description) and `POST …/time-entry` (`time_entry:create`) → `createTimeEntryCore` (all guards), audited `time_entry_created`. UI: `CreateSmsTimeEntryDialog` from the header menu and the "Closed — create a time entry?" prompt (only when an engagement is linked).
 - KB `scheduling/appointment-reminders.md` now points firms at the inbox webhook URL.
+
+## Phase 13 notes
+
+- Retry/dead-letter: `apps/api/src/sms/retry-queue.ts` (`sms-send-retry`, jobId `sms-retry-<messageId>`, delay 30 s·2^n ≤ 8 min) + API-process consumer `retry-consumer.ts` (`SMS_RETRY_CONSUMER=0` disables): re-checks opt-out before resending (D9), 5 attempts then `provider_status='dead_letter'` + `staff_notification` (`sms_dead_letter`) to the sender/assignee + `sms_health.send.deadLettered`. The send service enqueues on retryable provider failures (API + worker). Manual `POST /api/staff/sms/messages/:id/retry` (`sms:write`) + "Retry" on failed/dead-lettered bubbles.
+- Fixtures: `apps/api/src/__tests__/fixtures/twilio/*.json` + `_twilio-sign.ts` (`loadTwilioFixture`, `signFixture`, `urlVariants`); `sms-fixtures.test.ts` posts each fixture signed against the public origin with/without the explicit default port; `sms-retry.test.ts`; `sms-load.test.ts` (500 reminder sends, concurrency 20, 100 numbers → upsert contention; ~4 s on pglite).
+- Docs: `knowledge-base/admin/sms-twilio-setup.md`, `knowledge-base/messaging/sms-inbox.md`, `ops/docs/sms-runbook.md`, KB index entries, `ADDENDUM-PROPOSAL-MODULE.md` §P27 superseded note, `QUESTIONS.md` Q66–Q70.
+
+## Known gaps / follow-ups
+
+- Live Twilio smoke not run from this box (no Twilio credentials here) — see the plan's Verification section.
+- Desktop shell changes (notification plugin) are CI-built; not compiled locally.
+- `pnpm sql:guard` fails on `apps/api/src/engagements/routes.ts:1799` — pre-existing on `main` (commit 67402a71), untouched here.
+- `apps/api/src/__tests__/reports-capacity-metrics.test.ts` fails deterministically on today's date (`billable-targets` returns no items → `items[0]` undefined) — pre-existing, unrelated.
+- Outbound MMS, group texting, WhatsApp/RCS, Twilio Conversations API: out of scope per the addendum.

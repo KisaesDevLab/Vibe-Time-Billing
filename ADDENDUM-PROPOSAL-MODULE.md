@@ -695,6 +695,8 @@ Each phase has: **goal**, **dependencies**, **deliverables**, **checklist**, **a
 
 ### P27 — SMS delivery: Twilio + TextLink **[M]**
 
+> **Superseded (2026-09-02)** by the Two-Way SMS Inbox addendum (`STATE.md`, migrations 0233–0234). Twilio is now the two-way provider (Messaging Service, inbound webhook + polling, STOP/START honored locally — the previously unmet acceptance criterion below); TextLink/SNS remain send-only fallbacks. There was never a GoTo Connect SMS plan in this repo.
+
 **Goal.** Firm picks Twilio or TextLink for SMS reminders; opt-in/opt-out tracked.
 
 **Deps.** P26.

@@ -63,9 +63,11 @@ export function describeTwilioError(code: number | null): string | null {
 export function MessageBubble({
   m,
   contactName,
+  onRetry,
 }: {
   m: SmsMessage;
   contactName: string;
+  onRetry?: (id: string) => void;
 }): JSX.Element {
   const out = m.direction === 'outbound';
   const tone = STATUS_TONE[m.providerStatus] ?? 'neutral';
@@ -160,6 +162,24 @@ export function MessageBubble({
         {out && m.numSegments != null && m.numSegments > 1 && (
           <span>· {m.numSegments} segments</span>
         )}
+        {out &&
+          (m.providerStatus === 'failed' || m.providerStatus === 'dead_letter') &&
+          onRetry && (
+            <button
+              type="button"
+              onClick={() => onRetry(m.id)}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: tokens.color.accent,
+                cursor: 'pointer',
+                fontSize: 11,
+                padding: 0,
+              }}
+            >
+              Retry
+            </button>
+          )}
         {m.parsedIntent === 'confirm' && <Pill tone="success">Confirmed appointment</Pill>}
         {m.parsedIntent === 'reschedule' && <Pill tone="warning">Reschedule requested</Pill>}
         {m.redactionFlags?.length > 0 && <Pill tone="neutral">PII pattern</Pill>}
@@ -495,7 +515,25 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
               </p>
             )}
             {messages.map((m) => (
-              <MessageBubble key={m.id} m={m} contactName={contactName} />
+              <MessageBubble
+                key={m.id}
+                m={m}
+                contactName={contactName}
+                onRetry={
+                  canWrite
+                    ? (mid) => {
+                        void api(`/api/staff/sms/messages/${mid}/retry`, { method: 'POST' })
+                          .then(() => {
+                            setNotice('Retry queued.');
+                            void reloadMessages();
+                          })
+                          .catch((e: unknown) =>
+                            setActionError(e instanceof Error ? e.message : 'retry_failed'),
+                          );
+                      }
+                    : undefined
+                }
+              />
             ))}
           </div>
           <SmsComposer

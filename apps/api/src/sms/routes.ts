@@ -62,6 +62,7 @@ import { logger } from '../logger';
 import { associateConversation } from './associate';
 import { smsEventChannel } from './events';
 import { findPersonsByE164 } from './lookup';
+import { enqueueSmsRetry } from './retry-queue';
 import {
   CreateSchema as TimeEntryCreateSchema,
   createTimeEntryCore,
@@ -1314,6 +1315,51 @@ export function createSmsInboxRouter(deps: SmsInboxRoutesDeps): Router {
       res.status(result.status).json(result.body);
     },
   );
+
+  // Phase 13 — manual retry of a failed / dead-lettered outbound.
+  router.post('/messages/:id/retry', requirePermission(deps, PERM_WRITE), async (req, res) => {
+    const id = idParam(req, res);
+    if (!id || !deps.db) return;
+    const s = req.staffSession!;
+    const [m] = await deps.db
+      .select({
+        id: smsMessages.id,
+        conversationId: smsMessages.conversationId,
+        status: smsMessages.providerStatus,
+        direction: smsMessages.direction,
+      })
+      .from(smsMessages)
+      .where(and(eq(smsMessages.id, id), eq(smsMessages.firmId, s.firmId)))
+      .limit(1);
+    if (!m) {
+      res.status(404).json({ error: 'not_found' });
+      return;
+    }
+    const conv = await loadVisible(req, res, m.conversationId);
+    if (!conv) return;
+    if (m.direction !== 'outbound' || !['failed', 'dead_letter'].includes(m.status)) {
+      res.status(409).json({ error: 'not_retryable', status: m.status });
+      return;
+    }
+    await deps.db
+      .update(smsMessages)
+      .set({
+        providerStatus: 'failed',
+        deadLetteredAt: null,
+        attemptCount: 0,
+        nextAttemptAt: nowFn(),
+      })
+      .where(eq(smsMessages.id, id));
+    await enqueueSmsRetry({ messageId: id, firmId: s.firmId }, 0);
+    await emitAudit(deps.db, {
+      action: 'UPDATE',
+      entityType: 'sms_message',
+      entityId: id,
+      actorAppUserId: s.appUserId,
+      after: { smsAction: 'retry' },
+    }).catch(() => undefined);
+    res.json({ ok: true });
+  });
 
   // ---------------------------------------------------------------------
   // media

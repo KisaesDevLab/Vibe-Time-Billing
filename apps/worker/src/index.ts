@@ -129,6 +129,7 @@ import {
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
 import { enqueueSmsMedia } from '../../api/src/sms/media-queue';
 import { createReminderReplyHook } from '../../api/src/sms/reminder-replies';
+import { enqueueSmsRetry } from '../../api/src/sms/retry-queue';
 import { createSmsSendService } from '../../api/src/sms/send-service';
 import { placeVoiceCall } from '../../api/src/voice/place-call';
 import type { SmsProvider } from '../../api/src/sms/provider';
@@ -336,6 +337,7 @@ const workerSmsSend = createSmsSendService({
     PUBLIC_BASE_URL: process.env['PUBLIC_BASE_URL'],
     APP_BASE_URL: process.env['APP_BASE_URL'] ?? 'http://localhost:3001',
   },
+  enqueueRetry: enqueueSmsRetry,
 });
 // SmsDispatch-shaped adapter for the job modules. Policy blocks (opt-out,
 // consent, A2P) resolve quietly — they are not delivery failures.

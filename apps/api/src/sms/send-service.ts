@@ -128,6 +128,8 @@ export interface SmsSendServiceDeps {
   fetchImpl?: typeof fetch;
   /** cache TTL for firm config (ms) */
   ttlMs?: number;
+  /** Phase 13 — schedule a retry for a retryable provider failure. */
+  enqueueRetry?: (job: { messageId: string; firmId: string }, attempt: number) => Promise<void>;
 }
 
 const OPT_OUT_ERROR_CODE = 21610;
@@ -572,6 +574,18 @@ export function createSmsSendService(deps: SmsSendServiceDeps): SmsSendService {
           },
         );
         deps.log.warn({ err, messageId, to }, 'sms send failed');
+        const retryable = twErr ? twErr.retryable : true;
+        if (retryable && !optedOut && deps.enqueueRetry) {
+          await db
+            .update(smsMessages)
+            .set({ nextAttemptAt: new Date(ts.getTime() + 30_000) })
+            .where(eq(smsMessages.id, messageId));
+          await deps
+            .enqueueRetry({ messageId, firmId }, 1)
+            .catch((e: unknown) =>
+              deps.log.warn({ err: e, messageId }, 'sms retry enqueue failed'),
+            );
+        }
         result = {
           ok: false,
           mode: 'inbox',

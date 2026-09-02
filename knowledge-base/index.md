@@ -190,6 +190,8 @@ _Connect calendars, book appointments, manage appointment types._
 - [Book an appointment](scheduling/booking-appointments.md) — Use the four-step wizard to schedule a meeting with one or more staff.
 - [Set up appointment types (admin)](scheduling/appointment-types.md) — Define the bookable meeting types that appear in the booking wizard.
 - [Appointment reminders (email, SMS, voice)](scheduling/appointment-reminders.md) — Schedule multi-channel reminders per type or per booking, with two-way confirm.
+- [Messages → SMS (two-way texting)](messaging/sms-inbox.md) — Shared texting inbox: filters, triage, templates, consent/opt-out states, reminder replies, time entry from a thread.
+- [Two-way texting — Twilio setup](admin/sms-twilio-setup.md) — Account, Messaging Service, webhook URLs, A2P 10DLC, NAT/tunnel guidance, consent rules.
 - [Admin calendar overview](scheduling/calendar-overview.md) — See every staff member’s synced appointments, export to CSV, and check each calendar connection’s health.
 - [Your booking availability](scheduling/availability-windows.md) — Set the weekly hours you can be booked, per-window location and type limits, buffers, notice, and the booking on/off switch.
 - [Setting up a public booking page](scheduling/public-booking-setup.md) — Configure the public self-booking page: slug, message, durations, buffers, notice, hold expiry, daily cap, captcha, approvers, and notifications.
