@@ -39,6 +39,7 @@ import { createSmsSettingsRouter } from './sms/settings-routes';
 import { detectPiiPatterns } from '@vibe/core/sms';
 
 import { ingestInboundMessage, type IngestDeps } from './sms/ingest';
+import { createReminderReplyHook } from './sms/reminder-replies';
 import { enqueueSmsMedia } from './sms/media-queue';
 import type { SmsEvent, SmsSendContext, SmsSendService } from './sms/send-service';
 import { createSmsWebhookRouter } from './sms/webhook-routes';
@@ -634,6 +635,11 @@ export function createApp(deps: AppDeps): Express {
         smsSend: deps.smsSend,
         publish: deps.smsPublish,
         redisUrl: process.env['REDIS_URL'] ?? null,
+        timeEntryDeps: {
+          db: deps.db,
+          fakeUserRoles: deps.fakeUserRoles,
+          sendEmail: deps.sendPortalEmail,
+        },
       }),
     );
   }
@@ -1364,6 +1370,9 @@ export function createApp(deps: AppDeps): Express {
         enqueueMedia: enqueueSmsMedia,
         publish: deps.smsPublish,
         detectPii: detectPiiPatterns,
+        onInbound: deps.smsSend
+          ? createReminderReplyHook({ smsSend: deps.smsSend, log: logger })
+          : undefined,
       }
     : null;
   app.use(

@@ -48,5 +48,5 @@ SMS and voice reminders only fire inside the firm's **quiet-hours window** (**Se
 ## Setup notes (admin)
 
 - Voice + SMS use Twilio — set `SMS_TWILIO_*` and `VOICE_TWILIO_*` (the voice FROM must be a voice-capable number). Without them, those channels are skipped and email still works.
-- For inbound SMS confirmation, set your Twilio number's **Messaging webhook** to `https://<your-app-host>/api/public/appointments/twilio/sms`. Voice press-1 needs no extra setup.
+- For inbound SMS confirmation, point your Twilio **Messaging Service** webhook at `https://<your-public-host>/api/sms/twilio/inbound` (Admin → SMS inbox shows the exact URL with a Copy button). Replies of C/Y/CONFIRM confirm the appointment and get an automatic acknowledgement; R/RESCHEDULE opens a reschedule request and lands in Messages → SMS. The older `/api/public/appointments/twilio/sms` URL still works as an alias. Voice press-1 needs no extra setup.
 - US senders: reliable application-to-person SMS requires **A2P 10DLC** brand/campaign registration with your carrier, and outbound voice should use a verified caller ID.

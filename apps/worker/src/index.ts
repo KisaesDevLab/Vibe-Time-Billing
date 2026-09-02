@@ -128,6 +128,7 @@ import {
 } from './dispatchers';
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
 import { enqueueSmsMedia } from '../../api/src/sms/media-queue';
+import { createReminderReplyHook } from '../../api/src/sms/reminder-replies';
 import { createSmsSendService } from '../../api/src/sms/send-service';
 import { placeVoiceCall } from '../../api/src/voice/place-call';
 import type { SmsProvider } from '../../api/src/sms/provider';
@@ -649,7 +650,10 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runSmsPollTick(db, logger, {
       enqueueMedia: enqueueSmsMedia,
-      ingestHooks: { detectPii: detectPiiPatterns },
+      ingestHooks: {
+        detectPii: detectPiiPatterns,
+        onInbound: createReminderReplyHook({ smsSend: workerSmsSend, log: logger }),
+      },
     });
     if (result.firms > 0) logger.info({ jobId: job.id, ...result }, 'sms-poll complete');
   },

@@ -23,6 +23,7 @@ import {
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
+import { CONFIRM_KEYWORDS, confirmParticipant } from './confirm';
 import { logger } from '../logger';
 import { loadFirmSmsProvider } from '../messaging/sms-resolver';
 import { isSmsOptedOut } from '../people/sms-gate';
@@ -53,7 +54,6 @@ export interface AppointmentTwilioDeps {
 
 const IP_WINDOW_SECONDS = 60;
 const IP_MAX_PER_WINDOW = 30;
-const CONFIRM_KEYWORDS = new Set(['YES', 'Y', 'C', 'CONFIRM', 'CONFIRMED']);
 const UUID_RE = /^[0-9a-fA-F-]{36}$/;
 
 function clientIp(req: Request): string {
@@ -174,33 +174,6 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
     return withClient ? { firmId: firm.id, clientId: withClient.clients[0]!.clientId } : null;
   }
 
-  /** Flip a participant's RSVP to confirmed. Returns true when a row changed. */
-  async function confirmParticipant(
-    db: Database,
-    appointmentId: string,
-    contactId: string,
-    via: string,
-  ): Promise<boolean> {
-    const updated = await db
-      .update(appointmentParticipants)
-      .set({ rsvpStatus: 'confirmed' })
-      .where(
-        and(
-          eq(appointmentParticipants.appointmentId, appointmentId),
-          eq(appointmentParticipants.clientContactId, contactId),
-        ),
-      )
-      .returning({ id: appointmentParticipants.id });
-    if (updated.length === 0) return false;
-    await emitAudit(db, {
-      action: 'UPDATE',
-      entityType: 'appointment_participant',
-      entityId: updated[0]!.id,
-      after: { rsvpStatus: 'confirmed', via },
-    }).catch(() => undefined);
-    return true;
-  }
-
   // --- inbound SMS: client texts a confirm keyword -------------------
   router.post('/sms', async (req: Request, res: Response) => {
     if (!deps.db) {
@@ -234,6 +207,13 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
           logger.warn({ err, sid }, 'legacy sms webhook: inbox ingest failed');
         }
       }
+    }
+    // 0234 Phase 12 — once the inbox owns the text, its reply parser has
+    // already handled CONFIRM / RESCHEDULE (and auto-replied); this URL is
+    // now a pure alias for firms that still point Twilio here.
+    if (ingested) {
+      twiml(res, '');
+      return;
     }
     // 0206 — every inbound text from a known contact lands on the client's
     // Communications timeline, keyword or not (a "can we do 3pm instead?"

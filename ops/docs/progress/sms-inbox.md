@@ -56,3 +56,8 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 ## Phase 11 — PII, roles, retention, backup
 
 - Done: PII detector + flags + preview/report endpoints, `sms:*` permission keys + full gate swap, retention cron, backup notes, tests.
+
+## Phase 12 — reminder replies + time entry
+
+- Done: reply hook (confirm / reschedule), confirm helper extraction, time-entry prefill + create, dialog + close prompt, tests.
+- Surprises: the time-entry core needs a staff rate snapshot (`no_rate_resolves`) — the test seeds one like the appointments→time-entry test.

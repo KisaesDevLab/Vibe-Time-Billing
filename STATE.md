@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 11 — complete.** Next: Phase 12 (reminder reply parsing + time entry).
+**Phase 12 — complete.** Next: Phase 13 (hardening, tests, docs).
 
 ## Phase checklist
 
@@ -137,3 +137,9 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - Retention (D10): worker cron `sms-retention` (`50 3 * * *`, `apps/worker/src/jobs/sms-retention.ts`): unassigned (no client) conversations past `sms_unassigned_retention_days`; spam + closed-unassigned past `sms_spam_retention_days`; client-linked conversations never purged (client retention / legal hold); media objects deleted from storage first. Admin job catalog updated.
 - Backup: tables are in the pg_dump; media lives in object storage under `system/sms-media/` — notes added to `ops/docs/restore.md` and `ops/docs/DISASTER-RECOVERY.md`.
 - Audit: every mutating inbox route emits `audit_log` (`smsAction` in `after_json`).
+
+## Phase 12 notes
+
+- Reply parsing (D13) as an ingest hook (`apps/api/src/sms/reminder-replies.ts`, wired in the API webhook and the worker poll): appointment resolved from reply-context (≤14 d outbound with `appointment_id`) else an upcoming SCHEDULED appointment for the number; **C/Y/YES/CONFIRM** → participant confirmed, `parsed_intent='confirm'`, text marked read, auto-reply via `auto_reply` context from notification template kind `appointment_confirmed_reply` (SMS; fallback copy); **R/RESCHEDULE/RESCHED/CHANGE** → `appointment_reschedule_request` row, `parsed_intent='reschedule'`, stays unread, `staff_notification` (`sms_reschedule_request`) to the assignee else the appointment lead. Confirm helpers extracted to `apps/api/src/appointments/confirm.ts`; the legacy `/api/public/appointments/twilio/sms` URL is now a pure alias once ingest handles the text.
+- Time entry (D12): `GET /api/staff/sms/conversations/:id/time-entry/prefill` (engagement, client, work code = `firm_settings.sms_default_work_code_id` → engagement's first in-scope code, hours = ⌈messages × 2 min⌉ to the firm rounding increment, description) and `POST …/time-entry` (`time_entry:create`) → `createTimeEntryCore` (all guards), audited `time_entry_created`. UI: `CreateSmsTimeEntryDialog` from the header menu and the "Closed — create a time entry?" prompt (only when an engagement is linked).
+- KB `scheduling/appointment-reminders.md` now points firms at the inbox webhook URL.

@@ -62,6 +62,11 @@ import { logger } from '../logger';
 import { associateConversation } from './associate';
 import { smsEventChannel } from './events';
 import { findPersonsByE164 } from './lookup';
+import {
+  CreateSchema as TimeEntryCreateSchema,
+  createTimeEntryCore,
+  type TimeEntryRoutesDeps,
+} from '../time-entries/routes';
 import type { SmsEvent, SmsSendService } from './send-service';
 
 // 0234 / Phase 11 — dedicated inbox keys (see packages/core/src/rbac).
@@ -73,6 +78,8 @@ const PERM_SETTINGS: PermissionKey = 'sms:settings';
 export interface SmsInboxRoutesDeps extends RbacDeps {
   db: Database | null;
   smsSend: SmsSendService;
+  /** Phase 12 — "Create time entry" goes through the shared time-entry core. */
+  timeEntryDeps?: TimeEntryRoutesDeps;
   publish?: (evt: SmsEvent) => Promise<void> | void;
   storage?: StorageClient | null;
   redisUrl?: string | null;
@@ -1170,6 +1177,141 @@ export function createSmsInboxRouter(deps: SmsInboxRoutesDeps): Router {
       const updated = await loadVisible(req, res, id);
       if (!updated) return;
       res.json({ result: result.method, detail: await detailView(req, updated) });
+    },
+  );
+
+  // ---------------------------------------------------------------------
+  // time entry from a thread (D12 / Phase 12)
+  // ---------------------------------------------------------------------
+
+  function roundUpHours(raw: number, increment: number): number {
+    const inc = increment > 0 ? increment : 0.25;
+    return Math.max(inc, Math.ceil(raw / inc - 1e-9) * inc);
+  }
+
+  async function timeEntryPrefill(req: Request, conv: typeof smsConversations.$inferSelect) {
+    const db = deps.db!;
+    const s = req.staffSession!;
+    const [fs] = await db
+      .select({
+        workCodeId: firmSettings.smsDefaultWorkCodeId,
+        rounding: firmSettings.timeEntryRoundingHours,
+      })
+      .from(firmSettings)
+      .where(eq(firmSettings.firmId, s.firmId))
+      .limit(1);
+    const [counts] = await db
+      .select({
+        n: sql<number>`count(*)::int`,
+        first: sql<string | null>`min(${smsMessages.createdAt})::text`,
+        last: sql<string | null>`max(${smsMessages.createdAt})::text`,
+      })
+      .from(smsMessages)
+      .where(eq(smsMessages.conversationId, conv.id));
+    const n = Number(counts?.n ?? 0);
+    const rounding = Number(fs?.rounding ?? 0.25) || 0.25;
+    let workCodeId: string | null = fs?.workCodeId ?? null;
+    let engagementName: string | null = null;
+    if (conv.engagementId) {
+      const [e] = await db
+        .select({ name: engagements.name, inScope: engagements.inScopeWorkCodeIds })
+        .from(engagements)
+        .where(eq(engagements.id, conv.engagementId))
+        .limit(1);
+      engagementName = e?.name ?? null;
+      if (!workCodeId) {
+        const ids = (e?.inScope ?? []) as string[];
+        workCodeId = ids[0] ?? null;
+      }
+    }
+    const who = conv.personId
+      ? ((
+          await db
+            .select({ name: persons.fullName })
+            .from(persons)
+            .where(eq(persons.id, conv.personId))
+            .limit(1)
+        )[0]?.name ?? null)
+      : null;
+    const clientName = conv.clientId
+      ? ((
+          await db
+            .select({ name: clients.name })
+            .from(clients)
+            .where(eq(clients.id, conv.clientId))
+            .limit(1)
+        )[0]?.name ?? null)
+      : null;
+    const span =
+      counts?.first && counts?.last
+        ? ` (${new Date(counts.first).toLocaleDateString()}–${new Date(counts.last).toLocaleDateString()})`
+        : '';
+    return {
+      engagementId: conv.engagementId,
+      engagementName,
+      clientId: conv.clientId,
+      clientName,
+      workCodeId,
+      entryDate: nowFn().toISOString().slice(0, 10),
+      hours: roundUpHours((n * 2) / 60, rounding),
+      roundingHours: rounding,
+      messageCount: n,
+      description: `SMS thread with ${who ?? clientName ?? conv.externalNumberE164} — ${n} message${n === 1 ? '' : 's'}${span}`,
+    };
+  }
+
+  router.get(
+    '/conversations/:id/time-entry/prefill',
+    requirePermission(deps, PERM_READ),
+    async (req, res) => {
+      const id = idParam(req, res);
+      if (!id || !deps.db) return;
+      const conv = await loadVisible(req, res, id);
+      if (!conv) return;
+      res.json(await timeEntryPrefill(req, conv));
+    },
+  );
+
+  router.post(
+    '/conversations/:id/time-entry',
+    requirePermission(deps, 'time_entry:create'),
+    async (req, res) => {
+      const id = idParam(req, res);
+      if (!id || !deps.db) return;
+      const conv = await loadVisible(req, res, id);
+      if (!conv) return;
+      if (!deps.timeEntryDeps) {
+        res.status(503).json({ error: 'time_entries_unavailable' });
+        return;
+      }
+      const parsed = TimeEntryCreateSchema.safeParse({
+        ...req.body,
+        engagementId: req.body?.engagementId ?? conv.engagementId,
+      });
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_payload', issues: parsed.error.issues });
+        return;
+      }
+      const s = req.staffSession!;
+      const result = await createTimeEntryCore(deps.timeEntryDeps, {
+        session: s,
+        payload: parsed.data,
+        ip: req.ip ?? '0.0.0.0',
+        userAgent: req.get('user-agent') ?? null,
+      });
+      if (result.status >= 200 && result.status < 300) {
+        await emitAudit(deps.db, {
+          action: 'UPDATE',
+          entityType: 'sms_conversation',
+          entityId: conv.id,
+          actorAppUserId: s.appUserId,
+          after: {
+            smsAction: 'time_entry_created',
+            timeEntryId: (result.body as { id?: string }).id ?? null,
+          },
+        }).catch(() => undefined);
+      }
+      res.status(result.status).json(result.body);
     },
   );
 

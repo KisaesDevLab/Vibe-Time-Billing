@@ -13,6 +13,7 @@ import { api } from '../../api-client';
 import { usePermission, useAuth } from '../../auth-context';
 import { useSmsStream } from '../../lib/sms-stream';
 import { formatPhone } from './ConversationRow';
+import { CreateSmsTimeEntryDialog } from './CreateSmsTimeEntryDialog';
 import { LinkClientDialog } from './LinkClientDialog';
 import { SmsComposer } from './SmsComposer';
 import { SmsThreadHeader, type ThreadAction } from './SmsThreadHeader';
@@ -242,6 +243,8 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
   const [users, setUsers] = useState<Array<{ id: string; fullName: string; status?: string }>>([]);
   const [templates, setTemplates] = useState<SmsTemplate[]>([]);
   const [linking, setLinking] = useState(false);
+  const [timeEntryOpen, setTimeEntryOpen] = useState(false);
+  const [closePrompt, setClosePrompt] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const unreadArmed = useRef<string | null>(null);
@@ -350,7 +353,8 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
         break;
       case 'close':
         await patch({ status: 'closed' });
-        setNotice('Closed.'); // Phase 12 adds the "Create a time entry?" prompt here
+        // D12 — prompt (never automatic) for a time entry on close.
+        setClosePrompt(Boolean(detail.engagement));
         break;
       case 'spam':
         await patch({ status: 'spam' });
@@ -362,7 +366,7 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
         setNotice('Pick an engagement in the composer — your next reply confirms it.');
         break;
       case 'time_entry':
-        setNotice('Time entry from a thread arrives in a later phase.');
+        setTimeEntryOpen(true);
         break;
       default:
         break;
@@ -506,6 +510,34 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
             onRecordConsent={recordConsent}
             onReopen={() => patch({ status: 'open' })}
           />
+          {closePrompt && detail && (
+            <div
+              role="status"
+              style={{
+                display: 'flex',
+                gap: 8,
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                marginTop: 8,
+                fontSize: 12,
+              }}
+            >
+              <span>Closed. Create a time entry for this conversation?</span>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  setClosePrompt(false);
+                  setTimeEntryOpen(true);
+                }}
+              >
+                Create time entry
+              </Button>
+              <Button size="sm" variant="ghost" onClick={() => setClosePrompt(false)}>
+                Not now
+              </Button>
+            </div>
+          )}
           {detail && detail.status !== 'open' && (
             <div style={{ marginTop: 6 }}>
               <Button
@@ -519,6 +551,16 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
             </div>
           )}
         </>
+      )}
+      {timeEntryOpen && detail && (
+        <CreateSmsTimeEntryDialog
+          detail={detail}
+          onClose={() => setTimeEntryOpen(false)}
+          onCreated={() => {
+            setTimeEntryOpen(false);
+            setNotice('Time entry created.');
+          }}
+        />
       )}
       {linking && detail && (
         <LinkClientDialog
