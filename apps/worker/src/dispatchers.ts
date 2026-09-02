@@ -8,6 +8,8 @@
 // dispatcher is undefined and runDunningSweep silently no-ops the send.
 
 import type { Logger } from 'pino';
+
+import type { SmsSendContext } from '../../api/src/sms/send-service';
 import { eq } from 'drizzle-orm';
 
 import { crypto as core } from '@vibe/core';
@@ -36,7 +38,13 @@ export interface MailArgs {
   ics?: string;
 }
 export type MailDispatch = (args: MailArgs) => Promise<void>;
-export type SmsDispatch = (args: { to: string; body: string }) => Promise<void>;
+// 0234 — `context` threads the text into the SMS inbox conversation when
+// the worker's dispatch is backed by the send service (index.ts).
+export type SmsDispatch = (args: {
+  to: string;
+  body: string;
+  context?: SmsSendContext;
+}) => Promise<void>;
 export type VoiceDispatch = (args: {
   to: string;
   script: string;

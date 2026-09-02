@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 2 — complete.** Next: Phase 3 (outbound unification).
+**Phase 3 — complete.** Next: Phase 4 (inbound webhook + MMS).
 
 ## Phase checklist
 
@@ -66,3 +66,12 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - Schema: `packages/db/src/schema/sms.ts` (all four tables + string-union types); person columns in `core.ts`.
 - Harness: `seedSmsLine()` in `apps/api/src/__tests__/_pglite-harness.ts`.
 - `sms_message.provider_status` vocabulary = Twilio's full set + `dead_letter`; `context_kind` includes `inbound` for received rows; `parsed_intent` column added now (D13, Phase 12).
+
+## Phase 3 notes
+
+- `apps/api/src/sms/send-service.ts` — `createSmsSendService().send({to, body, context})`. Two modes decided per firm at send time: **inbox** (Twilio + Messaging Service SID **and** `sms_inbox_enabled`) → gates opt-out → consent → A2P, conversation upsert (reopens closed), `sms_message` row before the provider call, Messaging Service send with `StatusCallback`, `notification_log` row, 21610 → person opt-out; **legacy** (anything else) → opt-out gate when the person is known, then the fallback provider exactly as before. `kind: 'security'` always uses the fallback.
+- Consent rule as built: required only when a person is resolved (explicit or unique E.164 match) with no `sms_consent_at`, and the (line, number) conversation has no inbound yet; `auto_reply` exempt; `sms_consent_enforced=false` disables. Unknown numbers are not blocked (nothing to hold a record) — logged as an OPEN question.
+- Line pick order: conversation's own line → existing thread with that number on any active line → `context.lineId` → default → first active → one-time auto-sync from the Messaging Service.
+- Wiring: API `server.ts` `smsSend` (fallback = the audit-wrapped env/firm provider); `sendPortalSms` accepts an optional `context` and defaults to `notification/other`; `sendSmsOtp` → `security`. Worker `index.ts` `workerSmsSend` + `workerSendSms` adapter replaces every `dunningSendSms` wiring (reminders, request reminders, dunning, staged notifications, intake, internal-message notify). Reminders return `{skipped}` on policy blocks and the ledger records `delivery_status = skipped_<reason>`. Booking visitor confirmations carry `booking/bookingRequestId`; client-request reminders carry `client_request/…`; voice fallback goes through the service when present.
+- Status callback: signed `POST /api/sms/twilio/status` (`apps/api/src/sms/webhook-routes.ts`) — 204 first, updates `sms_message` (never regresses terminal states), 21610 opt-out, `sms_last_status_webhook_at`, and calls `applyTwilioDeliveryStatus` so `notification_log` stays in sync. The old shared-secret `/api/webhooks/notifications/twilio` is untouched.
+- `syncLines` moved to zod-free `apps/api/src/sms/lines.ts` (the worker imports the send service, and `settings-routes.ts` pulls zod + the Express session augmentation).

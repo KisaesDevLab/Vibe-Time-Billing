@@ -15,7 +15,8 @@ import { crypto as core } from '@vibe/core';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
 import { resetKeyCacheForTests } from '../messaging/config';
-import { createSmsSettingsRouter, syncLines } from '../sms/settings-routes';
+import { syncLines } from '../sms/lines';
+import { createSmsSettingsRouter } from '../sms/settings-routes';
 
 const KMS_KEY = 'a'.repeat(64);
 const AC = 'AC' + 'a'.repeat(32);

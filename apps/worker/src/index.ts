@@ -13,6 +13,7 @@ import IORedis from 'ioredis';
 import { pino } from 'pino';
 
 import { createDb, type Database } from '@vibe/db';
+import { firms } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
 
 import { runRecurringBillingTick } from './jobs/recurring-billing';
@@ -67,6 +68,7 @@ import {
   runAppointmentRescheduleRequestedStaffSend,
   runAppointmentReminderTick,
   type SendAppointmentEmail,
+  type SendAppointmentSms,
 } from '../../api/src/appointments/email-jobs';
 import { runRetainerOfferExpirySweep } from './jobs/retainer-offer-expiry-sweep';
 import {
@@ -117,8 +119,10 @@ import {
   buildSmsDispatch,
   withEmailBranding,
   withFirmMailConfig,
+  type SmsDispatch,
 } from './dispatchers';
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
+import { createSmsSendService } from '../../api/src/sms/send-service';
 import { placeVoiceCall } from '../../api/src/voice/place-call';
 import type { SmsProvider } from '../../api/src/sms/provider';
 import { buildStorageClient, type StorageClient } from '@vibe/storage';
@@ -260,6 +264,52 @@ const dunningSendEmail = withEmailBranding(
   db,
 );
 const dunningSendSms = buildSmsDispatch(logger);
+
+// 0234 — every worker text goes through the SMS inbox send service (thread
+// + gates when the firm's inbox is on). Its fallback is the pre-existing
+// behavior: the firm's DB-saved provider, else the env dispatcher.
+const workerFallbackSms: SmsProvider | null = db
+  ? {
+      id: 'twilio',
+      async send(m) {
+        const [firm] = await db.select({ id: firms.id }).from(firms).limit(1);
+        const provider = firm ? await loadFirmSmsProvider(db, firm.id, logger) : null;
+        if (provider) return provider.send(m);
+        if (!dunningSendSms) return { ok: false, error: 'no sms provider configured' };
+        try {
+          await dunningSendSms({ to: m.to, body: m.body });
+          return { ok: true };
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : 'sms_failed' };
+        }
+      },
+    }
+  : null;
+const workerSmsSend = createSmsSendService({
+  db,
+  log: logger,
+  fallback: workerFallbackSms,
+  config: {
+    PUBLIC_BASE_URL: process.env['PUBLIC_BASE_URL'],
+    APP_BASE_URL: process.env['APP_BASE_URL'] ?? 'http://localhost:3001',
+  },
+});
+// SmsDispatch-shaped adapter for the job modules. Policy blocks (opt-out,
+// consent, A2P) resolve quietly — they are not delivery failures.
+const workerSendSms: SmsDispatch | undefined =
+  workerFallbackSms || dunningSendSms
+    ? async (args) => {
+        const r = await workerSmsSend.send({
+          to: args.to,
+          body: args.body,
+          context: args.context ?? { kind: 'notification', subKind: 'worker' },
+        });
+        if (!r.ok && (r.reason === 'provider_error' || r.reason === 'rate_limited')) {
+          throw new Error(r.error ?? 'sms_failed');
+        }
+        if (!r.ok) logger.info({ reason: r.reason, to: args.to }, 'worker sms blocked');
+      }
+    : undefined;
 // 0206 — the env-only buildVoiceDispatch dialer was replaced by the shared
 // placeVoiceCall engine (DB-configured account, window, opt-out, AMD).
 
@@ -404,7 +454,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runDunningSweep(db, logger, undefined, {
       sendEmail: dunningSendEmail,
-      sendSms: dunningSendSms,
+      sendSms: workerSendSms,
       portalBaseUrl: process.env['PORTAL_BASE_URL'],
     });
     logger.info({ jobId: job.id, ...result }, 'dunning-sweep complete');
@@ -689,7 +739,7 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runRequestReminderTick(db, logger, {
       sendEmail: dunningSendEmail,
-      sendSms: dunningSendSms,
+      sendSms: workerSendSms,
       portalBaseUrl: process.env['PORTAL_BASE_URL'],
     });
     logger.info({ jobId: job.id, ...result }, 'request-reminder complete');
@@ -780,21 +830,32 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
         ics: mail.ics,
       });
     };
-    // 0121 — SMS resolves the firm's DB-backed provider (Admin → Messaging)
-    // first, falling back to the env dispatcher. Providers cached per firm.
-    const smsByFirm = new Map<string, SmsProvider | null>();
-    const sendSms = async (m: { to: string; body: string; firmId: string }): Promise<void> => {
-      let provider = smsByFirm.get(m.firmId);
-      if (provider === undefined) {
-        provider = await loadFirmSmsProvider(liveDb, m.firmId, logger);
-        smsByFirm.set(m.firmId, provider);
+    // 0234 — reminder texts go through the SMS inbox send service so the
+    // client's "C" / "R" reply threads back to the reminder. Policy skips
+    // are returned (recorded as skipped_*), delivery failures throw.
+    const sendSms: SendAppointmentSms = async (m) => {
+      const r = await workerSmsSend.send({
+        to: m.to,
+        body: m.body,
+        templateKey: 'appointment_reminder',
+        context: {
+          kind: 'appointment_reminder',
+          firmId: m.firmId,
+          appointmentId: m.appointmentId ?? null,
+          personId: m.personId,
+          clientId: m.clientId,
+        },
+      });
+      if (r.ok) return;
+      if (
+        r.reason === 'opted_out' ||
+        r.reason === 'no_consent' ||
+        r.reason === 'a2p_unregistered' ||
+        r.reason === 'no_line'
+      ) {
+        return { skipped: r.reason };
       }
-      if (provider) {
-        const r = await provider.send({ to: m.to, body: m.body });
-        if (!r.ok) throw new Error(r.error ?? 'sms_failed');
-        return;
-      }
-      if (dunningSendSms) await dunningSendSms({ to: m.to, body: m.body });
+      throw new Error(r.error ?? 'sms_failed');
     };
     const result = await runAppointmentReminderTick({
       db,
@@ -1086,7 +1147,7 @@ function setupIntakeProcessQueue(): void {
     async (job) => {
       const result = await runIntakeProcess(db!, storage!, logger, job.data, {
         sendEmail: dunningSendEmail,
-        sendSms: dunningSendSms,
+        sendSms: workerSendSms,
         appBaseUrl: process.env['APP_BASE_URL'],
         enqueueNotify: async (payload) => {
           await notifyQueue.add('notify', payload, {
@@ -1300,7 +1361,7 @@ function setupInternalMessageNotifyQueue(): void {
     async (job) => {
       const result = await runInternalMessageNotify(db!, logger, job.data, {
         sendEmail: dunningSendEmail,
-        sendSms: dunningSendSms,
+        sendSms: workerSendSms,
         appBaseUrl: process.env['APP_BASE_URL'],
       });
       logger.info({ jobId: job.id, ...result }, 'internal-message-notify complete');
@@ -1498,7 +1559,7 @@ function setupStagedNotificationQueue(): void {
         logger,
         {
           sendEmail: dunningSendEmail,
-          sendSms: dunningSendSms,
+          sendSms: workerSendSms,
           // 0206 — CALL channel support: public origin for the Twilio
           // webhooks + self re-enqueue when the calling window is closed.
           appBaseUrl: process.env['APP_BASE_URL'],

@@ -25,6 +25,7 @@ import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
 import { loadFirmSmsProvider } from '../messaging/sms-resolver';
 import { isSmsOptedOut } from '../people/sms-gate';
+import type { SmsSendService } from '../sms/send-service';
 import { createTwilioTokenResolver, twilioSignatureValid } from '../sms/twilio-signature';
 
 export interface AppointmentTwilioDeps {
@@ -35,6 +36,8 @@ export interface AppointmentTwilioDeps {
   /** Auth tokens to verify the X-Twilio-Signature against (env SMS/VOICE tokens). */
   authTokens?: string[];
   now?: () => Date;
+  /** 0234 — voice-fallback texts go through the inbox send service when present. */
+  smsSend?: SmsSendService;
 }
 
 const IP_WINDOW_SECONDS = 60;
@@ -396,6 +399,25 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
         if (await isSmsOptedOut(db, row.personId)) {
           await db.update(voiceCalls).set({ fallbackSmsSent: true }).where(eq(voiceCalls.id, vc));
           logger.info({ vc }, 'voice fallback SMS skipped: person opted out of texts');
+          return;
+        }
+        if (deps.smsSend) {
+          const r = await deps.smsSend.send({
+            to: row.toNumber,
+            body: row.fallbackSmsBody!,
+            context: {
+              kind: 'voice_fallback',
+              firmId: row.firmId,
+              personId: row.personId,
+              clientId: row.clientId,
+              appointmentId: row.appointmentId,
+            },
+          });
+          if (r.ok || r.reason === 'opted_out' || r.reason === 'no_consent') {
+            await db.update(voiceCalls).set({ fallbackSmsSent: true }).where(eq(voiceCalls.id, vc));
+          } else {
+            logger.warn({ vc, reason: r.reason }, 'voice fallback SMS not sent');
+          }
           return;
         }
         const provider = await loadFirmSmsProvider(db, row.firmId, logger);

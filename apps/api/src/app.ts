@@ -35,6 +35,8 @@ import { createFirmUsersRouter } from './staff/firm-users';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
 import { createSmsSettingsRouter } from './sms/settings-routes';
+import type { SmsSendContext, SmsSendService } from './sms/send-service';
+import { createSmsWebhookRouter } from './sms/webhook-routes';
 import { createTemplateRouter } from './admin/templates';
 import { createRequestTemplateRouter } from './requests/templates';
 import { createTaxonomyRouter } from './taxonomy/routes';
@@ -224,7 +226,9 @@ export interface AppDeps {
     html?: string;
     attachments?: Array<{ filename: string; content: Buffer; contentType?: string }>;
   }) => Promise<void>;
-  sendPortalSms?: PortalRoutesDeps['sendSms'];
+  sendPortalSms?: (args: { to: string; body: string; context?: SmsSendContext }) => Promise<void>;
+  /** 0234 — the SMS send service itself, for callers that need the result. */
+  smsSend?: SmsSendService;
   /**
    * EmailIt URL-attachment store (MAIL_EMAILIT_ATTACHMENT_MODE=url).
    * When present, /api/mail-assets/:token serves stashed attachment
@@ -1335,6 +1339,20 @@ export function createApp(deps: AppDeps): Express {
       db: deps.db,
       redis: deps.redis,
       baseUrl: config.APP_BASE_URL,
+      smsSend: deps.smsSend,
+    }),
+  );
+
+  // 0233/0234 — PUBLIC Twilio webhooks for the two-way SMS inbox (status
+  // callbacks now, inbound in Phase 4). Signature-verified against the
+  // firm's public origin candidates.
+  app.use(
+    '/api/sms/twilio',
+    createSmsWebhookRouter({
+      db: deps.db,
+      redis: deps.redis,
+      log: logger,
+      config: { PUBLIC_BASE_URL: config.PUBLIC_BASE_URL, APP_BASE_URL: config.APP_BASE_URL },
     }),
   );
 

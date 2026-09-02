@@ -146,7 +146,12 @@ export type SendAppointmentSms = (msg: {
   to: string;
   body: string;
   firmId: string;
-}) => Promise<void>;
+  // 0234 — thread context for the SMS inbox send service.
+  appointmentId?: string;
+  personId?: string | null;
+  clientId?: string | null;
+  contactId?: string | null;
+}) => Promise<void | { skipped: 'opted_out' | 'no_consent' | 'a2p_unregistered' | 'no_line' }>;
 // 0206 — the dialer is the shared voice engine (placeVoiceCall): it applies
 // the calling window, do-not-call, per-template voice, AMD + SMS fallback,
 // and returns a coded result instead of throwing on gate refusals.
@@ -668,6 +673,7 @@ export async function runAppointmentReminderTick(
         const key = `${p.contactId}:${step.offsetMinutes}:${channel}`;
         if (sentSet.has(key)) continue;
         const phone = p.mobile || p.phone || null;
+        let skippedReason: string | null = null;
         const { subject, body } = renderTemplate(tpl, {
           ...ctx,
           client: { name: p.name ?? loaded.clientName ?? 'there' },
@@ -685,7 +691,18 @@ export async function runAppointmentReminderTick(
           } else if (channel === 'SMS') {
             // 0224 — person opted out of automated texts.
             if (!deps.sendSms || !phone || !canSendQuiet || p.smsOptOut) continue;
-            await deps.sendSms({ to: phone, body, firmId: appt.firmId });
+            const r = await deps.sendSms({
+              to: phone,
+              body,
+              firmId: appt.firmId,
+              appointmentId: appt.id,
+              personId: p.personId,
+              clientId: p.clientId,
+              contactId: p.contactId,
+            });
+            // 0234 — a policy skip (opt-out / consent / A2P) is recorded so
+            // the step isn't retried every tick; a delivery failure throws.
+            if (r && 'skipped' in r) skippedReason = r.skipped;
           } else {
             if (!phone || !canSendQuiet) continue;
             // Rendered SMS version doubles as the do-not-call delivery and
@@ -705,7 +722,16 @@ export async function runAppointmentReminderTick(
               // and record the step so it isn't retried. 0224 — unless they
               // opted out of texts too, in which case nothing goes out.
               if (!deps.sendSms || p.smsOptOut) continue;
-              await deps.sendSms({ to: phone, body: smsBody, firmId: appt.firmId });
+              const r = await deps.sendSms({
+                to: phone,
+                body: smsBody,
+                firmId: appt.firmId,
+                appointmentId: appt.id,
+                personId: p.personId,
+                clientId: p.clientId,
+                contactId: p.contactId,
+              });
+              if (r && 'skipped' in r) skippedReason = r.skipped;
             } else {
               if (!deps.placeCall) continue;
               const confirmUrl = deps.appBaseUrl
@@ -729,7 +755,16 @@ export async function runAppointmentReminderTick(
               if (!result.ok) {
                 // 0224 — same opt-out guard as the pre-checked branch above.
                 if (result.code === 'do_not_call' && deps.sendSms && !p.smsOptOut) {
-                  await deps.sendSms({ to: phone, body: smsBody, firmId: appt.firmId });
+                  const r = await deps.sendSms({
+                    to: phone,
+                    body: smsBody,
+                    firmId: appt.firmId,
+                    appointmentId: appt.id,
+                    personId: p.personId,
+                    clientId: p.clientId,
+                    contactId: p.contactId,
+                  });
+                  if (r && 'skipped' in r) skippedReason = r.skipped;
                 } else {
                   continue;
                 }
@@ -750,6 +785,7 @@ export async function runAppointmentReminderTick(
             clientContactId: p.contactId,
             reminderOffsetMinutes: step.offsetMinutes,
             channel,
+            deliveryStatus: skippedReason ? `skipped_${skippedReason}` : 'sent',
           })
           .onConflictDoNothing();
         // 0206 follow-up — reminders now appear on the client's

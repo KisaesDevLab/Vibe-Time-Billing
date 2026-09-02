@@ -41,6 +41,7 @@ import { wrapMailWithAudit, wrapSmsWithAudit } from './notifications/audit';
 import { wrapMailWithBranding } from './notifications/branding-mail';
 import { wrapMailWithFirmConfig } from './messaging/mail-resolver';
 import { wrapSmsWithFirmConfig } from './messaging/sms-resolver';
+import { createSmsSendService, type SmsSendContext } from './sms/send-service';
 import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
 import { registerTimeBillingTaskClasses } from './ai/vibe-router';
@@ -339,8 +340,29 @@ const sendStaffMail = async (args: {
   }
 };
 
-const sendPortalSms = async (args: { to: string; body: string }): Promise<void> => {
-  await smsProvider.send(args);
+// 0234 — every conversational SMS goes through the send service so texts
+// land in the client's inbox thread (when the firm has the two-way inbox
+// enabled) and fall back to the plain provider otherwise. Security codes
+// (OTP, step-up) always take the plain path.
+const smsSend = createSmsSendService({
+  db,
+  log: logger,
+  fallback: smsProvider,
+  config: { PUBLIC_BASE_URL: config.PUBLIC_BASE_URL, APP_BASE_URL: config.APP_BASE_URL },
+});
+
+const sendPortalSms = async (args: {
+  to: string;
+  body: string;
+  context?: SmsSendContext;
+}): Promise<void> => {
+  const r = await smsSend.send({
+    to: args.to,
+    body: args.body,
+    context: args.context ?? { kind: 'notification', subKind: 'other' },
+  });
+  if (!r.ok && r.reason === 'provider_error') throw new Error(r.error ?? 'sms_send_failed');
+  if (!r.ok) logger.info({ reason: r.reason, to: args.to }, 'sms send blocked');
 };
 
 // 0087 — second-factor OTP senders. Without these wired, password
@@ -382,7 +404,7 @@ const sendSmsOtp = async (args: { phone: string; firmId: string; code: string })
     fallback: { body: `Your sign-in code is ${args.code}.` },
     context: { firm: await firmScope(db, args.firmId), auth: { code: args.code } },
   });
-  await smsProvider.send({ to: args.phone, body: rendered.body });
+  await smsSend.send({ to: args.phone, body: rendered.body, context: { kind: 'security' } });
 };
 
 // P4.6 — I.6 — step-up lockout alert to firm admins. Resolves the
@@ -460,6 +482,7 @@ const app = createApp({
   sendPortalEmail,
   sendStaffMail,
   sendPortalSms,
+  smsSend,
   sendStepUpLockoutAlert,
   mailAssetStore,
 });

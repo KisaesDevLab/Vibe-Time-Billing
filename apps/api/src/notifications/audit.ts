@@ -71,7 +71,7 @@ export function wrapSmsWithAudit(underlying: SmsProvider, deps: AuditWrapDeps): 
   };
 }
 
-interface RowInput {
+export interface NotificationLogRow {
   channel: 'email' | 'sms';
   provider: string;
   recipient: string;
@@ -82,10 +82,30 @@ interface RowInput {
   errorMessage: string | null;
 }
 
-async function writeRow(deps: AuditWrapDeps, row: RowInput): Promise<void> {
+/**
+ * 0233 — direct writer for senders that don't go through a wrapped
+ * provider (the SMS inbox send service records its own row so the
+ * notification log stays complete). Best-effort like the wrappers.
+ */
+export async function recordNotificationLog(
+  deps: AuditWrapDeps,
+  row: NotificationLogRow & { firmId?: string | null },
+): Promise<void> {
+  await writeRow(deps, row);
+}
+
+async function writeRow(
+  deps: AuditWrapDeps,
+  row: NotificationLogRow & { firmId?: string | null },
+): Promise<void> {
   if (!deps.db) return;
   try {
-    const firmId = deps.resolveFirmId ? await deps.resolveFirmId(row.recipient) : null;
+    const firmId =
+      row.firmId !== undefined
+        ? row.firmId
+        : deps.resolveFirmId
+          ? await deps.resolveFirmId(row.recipient)
+          : null;
     await deps.db.insert(notificationLog).values({
       firmId,
       channel: row.channel,

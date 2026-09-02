@@ -55,7 +55,7 @@ export interface NotificationWebhookDeps {
 type NewStatus = 'delivered' | 'bounced' | 'complained' | 'opened' | 'failed';
 
 async function updateStatus(
-  deps: NotificationWebhookDeps,
+  deps: { db: Database | null; log: Logger },
   providerMessageId: string,
   newStatus: NewStatus,
   errorMessage?: string | null,
@@ -78,6 +78,32 @@ async function updateStatus(
     );
   }
   return r.length > 0;
+}
+
+/** Twilio MessageStatus → notification_log.status; null = ignore. */
+export function mapTwilioDeliveryStatus(twilioStatus: string): NewStatus | null {
+  const mapping: Record<string, NewStatus> = {
+    delivered: 'delivered',
+    undelivered: 'bounced',
+    failed: 'failed',
+  };
+  return mapping[twilioStatus] ?? null;
+}
+
+/**
+ * 0233 — shared with the signature-validated /api/sms/twilio/status
+ * receiver so both callbacks keep notification_log in sync. Returns
+ * whether a row matched.
+ */
+export async function applyTwilioDeliveryStatus(
+  deps: { db: Database | null; log: Logger },
+  providerMessageId: string,
+  twilioStatus: string,
+  errorMessage?: string | null,
+): Promise<boolean> {
+  const newStatus = mapTwilioDeliveryStatus(twilioStatus);
+  if (!newStatus || !providerMessageId) return false;
+  return updateStatus(deps, providerMessageId, newStatus, errorMessage);
 }
 
 export function createNotificationWebhookRouter(deps: NotificationWebhookDeps): Router {

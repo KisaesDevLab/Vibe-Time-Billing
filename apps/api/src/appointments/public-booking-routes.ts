@@ -31,6 +31,7 @@ import {
 import { findOrCreatePerson } from '../clients/person-helpers';
 import { createFreeBusyProvider } from '../calendar/freebusy';
 import { logger } from '../logger';
+import type { SmsSendContext } from '../sms/send-service';
 import { decryptTurnstileSecret } from '../intake/turnstile-config';
 import { firmScope, loadNotificationTemplate } from '../notifications/templating';
 import {
@@ -47,7 +48,7 @@ export interface PublicBookingRoutesDeps {
   fetchImpl?: typeof fetch;
   now?: () => Date;
   sendEmail?: (args: { to: string; subject: string; body: string }) => Promise<void>;
-  sendSms?: (args: { to: string; body: string }) => Promise<void>;
+  sendSms?: (args: { to: string; body: string; context?: SmsSendContext }) => Promise<void>;
   /** Public base for the booking link itself (intake subdomain). */
   intakeBaseUrl?: string;
   /** Staff app base for the approval action link in staff notifications. */
@@ -736,9 +737,13 @@ export function createPublicBookingRouter(deps: PublicBookingRoutesDeps): Router
     void notifyStaffOfRequest(deps, d, link, requestId!, { name, email, fmt }).catch((err) =>
       logger.warn({ err }, 'booking request staff notify failed'),
     );
-    void confirmToVisitor(deps, d, link, { name, email, phone: phone || null, fmt }).catch((err) =>
-      logger.warn({ err }, 'booking request visitor confirm failed'),
-    );
+    void confirmToVisitor(
+      deps,
+      d,
+      link,
+      { name, email, phone: phone || null, fmt },
+      requestId,
+    ).catch((err) => logger.warn({ err }, 'booking request visitor confirm failed'));
 
     res.status(201).json({
       ok: true,
@@ -834,6 +839,7 @@ async function confirmToVisitor(
     phone: string | null;
     fmt: { date: string; time: string };
   },
+  bookingRequestId: string | null = null,
 ): Promise<void> {
   const firm = await firmScope(db, link.firmId);
   const context = {
@@ -883,6 +889,12 @@ async function confirmToVisitor(
       },
       context,
     });
-    await deps.sendSms({ to: visitor.phone, body }).catch(() => undefined);
+    await deps
+      .sendSms({
+        to: visitor.phone,
+        body,
+        context: { kind: 'booking', firmId: link.firmId, bookingRequestId },
+      })
+      .catch(() => undefined);
   }
 }

@@ -263,7 +263,17 @@ export async function runRequestReminderTick(
             link: { url: link },
           },
         });
-        await args.sendSms({ to: phone, body: renderedSms.body });
+        await args.sendSms({
+          to: phone,
+          body: renderedSms.body,
+          context: {
+            kind: 'client_request',
+            firmId: req.firmId,
+            clientRequestId: req.id,
+            clientId: eng.clientId,
+            engagementId: eng.id,
+          },
+        });
         return true;
       } catch (smsErr) {
         log.warn({ err: smsErr, requestId: req.id }, 'request-reminder: sms send failed');
