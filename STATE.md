@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 4 — complete.** Next: Phase 5 (polling reconciler + gap detection).
+**Phase 5 — complete (milestone 1).** Next: Phase 6 (association endpoints + inbox API).
 
 ## Phase checklist
 
@@ -84,3 +84,10 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - `apps/api/src/sms/notify.ts` — recipients: assignee → line default assignee → all ACTIVE users with the inbox-read permission (`messaging:read` until Phase 11 introduces `sms:read`); `staff_notification` rows `type='sms_inbound'`, `actionUrl=/messages?tab=sms&c=<id>`.
 - MMS: `media-queue.ts` (`sms-media`, jobId `sms-media-<id>`, 5 attempts) + API-process consumer `media-consumer.ts` (`SMS_MEDIA_CONSUMER=0` disables): fetch (auth only on api.twilio.com) → sha256 → `system/sms-media/{firm}/{conv}/{msg}/{mediaSid}.<ext>` → `createIntakeSessionWithFiles` (new `apps/api/src/intake/create-session.ts`, `source='sms'`, target staff = assignee → line default → first firm user, `matchedClientId`) → `deleteMedia`; delete failures leave `remote_deleted=false` for the Phase 5 sweep; a locked appliance defers the hand-off (retry).
 - Legacy `/api/public/appointments/twilio/sms` now ingests first (skips its own Communications log when ingested) and still runs the CONFIRM keyword logic until Phase 12 moves it into the ingest hook. `resolveSenderClient` now uses the indexed `findPersonsByE164`.
+
+## Phase 5 notes
+
+- Worker queue `sms-poll` (cron `*/2 * * * *`, `apps/worker/src/jobs/sms-poll.ts` `runSmsPollTick`): per enabled firm, only when `sms_poll_interval_minutes` has elapsed (or `force`); per ACTIVE ingesting line lists Twilio messages since `poll_cursor_at − 5 min` (first poll: 24 h lookback), ingests inbound with `source:'poll'` (media via `listMedia`), advances the cursor; back-fills outbound rows stuck in queued/accepted/sending/sent > 10 min (21610 → opt-out); re-queues `failed` media (< 24 h) and stored-but-not-deleted media; gap = poll imported inbound and no webhook since before the oldest import → `sms_health.webhook.gapDetectedAt/missedSincePoll` + one `staff_notification` (`sms_webhook_gap`) per day to `firm:settings:write` holders; A2P refreshed every 6 h; `sms_health.poll` + `sms_last_poll_at` merge-written.
+- Admin job catalog + preview note gained `sms-poll`.
+- `apps/api/src/auth/rbac-resolve.ts` — Express-free permission resolvers split out of `rbac-middleware.ts` (which re-exports them) so worker-side code can resolve "who holds X".
+- Health card: `webhookGap` derives from `sms_health.webhook.gapDetectedAt`; the next successful inbound webhook clears it (ingest writes `gapDetectedAt: null`).

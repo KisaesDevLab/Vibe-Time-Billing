@@ -22,3 +22,9 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 
 - Done: signed inbound webhook, idempotent ingest, association engine, D13a notifications, MMS queue/consumer, Intake session helper, legacy alias, tests.
 - Notes: intake sessions need the firm key (DEK wrap) — the consumer runs in the API process and the unit test exercises the locked/deferred path when no key manager is present.
+
+## Phase 5 — polling reconciler
+
+- Done: `sms-poll` worker job (import, cursor/overlap, stuck-status backfill, media retry, gap detection + admin notice, A2P refresh), admin catalog, tests.
+- Surprises: `rbac-middleware.ts` uses the Express `req.staffSession` augmentation, which the worker tsconfig doesn't see → resolvers extracted to `rbac-resolve.ts`.
+- Milestone 1 reached: inbound works end to end (webhook + poll).

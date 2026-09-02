@@ -22,6 +22,7 @@ import { runRequestSuggestionSweep } from './jobs/request-suggestion-sweep';
 import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRecurringEngagementTick } from './jobs/recurring-engagement';
 import { runRequestReminderTick } from './jobs/request-reminder';
+import { runSmsPollTick } from './jobs/sms-poll';
 import { runBookingHoldExpiryTick } from './jobs/booking-hold-expiry';
 import { runPaymentPlanChargeTick } from './jobs/payment-plan-charge';
 import { chargeClientBalanceOffSession } from '../../api/src/payments/off-session-charge';
@@ -122,6 +123,7 @@ import {
   type SmsDispatch,
 } from './dispatchers';
 import { loadFirmSmsProvider } from '../../api/src/messaging/sms-resolver';
+import { enqueueSmsMedia } from '../../api/src/sms/media-queue';
 import { createSmsSendService } from '../../api/src/sms/send-service';
 import { placeVoiceCall } from '../../api/src/voice/place-call';
 import type { SmsProvider } from '../../api/src/sms/provider';
@@ -363,6 +365,7 @@ const QUEUES = [
   'webhook-dispatch',
   'auto-rollover-scan',
   'retention-enforcement',
+  'sms-poll',
   'scope-creep-alert',
   'wip-age-alert',
   'audit-anomaly',
@@ -596,6 +599,15 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runAutoRolloverScan(db, logger);
     logger.info({ jobId: job.id, ...result }, 'auto-rollover-scan complete');
+  },
+  // 0234 — SMS inbox polling reconciler (webhook fallback + status backfill).
+  'sms-poll': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'sms-poll: no DB configured');
+      return;
+    }
+    const result = await runSmsPollTick(db, logger, { enqueueMedia: enqueueSmsMedia });
+    if (result.firms > 0) logger.info({ jobId: job.id, ...result }, 'sms-poll complete');
   },
   'retention-enforcement': async (job) => {
     if (!db) {
@@ -936,6 +948,7 @@ const CRON: Record<QueueName, string> = {
   'webhook-dispatch': '*/2 * * * *',
   'auto-rollover-scan': '30 2 * * *',
   'retention-enforcement': '45 3 * * *',
+  'sms-poll': '*/2 * * * *',
   'scope-creep-alert': '50 7 * * 1',
   'wip-age-alert': '30 8 * * 1',
   'audit-anomaly': '*/15 * * * *',

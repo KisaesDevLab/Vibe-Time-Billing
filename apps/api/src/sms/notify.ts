@@ -11,7 +11,7 @@ import type { PermissionKey } from '@vibe/core/rbac';
 import type { Database } from '@vibe/db';
 import { appUsers, staffNotifications } from '@vibe/db/schema';
 
-import { userHasPermission } from '../auth/rbac-middleware';
+import { userHasPermission } from '../auth/rbac-resolve';
 
 // Phase 11 introduces sms:read; until then inbox readers are messaging readers.
 export const SMS_INBOX_READ_PERMISSION: PermissionKey = 'messaging:read';

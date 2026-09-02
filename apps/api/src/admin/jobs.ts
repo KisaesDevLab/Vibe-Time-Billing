@@ -41,7 +41,8 @@ type JobName =
   | 'saved-report-email'
   | 'payment-plan-charge'
   | 'email-in'
-  | 'ai-cost-sync';
+  | 'ai-cost-sync'
+  | 'sms-poll';
 
 const JOB_NAMES: readonly JobName[] = [
   'recurring-billing',
@@ -64,6 +65,7 @@ const JOB_NAMES: readonly JobName[] = [
   'payment-plan-charge',
   'email-in',
   'ai-cost-sync',
+  'sms-poll',
 ];
 
 export function createAdminJobRouter(deps: AdminJobRoutesDeps): Router {
