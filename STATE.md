@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 1 — complete.** Next: Phase 2 (data model).
+**Phase 2 — complete.** Next: Phase 3 (outbound unification).
 
 ## Phase checklist
 
@@ -59,3 +59,10 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - Settings API: `/api/staff/sms/settings` (`GET`, `PUT`, `POST /test`, `GET /lines`, `POST /lines/sync`, `PATCH|DELETE /lines/:id`, `GET /health`, `POST /a2p/refresh`).
 - Web: Admin → Email + SMS providers (Twilio card: MG sid, API key pair, "Test connection"); new Admin → SMS inbox page (`/admin/sms-inbox`).
 - Deferred to later phases: firm-level quick-reply templates card (needs `sms_template`, Phase 2/6); `sms:settings` gate swap (Phase 11).
+
+## Phase 2 notes
+
+- Migration `0234_sms_inbox.sql` (+ down): `person.phone_e164/mobile_e164` (trigger `person_sync_phone_e164_trg` over plpgsql `vibetb.normalize_phone_e164`, mirrors `normalizePhone`), opt-out provenance, consent columns + CHECK, legacy consent backfill from `notification_log`; `sms_conversation`, `sms_message`, `sms_media`, `sms_template`; `intake_sessions.source` CHECK gains `'sms'`.
+- Schema: `packages/db/src/schema/sms.ts` (all four tables + string-union types); person columns in `core.ts`.
+- Harness: `seedSmsLine()` in `apps/api/src/__tests__/_pglite-harness.ts`.
+- `sms_message.provider_status` vocabulary = Twilio's full set + `dead_letter`; `context_kind` includes `inbound` for received rows; `parsed_intent` column added now (D13, Phase 12).

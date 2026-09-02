@@ -166,6 +166,28 @@ export async function seedMinimalFirm(db: Database): Promise<{
 }
 
 /**
+ * 0233 — seed a texting line (Messaging Service number) for SMS inbox tests.
+ */
+export async function seedSmsLine(
+  db: Database,
+  opts: { firmId: string; number?: string; label?: string; isDefault?: boolean; ingest?: boolean },
+): Promise<{ lineId: string; number: string }> {
+  const number = opts.number ?? '+12025550100';
+  const [row] = await db
+    .insert(schema.smsLines)
+    .values({
+      firmId: opts.firmId,
+      phoneNumberE164: number,
+      twilioSid: 'PN' + number.replace(/\D/g, ''),
+      label: opts.label ?? 'Main line',
+      ingest: opts.ingest ?? true,
+      isDefault: opts.isDefault ?? true,
+    })
+    .returning({ id: schema.smsLines.id });
+  return { lineId: row!.id, number };
+}
+
+/**
  * 0115 — seed a directory contact + its firm-global person. name/email/
  * phone live on person; per-client flags on client_contact.
  */

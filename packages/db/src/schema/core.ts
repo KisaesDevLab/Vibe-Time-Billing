@@ -1614,12 +1614,31 @@ export const persons = pgTable(
     // 0224 — excluded from automated texts (reminders, status notices,
     // dunning, invoice texts). OTP/security codes still go through.
     smsOptOut: boolean('sms_opt_out').notNull().default(false),
+    // 0234 — SMS inbox. phone_e164/mobile_e164 are TRIGGER-OWNED (derived
+    // from phone/mobile on every write; never set them from app code) and
+    // indexed — they are the inbound-text lookup key. Opt-out provenance +
+    // consent (D8a): source ∈ inbound|booking|portal|verbal|staff|legacy.
+    phoneE164: text('phone_e164'),
+    mobileE164: text('mobile_e164'),
+    smsOptOutAt: timestamp('sms_opt_out_at', { withTimezone: true }),
+    smsOptOutSource: text('sms_opt_out_source'),
+    smsConsentAt: timestamp('sms_consent_at', { withTimezone: true }),
+    smsConsentSource: text('sms_consent_source'),
+    smsConsentByUserId: uuid('sms_consent_by_user_id').references(() => appUsers.id, {
+      onDelete: 'set null',
+    }),
     status: entityStatus('status').notNull().default('ACTIVE'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => ({
     firmIdx: index('person_firm_idx').on(t.firmId),
+    firmMobileE164Idx: index('person_firm_mobile_e164_idx')
+      .on(t.firmId, t.mobileE164)
+      .where(sql`mobile_e164 IS NOT NULL`),
+    firmPhoneE164Idx: index('person_firm_phone_e164_idx')
+      .on(t.firmId, t.phoneE164)
+      .where(sql`phone_e164 IS NOT NULL`),
     // Real DB index is functional (lower(email)) — see 0115 migration; the
     // declaration here is approximate (hand-written SQL is authoritative).
     firmEmailUk: uniqueIndex('person_firm_email_uk')
