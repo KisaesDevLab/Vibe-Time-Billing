@@ -33,3 +33,8 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 
 - Done: inbox router (list/detail/thread/reply/read/assign/link/bulk/templates/stream/surfaces), event publisher, inbox-counts `sms`, core segment/template helpers, tests.
 - Surprises: `audit_log` JSON columns are `before_json/after_json` (`afterJson` in Drizzle).
+
+## Phase 7 — inbox list
+
+- Done: SMS tab, stream provider, list panel + row, read-only thread pane, badge/dashboard wiring, reducer/notify tests.
+- Notes: `Me` exposes `appUserId` (not `id`); a11y lint forbids click handlers on plain divs → dialogs use `Modal`.

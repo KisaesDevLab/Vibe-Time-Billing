@@ -598,6 +598,7 @@ export function DashboardPage(): JSX.Element {
 interface InboxCounts {
   clientMsg: number;
   teamMsg: number;
+  sms: number;
   requests: number;
   intake: number;
   approvals: number;
@@ -626,6 +627,7 @@ function InboxCard(): JSX.Element {
   const items: { key: keyof InboxCounts; label: string; href: string }[] = [
     { key: 'clientMsg', label: 'Client Msg', href: '/messages' },
     { key: 'teamMsg', label: 'Team Msg', href: '/messages?tab=team' },
+    { key: 'sms', label: 'Texts', href: '/messages?tab=sms' },
     { key: 'requests', label: 'Requests', href: '/requests' },
     { key: 'intake', label: 'Intake', href: '/intake' },
     { key: 'approvals', label: 'Approvals', href: '/approvals' },

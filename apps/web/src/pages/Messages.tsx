@@ -9,22 +9,38 @@
 // panel is the internal-messaging UI.
 
 import { useEffect, useState } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 
 import { Card, Input, Pill, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../api-client';
+import { usePermission } from '../auth-context';
+import { useSmsStream } from '../lib/sms-stream';
 
 import { ThreadView } from './messaging/ThreadView';
 import { TeamMessagesPanel } from './InternalMessages';
+import { SmsInboxPanel } from './sms/SmsInboxPanel';
 
-type Tab = 'clients' | 'team';
+//   • SMS     — two-way texting with clients (0234), Twilio-backed.
+type Tab = 'clients' | 'team' | 'sms';
 
 export function MessagesPage(): JSX.Element {
-  const location = useLocation();
-  const initialTab: Tab = location.search.includes('tab=team') ? 'team' : 'clients';
-  const [tab, setTab] = useState<Tab>(initialTab);
+  const [params, setParams] = useSearchParams();
+  const canSms = usePermission('messaging:read');
+  const tabParam = params.get('tab');
+  const tab: Tab = tabParam === 'team' ? 'team' : tabParam === 'sms' && canSms ? 'sms' : 'clients';
+  const setTab = (t: Tab): void => {
+    const next = new URLSearchParams(params);
+    if (t === 'clients') next.delete('tab');
+    else next.set('tab', t);
+    if (t !== 'sms') {
+      next.delete('c');
+      next.delete('filter');
+    }
+    setParams(next, { replace: true });
+  };
   const [teamUnread, setTeamUnread] = useState(0);
+  const smsUnread = useSmsStream().unread;
 
   useEffect(() => {
     let alive = true;
@@ -50,8 +66,19 @@ export function MessagesPage(): JSX.Element {
         <TabButton active={tab === 'team'} onClick={() => setTab('team')}>
           Team{teamUnread > 0 ? ` (${teamUnread})` : ''}
         </TabButton>
+        {canSms && (
+          <TabButton active={tab === 'sms'} onClick={() => setTab('sms')}>
+            SMS{smsUnread > 0 ? ` (${smsUnread})` : ''}
+          </TabButton>
+        )}
       </div>
-      {tab === 'clients' ? <ClientMessagesPanel /> : <TeamMessagesPanel />}
+      {tab === 'clients' ? (
+        <ClientMessagesPanel />
+      ) : tab === 'team' ? (
+        <TeamMessagesPanel />
+      ) : (
+        <SmsInboxPanel />
+      )}
     </div>
   );
 }

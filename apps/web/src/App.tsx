@@ -46,6 +46,7 @@ import {
 
 import { BRAND } from './brand';
 import { api } from './api-client';
+import { SmsStreamProvider, useSmsStream } from './lib/sms-stream';
 
 // Firm logo + product name in the shell header. The logo comes from the public
 // branding endpoint (same one the portal/PDFs use); it renders nothing when no
@@ -315,6 +316,16 @@ function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
 }
 
 function Shell({ children }: { children: ReactNode }): JSX.Element {
+  const { me } = useAuth();
+  const canSmsStream = usePermission('messaging:read');
+  return (
+    <SmsStreamProvider enabled={canSmsStream} meId={me?.appUserId ?? null}>
+      <ShellInner>{children}</ShellInner>
+    </SmsStreamProvider>
+  );
+}
+
+function ShellInner({ children }: { children: ReactNode }): JSX.Element {
   const { logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -351,6 +362,8 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
     approvals: usePermission('approval:queue:read'),
     requests: usePermission('requests:read'),
     messages: usePermission('messaging:read'),
+    // 0234 — SMS inbox rides on the messaging keys until Phase 11 adds sms:*.
+    sms: usePermission('messaging:read'),
     appointments: usePermission('appointment:read'),
     intake: usePermission('storage:folder:view'),
     filer: usePermission('storage:folder:view'),
@@ -368,6 +381,7 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
       adminRateRead,
   };
   const [teamUnread, setTeamUnread] = useState(0);
+  const smsUnread = useSmsStream().unread;
   const [notifUnread, setNotifUnread] = useState(0);
   // New/unhandled counts that drive the orange nav highlight for Requests
   // (open) and Intake (received but not yet processed).
@@ -494,13 +508,13 @@ function Shell({ children }: { children: ReactNode }): JSX.Element {
           },
           {
             section: 'Work',
-            label: teamUnread > 0 ? `Messages (${teamUnread})` : 'Messages',
+            label: teamUnread + smsUnread > 0 ? `Messages (${teamUnread + smsUnread})` : 'Messages',
             href: '/messages',
             icon: <MessageSquare size={16} />,
             active:
               location.pathname.startsWith('/messages') || location.pathname.startsWith('/team'),
             show: can.messages,
-            hasUnread: teamUnread > 0,
+            hasUnread: teamUnread + smsUnread > 0,
           },
 
           // ---- Documents: outbound (proposals/e-sign) + inbound ----

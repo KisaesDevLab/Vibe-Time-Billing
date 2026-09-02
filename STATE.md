@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 6 — complete.** Next: Phase 7 (inbox list UI).
+**Phase 7 — complete.** Next: Phase 8 (thread view + reply composer).
 
 ## Phase checklist
 
@@ -100,3 +100,10 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - `GET /api/staff/stats/inbox-counts` gained `sms` (open, unread, assigned to me or unassigned).
 - `packages/core/src/sms` — `countSmsSegments` (GSM-7/UCS-2), `renderSmsTemplate` / `extractSmsTemplateVars` / `firstNameOf` (`@vibe/core/sms`).
 - Send-path 409 vocabulary: `sms_opted_out`, `sms_consent_required`, `sms_a2p_unregistered`, `sms_no_line`, `sms_conversation_closed|spam`; 400 `sms_invalid_number`; 502 `sms_provider_error`; 503 `sms_rate_limited|not_configured`.
+
+## Phase 7 notes
+
+- `/messages` gains an **SMS** tab (`?tab=sms`, deep link `&c=<conversationId>&filter=<unread|unassigned|triage|mine|all>`); the nav badge shows team + SMS unread combined; the Dashboard "Needs attention" card gains **Texts**.
+- `apps/web/src/lib/sms-stream.tsx` — app-level `SmsStreamProvider` (mounted in `Shell`) holding one `EventSource` on `/api/staff/sms/stream`, falling back to 20 s polling when SSE never delivers; exposes `unread`, `health`, `subscribe`, `setActiveConversation`, and the desktop-notify preference (Phase 9 hooks `onInbound`).
+- `apps/web/src/pages/sms/SmsInboxPanel.tsx` — filter chips, debounced search, cursor "Load more", hand-rolled selection + bulk bar (read / assign / close / spam), unread-row styling, optimistic read on open, A2P + webhook-gap banners, "not set up" empty state; `ConversationRow.tsx`; `SmsThreadPane.tsx` (read-only bubbles with delivery-status chips, error tooltips, media thumbnails → Intake; Phase 8 adds the header actions + composer); pure `stream-reducer.ts` + `lib/sms-notify.ts` with node-env tests.
+- "New text" is a placeholder modal until Phase 9's `NewSmsConversationDialog`.
