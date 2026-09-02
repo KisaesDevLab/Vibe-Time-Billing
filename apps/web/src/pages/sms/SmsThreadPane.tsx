@@ -1,17 +1,23 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 //
-// Right pane of the SMS inbox (Phase 7 read-only thread; Phase 8 adds the
-// header actions and the reply composer). Loads the conversation detail
-// and messages, subscribes to the stream for live appends/status changes.
+// Right pane of the SMS inbox (addendum Phase 8): header chips + actions,
+// triage prompt, message bubbles with delivery status, and the reply
+// composer. Live-updates from the app stream; marks the thread read after
+// it has been visible for a moment (unless "Mark unread" armed it).
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { Card, Pill, tokens } from '@vibe/ui';
+import { Button, Card, Pill, tokens } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { usePermission, useAuth } from '../../auth-context';
 import { useSmsStream } from '../../lib/sms-stream';
 import { formatPhone } from './ConversationRow';
-import type { SmsConversation, SmsConversationDetail, SmsMessage } from './types';
+import { LinkClientDialog } from './LinkClientDialog';
+import { SmsComposer } from './SmsComposer';
+import { SmsThreadHeader, type ThreadAction } from './SmsThreadHeader';
+import { TriagePanel } from './TriagePanel';
+import type { SmsConversation, SmsConversationDetail, SmsMessage, SmsTemplate } from './types';
 
 export interface SmsThreadPaneProps {
   conversationId: string | null;
@@ -21,6 +27,9 @@ export interface SmsThreadPaneProps {
   onMarkUnread: (id: string) => void;
   onOpenConversation: (id: string) => void;
   emptyLabel: string;
+  /** embedded in a client/engagement card: no header link chips, tighter */
+  embedded?: boolean;
+  maxHeight?: number;
 }
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'danger' | 'warning'> = {
@@ -133,6 +142,7 @@ export function MessageBubble({
           fontSize: 11,
           color: tokens.color.textMuted,
           marginTop: 2,
+          flexWrap: 'wrap',
         }}
       >
         <span>
@@ -159,11 +169,11 @@ export function MessageBubble({
 
 export function useSmsThread(conversationId: string | null): {
   detail: SmsConversationDetail | null;
+  setDetail: (d: SmsConversationDetail | null) => void;
   messages: SmsMessage[];
   error: string | null;
   reloadDetail: () => Promise<SmsConversationDetail | null>;
   reloadMessages: () => Promise<void>;
-  appendMessage: (m: SmsMessage) => void;
 } {
   const [detail, setDetail] = useState<SmsConversationDetail | null>(null);
   const [messages, setMessages] = useState<SmsMessage[]>([]);
@@ -217,16 +227,169 @@ export function useSmsThread(conversationId: string | null): {
     });
   }, [stream, conversationId, reloadDetail, reloadMessages]);
 
-  const appendMessage = useCallback((m: SmsMessage) => {
-    setMessages((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, m]));
-  }, []);
-
-  return { detail, messages, error, reloadDetail, reloadMessages, appendMessage };
+  return { detail, setDetail, messages, error, reloadDetail, reloadMessages };
 }
 
 export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
-  const { conversationId, narrow, onBack, emptyLabel } = props;
-  const { detail, messages, error } = useSmsThread(conversationId);
+  const { conversationId, narrow, onBack, emptyLabel, onRowChanged, embedded } = props;
+  const { detail, setDetail, messages, error, reloadDetail, reloadMessages } =
+    useSmsThread(conversationId);
+  const canWrite = usePermission('messaging:write');
+  const canSettings = usePermission('firm:settings:write');
+  const { me } = useAuth();
+  const stream = useSmsStream();
+  const [users, setUsers] = useState<Array<{ id: string; fullName: string; status?: string }>>([]);
+  const [templates, setTemplates] = useState<SmsTemplate[]>([]);
+  const [linking, setLinking] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const unreadArmed = useRef<string | null>(null);
+  const scroller = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    void api<{ users: Array<{ id: string; fullName: string; status?: string }> }>(
+      '/api/staff/admin/users',
+    )
+      .then((r) => setUsers((r.users ?? []).filter((u) => u.status !== 'DISABLED')))
+      .catch(() => undefined);
+    void api<{ items: SmsTemplate[] }>('/api/staff/sms/templates')
+      .then((r) => setTemplates(r.items ?? []))
+      .catch(() => undefined);
+  }, []);
+
+  // Auto-scroll to the newest bubble.
+  useEffect(() => {
+    const el = scroller.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length, conversationId]);
+
+  // Auto-read an unread thread after it's been visible briefly.
+  useEffect(() => {
+    if (!conversationId || !detail || detail.unreadCount === 0) return;
+    if (unreadArmed.current === conversationId) return;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+    const t = setTimeout(() => {
+      void api(`/api/staff/sms/conversations/${conversationId}/read`, { method: 'POST' })
+        .then(() => {
+          stream.refreshUnread();
+          const fresh = { ...detail, unreadCount: 0 };
+          setDetail(fresh);
+          onRowChanged(fresh);
+        })
+        .catch(() => undefined);
+    }, 1500);
+    return () => clearTimeout(t);
+  }, [conversationId, detail, stream, setDetail, onRowChanged]);
+
+  function applyUpdated(d: SmsConversationDetail): void {
+    setDetail(d);
+    onRowChanged(d);
+  }
+
+  async function patch(body: Record<string, unknown>): Promise<void> {
+    if (!conversationId) return;
+    setActionError(null);
+    try {
+      const d = await api<SmsConversationDetail>(`/api/staff/sms/conversations/${conversationId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(body),
+      });
+      applyUpdated(d);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : 'update_failed');
+    }
+  }
+
+  async function act(a: ThreadAction): Promise<void> {
+    if (!conversationId || !detail) return;
+    setNotice(null);
+    switch (a) {
+      case 'mark_unread':
+        unreadArmed.current = conversationId;
+        props.onMarkUnread(conversationId);
+        await api(`/api/staff/sms/conversations/${conversationId}/unread`, {
+          method: 'POST',
+        }).catch(() => undefined);
+        await reloadDetail().then((d) => d && onRowChanged(d));
+        stream.refreshUnread();
+        break;
+      case 'assign_me':
+        await patch({ assignedUserId: me?.appUserId ?? null });
+        break;
+      case 'link':
+        setLinking(true);
+        break;
+      case 'unlink':
+        try {
+          applyUpdated(
+            await api<SmsConversationDetail>(
+              `/api/staff/sms/conversations/${conversationId}/unlink`,
+              { method: 'POST' },
+            ),
+          );
+        } catch (err) {
+          setActionError(err instanceof Error ? err.message : 'unlink_failed');
+        }
+        break;
+      case 'rematch':
+        try {
+          const r = await api<{ result: string; detail: SmsConversationDetail }>(
+            `/api/staff/sms/conversations/${conversationId}/rematch`,
+            { method: 'POST' },
+          );
+          applyUpdated(r.detail);
+          setNotice(
+            r.result === 'none'
+              ? 'No match found for this number.'
+              : `Matched via ${r.result.replace('_', ' ')}.`,
+          );
+        } catch (err) {
+          setActionError(err instanceof Error ? err.message : 'rematch_failed');
+        }
+        break;
+      case 'close':
+        await patch({ status: 'closed' });
+        setNotice('Closed.'); // Phase 12 adds the "Create a time entry?" prompt here
+        break;
+      case 'spam':
+        await patch({ status: 'spam' });
+        break;
+      case 'reopen':
+        await patch({ status: 'open' });
+        break;
+      case 'set_engagement':
+        setNotice('Pick an engagement in the composer — your next reply confirms it.');
+        break;
+      case 'time_entry':
+        setNotice('Time entry from a thread arrives in a later phase.');
+        break;
+      default:
+        break;
+    }
+  }
+
+  async function reply(draft: { body: string; engagementId: string | null }): Promise<void> {
+    if (!conversationId) return;
+    await api(`/api/staff/sms/conversations/${conversationId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({ body: draft.body, engagementId: draft.engagementId }),
+    });
+    await reloadMessages();
+    const d = await reloadDetail();
+    if (d) onRowChanged(d);
+    stream.refreshUnread();
+  }
+
+  async function recordConsent(): Promise<void> {
+    if (!detail?.contact) return;
+    await api(`/api/staff/people/${detail.contact.personId}/sms-consent`, {
+      method: 'POST',
+      body: JSON.stringify({ source: 'verbal' }),
+    });
+    const d = await reloadDetail();
+    if (d) onRowChanged(d);
+  }
+
   const contactName =
     detail?.contact?.name ?? (detail ? formatPhone(detail.externalNumberE164) : '');
   const title = detail
@@ -236,27 +399,38 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
     : conversationId
       ? 'Loading…'
       : 'Pick a conversation';
+  const listMax = props.maxHeight ?? (embedded ? 360 : 440);
 
   return (
     <Card
       title={title}
       action={
-        narrow && conversationId ? (
-          <button
-            type="button"
-            onClick={onBack}
-            style={{
-              border: 'none',
-              background: 'transparent',
-              color: tokens.color.accent,
-              cursor: 'pointer',
-              fontSize: 13,
-              padding: 0,
-            }}
-          >
-            ← All conversations
-          </button>
-        ) : undefined
+        <span style={{ display: 'inline-flex', gap: 12, alignItems: 'center' }}>
+          {embedded && conversationId && (
+            <a
+              href={`/messages?tab=sms&c=${conversationId}`}
+              style={{ fontSize: 12, color: tokens.color.accent, textDecoration: 'none' }}
+            >
+              Open in inbox →
+            </a>
+          )}
+          {narrow && conversationId && (
+            <button
+              type="button"
+              onClick={onBack}
+              style={{
+                border: 'none',
+                background: 'transparent',
+                color: tokens.color.accent,
+                cursor: 'pointer',
+                fontSize: 13,
+                padding: 0,
+              }}
+            >
+              ← All conversations
+            </button>
+          )}
+        </span>
       }
     >
       {error && (
@@ -267,25 +441,94 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
       {!conversationId ? (
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>{emptyLabel}</p>
       ) : (
-        <div
-          style={{
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 10,
-            maxHeight: 520,
-            overflowY: 'auto',
-            padding: '4px 2px',
-          }}
-        >
-          {messages.length === 0 && !error && (
-            <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
-              No messages yet.
+        <>
+          {detail && (
+            <SmsThreadHeader
+              detail={detail}
+              users={users}
+              canWrite={canWrite}
+              canAssign={canWrite}
+              onAction={(a) => void act(a)}
+              onAssign={(userId) => void patch({ assignedUserId: userId })}
+            />
+          )}
+          {detail?.needsTriage && (
+            <TriagePanel
+              detail={detail}
+              canAssign={canWrite}
+              onLinked={applyUpdated}
+              onPickOther={() => setLinking(true)}
+            />
+          )}
+          {(notice || actionError) && (
+            <p
+              style={{
+                fontSize: 12,
+                color: actionError ? tokens.color.danger : tokens.color.textMuted,
+                margin: '0 0 8px',
+              }}
+              role={actionError ? 'alert' : 'status'}
+            >
+              {actionError ?? notice}
             </p>
           )}
-          {messages.map((m) => (
-            <MessageBubble key={m.id} m={m} contactName={contactName} />
-          ))}
-        </div>
+          <div
+            ref={scroller}
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 10,
+              maxHeight: listMax,
+              overflowY: 'auto',
+              padding: '4px 2px',
+              marginBottom: 10,
+            }}
+          >
+            {messages.length === 0 && !error && (
+              <p style={{ fontSize: 13, color: tokens.color.textMuted, margin: 0 }}>
+                No messages yet.
+              </p>
+            )}
+            {messages.map((m) => (
+              <MessageBubble key={m.id} m={m} contactName={contactName} />
+            ))}
+          </div>
+          <SmsComposer
+            mode="reply"
+            detail={detail}
+            canWrite={canWrite}
+            canSettings={canSettings}
+            templates={templates}
+            engagementId={detail?.engagement?.id ?? null}
+            block={detail?.replyBlockReason ?? null}
+            onSubmit={reply}
+            onRecordConsent={recordConsent}
+            onReopen={() => patch({ status: 'open' })}
+          />
+          {detail && detail.status !== 'open' && (
+            <div style={{ marginTop: 6 }}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void patch({ status: 'open' })}
+                disabled={!canWrite}
+              >
+                Reopen conversation
+              </Button>
+            </div>
+          )}
+        </>
+      )}
+      {linking && detail && (
+        <LinkClientDialog
+          detail={detail}
+          initialClientId={detail.client?.id ?? null}
+          onClose={() => setLinking(false)}
+          onLinked={(d) => {
+            setLinking(false);
+            applyUpdated(d);
+          }}
+        />
       )}
     </Card>
   );

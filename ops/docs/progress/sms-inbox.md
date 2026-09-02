@@ -38,3 +38,8 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 
 - Done: SMS tab, stream provider, list panel + row, read-only thread pane, badge/dashboard wiring, reducer/notify tests.
 - Notes: `Me` exposes `appUserId` (not `id`); a11y lint forbids click handlers on plain divs → dialogs use `Modal`.
+
+## Phase 8 — thread view + composer
+
+- Done: header, composer (templates, segments, banners), triage, link dialog, auto-read.
+- Milestone 2 reached: the inbox is usable end to end (read + reply).

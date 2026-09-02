@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 7 — complete.** Next: Phase 8 (thread view + reply composer).
+**Phase 8 — complete (milestone 2).** Next: Phase 9 (engagement / client / desktop surfaces).
 
 ## Phase checklist
 
@@ -107,3 +107,11 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - `apps/web/src/lib/sms-stream.tsx` — app-level `SmsStreamProvider` (mounted in `Shell`) holding one `EventSource` on `/api/staff/sms/stream`, falling back to 20 s polling when SSE never delivers; exposes `unread`, `health`, `subscribe`, `setActiveConversation`, and the desktop-notify preference (Phase 9 hooks `onInbound`).
 - `apps/web/src/pages/sms/SmsInboxPanel.tsx` — filter chips, debounced search, cursor "Load more", hand-rolled selection + bulk bar (read / assign / close / spam), unread-row styling, optimistic read on open, A2P + webhook-gap banners, "not set up" empty state; `ConversationRow.tsx`; `SmsThreadPane.tsx` (read-only bubbles with delivery-status chips, error tooltips, media thumbnails → Intake; Phase 8 adds the header actions + composer); pure `stream-reducer.ts` + `lib/sms-notify.ts` with node-env tests.
 - "New text" is a placeholder modal until Phase 9's `NewSmsConversationDialog`.
+
+## Phase 8 notes
+
+- `SmsThreadPane.tsx` now composes `SmsThreadHeader` (contact/client/engagement chips — suggested = warning pill; assignee `Combobox`; overflow `Menu`: mark unread, assign to me, link/change client, unlink, re-run matching, create time entry (Phase 12), reopen/close/spam — gated actions disabled with a reason), `TriagePanel` (one-click link per candidate), the bubble list (auto-scroll), and `SmsComposer`.
+- `SmsComposer.tsx` — engagement picker (a suggested engagement shows "sending confirms it"), quick-reply template `Menu` rendered client-side at insert (`renderSmsTemplate` from `@vibe/core/sms`; unresolved `{vars}` warn), GSM-7/UCS-2 `SegmentCounter`, Ctrl/Cmd+Enter, policy banners (`opted_out` — no override; `consent_required` with "Record verbal consent" → `POST /api/staff/people/:id/sms-consent` (Phase 10); `a2p_unregistered`; `closed|spam` with Reopen), 409 → banner. The PII warning calls `POST …/messages/preview-flags` which lands in Phase 11 (404s are swallowed until then).
+- `LinkClientDialog.tsx` — client picker → client's people → optional engagement → "also save this number as mobile/phone".
+- Auto-read: an unread thread is marked read 1.5 s after it's visible unless "Mark unread" armed it. Threads reload on `sms.message.created|status` for their conversation.
+- `apps/web/src/pages/messaging/styles.ts` — shared `composerTextareaStyle`.
