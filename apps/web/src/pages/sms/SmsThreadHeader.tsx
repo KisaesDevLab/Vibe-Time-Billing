@@ -129,14 +129,14 @@ export function SmsThreadHeader({
               label: 'Assign to me',
               onSelect: () => onAction('assign_me'),
               disabled: !canAssign,
-              disabledReason: 'Needs messaging:write',
+              disabledReason: 'Needs sms:assign',
             },
             {
               key: 'link',
               label: detail.client ? 'Change client…' : 'Link to client…',
               onSelect: () => onAction('link'),
               disabled: !canAssign,
-              disabledReason: 'Needs messaging:write',
+              disabledReason: 'Needs sms:assign',
             },
             {
               key: 'unlink',
@@ -144,7 +144,7 @@ export function SmsThreadHeader({
               onSelect: () => onAction('unlink'),
               hidden: !detail.client,
               disabled: !canAssign,
-              disabledReason: 'Needs messaging:write',
+              disabledReason: 'Needs sms:assign',
             },
             {
               key: 'rematch',
@@ -154,7 +154,7 @@ export function SmsThreadHeader({
               disabledReason:
                 detail.linkSource === 'manual'
                   ? 'Manually linked — unlink first'
-                  : 'Needs messaging:write',
+                  : 'Needs sms:write',
             },
             {
               key: 'time',
@@ -169,7 +169,7 @@ export function SmsThreadHeader({
               onSelect: () => onAction('reopen'),
               hidden: !closed,
               disabled: !canWrite,
-              disabledReason: 'Needs messaging:write',
+              disabledReason: 'Needs sms:write',
             },
             {
               key: 'close',
@@ -177,7 +177,7 @@ export function SmsThreadHeader({
               onSelect: () => onAction('close'),
               hidden: closed,
               disabled: !canWrite,
-              disabledReason: 'Needs messaging:write',
+              disabledReason: 'Needs sms:write',
             },
             {
               key: 'spam',
@@ -185,7 +185,7 @@ export function SmsThreadHeader({
               onSelect: () => onAction('spam'),
               hidden: detail.status === 'spam',
               disabled: !canWrite,
-              disabledReason: 'Needs messaging:write',
+              disabledReason: 'Needs sms:write',
               danger: true,
             },
           ]}

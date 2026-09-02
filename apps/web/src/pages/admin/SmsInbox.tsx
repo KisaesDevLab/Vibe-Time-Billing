@@ -73,9 +73,7 @@ function CopyButton({ text }: { text: string }): JSX.Element {
 }
 
 export function SmsInboxSettingsPage(): JSX.Element {
-  // Phase 11 introduces sms:settings; until then this page follows the
-  // provider page's firm:settings:write gate.
-  const canManage = usePermission('firm:settings:write');
+  const canManage = usePermission('sms:settings');
   const [settings, setSettings] = useState<SmsInboxSettings | null>(null);
   const [lines, setLines] = useState<SmsLine[]>([]);
   const [health, setHealth] = useState<SmsHealth | null>(null);
@@ -202,7 +200,7 @@ export function SmsInboxSettingsPage(): JSX.Element {
   }
 
   if (!canManage) {
-    return <EmptyState title="Firm settings permission required" body="Ask an administrator." />;
+    return <EmptyState title="SMS settings permission required" body="Ask an administrator." />;
   }
   if (!settings) {
     return <p style={muted}>{error ?? 'Loading…'}</p>;

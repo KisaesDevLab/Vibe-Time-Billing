@@ -111,7 +111,7 @@ export function ComposerStateBanner({
               size="sm"
               variant="secondary"
               disabled={!canWrite || busy}
-              title={canWrite ? undefined : 'Needs messaging:write'}
+              title={canWrite ? undefined : 'Needs sms:write'}
               onClick={() => void onRecordConsent()}
             >
               Record verbal consent
@@ -217,7 +217,7 @@ export function SmsComposer(props: SmsComposerProps): JSX.Element {
   const options = props.engagementOptions ?? detail?.engagementOptions ?? [];
   const disabled = !canWrite || Boolean(block) || busy || props.busy;
   const disabledReason = !canWrite
-    ? 'Needs messaging:write'
+    ? 'Needs sms:write'
     : block
       ? 'Sending is blocked for this conversation'
       : undefined;

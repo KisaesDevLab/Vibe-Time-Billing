@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 10 — complete.** Next: Phase 11 (PII, roles, retention, backup).
+**Phase 11 — complete.** Next: Phase 12 (reminder reply parsing + time entry).
 
 ## Phase checklist
 
@@ -129,3 +129,11 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - Reminder held for missing consent → one `staff_notification` (`sms_consent_needed`) to the appointment lead per appointment, linking to the person record.
 - Opt-out: STOP/START (Phase 4), 21610 (Phases 3/5), staff/portal toggles with provenance. Advanced Opt-Out isn't readable via API — settings page shows the console checklist.
 - A2P: send-service block (`unregistered` + US long code, override flag), 6-hourly refresh in the poll tick, manual `POST /settings/a2p/refresh`, banners in inbox/settings/composer (Phases 3/5/7/8).
+
+## Phase 11 notes
+
+- PII (D8): `detectPiiPatterns` in `packages/core/src/sms/pii.ts` (SSN with separators/keyword, EIN, Luhn cards, ABA-checksummed routing, `acct #`, DOB near a keyword) sets `sms_message.redaction_flags` on inbound (ingest hook, webhook + poll) and outbound (send service). No masking anywhere. Composer warning via `POST /api/staff/sms/conversations/:id/messages/preview-flags` (honors `sms_pii_warnings_enabled`); Sentinel feed `GET /api/staff/sms/reports/pii?since=` (`sms:settings`).
+- Roles: `sms:read`, `sms:write`, `sms:assign`, `sms:settings` added to the catalog and templates; every API gate and web `usePermission` swapped (settings routes → `sms:settings`, health → `sms:read`; inbox notify recipients → holders of `sms:read`).
+- Retention (D10): worker cron `sms-retention` (`50 3 * * *`, `apps/worker/src/jobs/sms-retention.ts`): unassigned (no client) conversations past `sms_unassigned_retention_days`; spam + closed-unassigned past `sms_spam_retention_days`; client-linked conversations never purged (client retention / legal hold); media objects deleted from storage first. Admin job catalog updated.
+- Backup: tables are in the pg_dump; media lives in object storage under `system/sms-media/` — notes added to `ops/docs/restore.md` and `ops/docs/DISASTER-RECOVERY.md`.
+- Audit: every mutating inbox route emits `audit_log` (`smsAction` in `after_json`).

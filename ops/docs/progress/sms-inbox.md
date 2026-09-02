@@ -52,3 +52,7 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 ## Phase 10 — compliance
 
 - Done: consent endpoints + provenance, booking/portal capture, consent-needed notification, tests.
+
+## Phase 11 — PII, roles, retention, backup
+
+- Done: PII detector + flags + preview/report endpoints, `sms:*` permission keys + full gate swap, retention cron, backup notes, tests.

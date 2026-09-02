@@ -26,7 +26,7 @@ type Tab = 'clients' | 'team' | 'sms';
 
 export function MessagesPage(): JSX.Element {
   const [params, setParams] = useSearchParams();
-  const canSms = usePermission('messaging:read');
+  const canSms = usePermission('sms:read');
   const tabParam = params.get('tab');
   const tab: Tab = tabParam === 'team' ? 'team' : tabParam === 'sms' && canSms ? 'sms' : 'clients';
   const setTab = (t: Tab): void => {

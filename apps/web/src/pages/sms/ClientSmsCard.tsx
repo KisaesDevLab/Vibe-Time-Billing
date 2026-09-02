@@ -23,7 +23,7 @@ export function ClientSmsCard({
   clientName: string;
 }): JSX.Element {
   const narrow = useIsNarrow();
-  const canWrite = usePermission('messaging:write');
+  const canWrite = usePermission('sms:write');
   const stream = useSmsStream();
   const [rows, setRows] = useState<SmsConversation[] | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -62,7 +62,7 @@ export function ClientSmsCard({
               <Button
                 size="sm"
                 disabled={!canWrite}
-                title={canWrite ? undefined : 'Needs messaging:write'}
+                title={canWrite ? undefined : 'Needs sms:write'}
                 onClick={() => setShowNew(true)}
               >
                 New text

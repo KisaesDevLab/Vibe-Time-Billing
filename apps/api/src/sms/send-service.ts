@@ -21,6 +21,7 @@ import type { Logger } from 'pino';
 import { and, desc, eq, sql } from 'drizzle-orm';
 
 import { normalizePhone } from '@vibe/core/auth';
+import { detectPiiPatterns } from '@vibe/core/sms';
 import type { Database } from '@vibe/db';
 import {
   firmSettings,
@@ -485,6 +486,7 @@ export function createSmsSendService(deps: SmsSendServiceDeps): SmsSendService {
                 : null,
             bookingRequestId: ctx.kind === 'booking' ? ctx.bookingRequestId || null : null,
             clientRequestId: ctx.kind === 'client_request' ? ctx.clientRequestId || null : null,
+            redactionFlags: detectPiiPatterns(args.body),
             ingestSource: 'api',
             attemptCount: 1,
             createdAt: ts,

@@ -32,8 +32,8 @@ export function EngagementSmsPanel({
   clientId?: string | null;
   clientName?: string | null;
 }): JSX.Element | null {
-  const canRead = usePermission('messaging:read');
-  const canWrite = usePermission('messaging:write');
+  const canRead = usePermission('sms:read');
+  const canWrite = usePermission('sms:write');
   const stream = useSmsStream();
   const [conversations, setConversations] = useState<SmsConversation[]>([]);
   const [recent, setRecent] = useState<Recent[]>([]);
@@ -83,7 +83,7 @@ export function EngagementSmsPanel({
             size="sm"
             variant="secondary"
             disabled={!canWrite}
-            title={canWrite ? undefined : 'Needs messaging:write'}
+            title={canWrite ? undefined : 'Needs sms:write'}
             onClick={() => setShowNew(true)}
           >
             Text client

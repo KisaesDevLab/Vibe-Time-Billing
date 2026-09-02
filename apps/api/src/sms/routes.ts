@@ -30,7 +30,12 @@ import { z } from 'zod';
 
 import { normalizePhone } from '@vibe/core/auth';
 import type { PermissionKey } from '@vibe/core/rbac';
-import { firstNameOf, renderSmsTemplate, extractSmsTemplateVars } from '@vibe/core/sms';
+import {
+  detectPiiPatterns,
+  extractSmsTemplateVars,
+  firstNameOf,
+  renderSmsTemplate,
+} from '@vibe/core/sms';
 import type { Database } from '@vibe/db';
 import {
   appUsers,
@@ -59,12 +64,11 @@ import { smsEventChannel } from './events';
 import { findPersonsByE164 } from './lookup';
 import type { SmsEvent, SmsSendService } from './send-service';
 
-// Phase 11 introduces sms:read / sms:write / sms:assign; until then the
-// inbox rides on the messaging keys every staff role holds.
-const PERM_READ: PermissionKey = 'messaging:read';
-const PERM_WRITE: PermissionKey = 'messaging:write';
-const PERM_ASSIGN: PermissionKey = 'messaging:write';
-const PERM_SETTINGS: PermissionKey = 'firm:settings:write';
+// 0234 / Phase 11 — dedicated inbox keys (see packages/core/src/rbac).
+const PERM_READ: PermissionKey = 'sms:read';
+const PERM_WRITE: PermissionKey = 'sms:write';
+const PERM_ASSIGN: PermissionKey = 'sms:assign';
+const PERM_SETTINGS: PermissionKey = 'sms:settings';
 
 export interface SmsInboxRoutesDeps extends RbacDeps {
   db: Database | null;
@@ -720,6 +724,59 @@ export function createSmsInboxRouter(deps: SmsInboxRoutesDeps): Router {
         .json({ ok: true, messageId: r.messageId, conversationId: conv.id, mode: r.mode });
     },
   );
+
+  // Composer warning (D8): pattern flags for a draft, honoring the firm toggle.
+  router.post(
+    '/conversations/:id/messages/preview-flags',
+    requirePermission(deps, PERM_READ),
+    async (req, res) => {
+      const id = idParam(req, res);
+      if (!id || !deps.db) return;
+      const s = req.staffSession!;
+      const body = typeof req.body?.body === 'string' ? req.body.body : '';
+      const [fs] = await deps.db
+        .select({ on: firmSettings.smsPiiWarningsEnabled })
+        .from(firmSettings)
+        .where(eq(firmSettings.firmId, s.firmId))
+        .limit(1);
+      res.json({ flags: fs?.on === false ? [] : detectPiiPatterns(body) });
+    },
+  );
+
+  // Sentinel reporting: messages carrying PII pattern flags.
+  router.get('/reports/pii', requirePermission(deps, PERM_SETTINGS), async (req, res) => {
+    if (!deps.db) {
+      res.json({ items: [], counts: {} });
+      return;
+    }
+    const s = req.staffSession!;
+    const sinceRaw = typeof req.query['since'] === 'string' ? new Date(req.query['since']) : null;
+    const since =
+      sinceRaw && !Number.isNaN(sinceRaw.getTime())
+        ? sinceRaw
+        : new Date(Date.now() - 30 * 86_400_000);
+    const rows = await deps.db
+      .select({
+        id: smsMessages.id,
+        conversationId: smsMessages.conversationId,
+        direction: smsMessages.direction,
+        flags: smsMessages.redactionFlags,
+        createdAt: smsMessages.createdAt,
+      })
+      .from(smsMessages)
+      .where(
+        and(
+          eq(smsMessages.firmId, s.firmId),
+          sql`jsonb_array_length(${smsMessages.redactionFlags}) > 0`,
+          sql`${smsMessages.createdAt} >= ${since}`,
+        ),
+      )
+      .orderBy(desc(smsMessages.createdAt))
+      .limit(500);
+    const counts: Record<string, number> = {};
+    for (const r of rows) for (const f of r.flags ?? []) counts[f] = (counts[f] ?? 0) + 1;
+    res.json({ since, items: rows, counts });
+  });
 
   // ---------------------------------------------------------------------
   // read state, assignment, status

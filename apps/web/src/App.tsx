@@ -322,7 +322,7 @@ function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
 function Shell({ children }: { children: ReactNode }): JSX.Element {
   const { me } = useAuth();
   const navigate = useNavigate();
-  const canSmsStream = usePermission('messaging:read');
+  const canSmsStream = usePermission('sms:read');
   const meId = me?.appUserId ?? null;
   const seenRef = useRef(new Set<string>());
   // 0234 / D13a — desktop or browser notification for an inbound text that
@@ -415,8 +415,7 @@ function ShellInner({ children }: { children: ReactNode }): JSX.Element {
     approvals: usePermission('approval:queue:read'),
     requests: usePermission('requests:read'),
     messages: usePermission('messaging:read'),
-    // 0234 — SMS inbox rides on the messaging keys until Phase 11 adds sms:*.
-    sms: usePermission('messaging:read'),
+    sms: usePermission('sms:read'),
     appointments: usePermission('appointment:read'),
     intake: usePermission('storage:folder:view'),
     filer: usePermission('storage:folder:view'),

@@ -15,6 +15,7 @@ import { pino } from 'pino';
 import { createDb, type Database } from '@vibe/db';
 import { and, eq } from 'drizzle-orm';
 
+import { detectPiiPatterns } from '@vibe/core/sms';
 import { appointments, firms, staffNotifications } from '@vibe/db/schema';
 import type { PaymentProvider } from '@vibe/core/payments';
 
@@ -25,6 +26,7 @@ import { runRetainerExpirySweep } from './jobs/retainer-expiry-sweep';
 import { runRecurringEngagementTick } from './jobs/recurring-engagement';
 import { runRequestReminderTick } from './jobs/request-reminder';
 import { runSmsPollTick } from './jobs/sms-poll';
+import { runSmsRetention } from './jobs/sms-retention';
 import { runBookingHoldExpiryTick } from './jobs/booking-hold-expiry';
 import { runPaymentPlanChargeTick } from './jobs/payment-plan-charge';
 import { chargeClientBalanceOffSession } from '../../api/src/payments/off-session-charge';
@@ -404,6 +406,7 @@ const QUEUES = [
   'auto-rollover-scan',
   'retention-enforcement',
   'sms-poll',
+  'sms-retention',
   'scope-creep-alert',
   'wip-age-alert',
   'audit-anomaly',
@@ -644,8 +647,20 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
       logger.warn({ jobId: job.id }, 'sms-poll: no DB configured');
       return;
     }
-    const result = await runSmsPollTick(db, logger, { enqueueMedia: enqueueSmsMedia });
+    const result = await runSmsPollTick(db, logger, {
+      enqueueMedia: enqueueSmsMedia,
+      ingestHooks: { detectPii: detectPiiPatterns },
+    });
     if (result.firms > 0) logger.info({ jobId: job.id, ...result }, 'sms-poll complete');
+  },
+  // 0234 / D10 — purge unassigned / spam SMS conversations past retention.
+  'sms-retention': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'sms-retention: no DB configured');
+      return;
+    }
+    const result = await runSmsRetention(db, storage, logger);
+    logger.info({ jobId: job.id, ...result }, 'sms-retention complete');
   },
   'retention-enforcement': async (job) => {
     if (!db) {
@@ -994,6 +1009,7 @@ const CRON: Record<QueueName, string> = {
   'auto-rollover-scan': '30 2 * * *',
   'retention-enforcement': '45 3 * * *',
   'sms-poll': '*/2 * * * *',
+  'sms-retention': '50 3 * * *',
   'scope-creep-alert': '50 7 * * 1',
   'wip-age-alert': '30 8 * * 1',
   'audit-anomaly': '*/15 * * * *',

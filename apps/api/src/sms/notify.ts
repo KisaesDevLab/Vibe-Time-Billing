@@ -13,8 +13,7 @@ import { appUsers, staffNotifications } from '@vibe/db/schema';
 
 import { userHasPermission } from '../auth/rbac-resolve';
 
-// Phase 11 introduces sms:read; until then inbox readers are messaging readers.
-export const SMS_INBOX_READ_PERMISSION: PermissionKey = 'messaging:read';
+export const SMS_INBOX_READ_PERMISSION: PermissionKey = 'sms:read';
 
 const CACHE_TTL_MS = 60_000;
 const cache = new Map<string, { at: number; ids: string[] }>();

@@ -76,6 +76,9 @@ const PROBES: Record<string, Probe> = {
   'retention-enforcement': { note: 'Enforces data-retention policy; no row-level preview.' },
   'audit-anomaly': { note: 'Statistical audit-log anomaly scan; no row-level preview.' },
   'email-in': { note: 'Polls the inbound mailbox; no row-level preview.' },
+  'sms-retention': {
+    note: 'Purges unassigned / spam text conversations past the firm retention window; no row-level preview.',
+  },
   'sms-poll': {
     note: 'Polls Twilio for inbound texts the webhook missed and back-fills delivery status; no row-level preview.',
   },

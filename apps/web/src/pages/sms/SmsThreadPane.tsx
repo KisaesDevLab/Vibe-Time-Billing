@@ -234,8 +234,9 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
   const { conversationId, narrow, onBack, emptyLabel, onRowChanged, embedded } = props;
   const { detail, setDetail, messages, error, reloadDetail, reloadMessages } =
     useSmsThread(conversationId);
-  const canWrite = usePermission('messaging:write');
-  const canSettings = usePermission('firm:settings:write');
+  const canWrite = usePermission('sms:write');
+  const canAssign = usePermission('sms:assign');
+  const canSettings = usePermission('sms:settings');
   const { me } = useAuth();
   const stream = useSmsStream();
   const [users, setUsers] = useState<Array<{ id: string; fullName: string; status?: string }>>([]);
@@ -447,7 +448,7 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
               detail={detail}
               users={users}
               canWrite={canWrite}
-              canAssign={canWrite}
+              canAssign={canAssign}
               onAction={(a) => void act(a)}
               onAssign={(userId) => void patch({ assignedUserId: userId })}
             />
@@ -455,7 +456,7 @@ export function SmsThreadPane(props: SmsThreadPaneProps): JSX.Element {
           {detail?.needsTriage && (
             <TriagePanel
               detail={detail}
-              canAssign={canWrite}
+              canAssign={canAssign}
               onLinked={applyUpdated}
               onPickOther={() => setLinking(true)}
             />

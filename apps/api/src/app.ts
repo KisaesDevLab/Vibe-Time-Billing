@@ -36,6 +36,8 @@ import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
 import { createSmsInboxRouter } from './sms/routes';
 import { createSmsSettingsRouter } from './sms/settings-routes';
+import { detectPiiPatterns } from '@vibe/core/sms';
+
 import { ingestInboundMessage, type IngestDeps } from './sms/ingest';
 import { enqueueSmsMedia } from './sms/media-queue';
 import type { SmsEvent, SmsSendContext, SmsSendService } from './sms/send-service';
@@ -1361,6 +1363,7 @@ export function createApp(deps: AppDeps): Express {
         log: logger,
         enqueueMedia: enqueueSmsMedia,
         publish: deps.smsPublish,
+        detectPii: detectPiiPatterns,
       }
     : null;
   app.use(

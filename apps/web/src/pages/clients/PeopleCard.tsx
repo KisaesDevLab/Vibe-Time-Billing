@@ -106,7 +106,7 @@ export function PeopleCard({
   /** INDIVIDUAL clients pre-select Taxpayer / Spouse when adding people. */
   clientType?: 'INDIVIDUAL' | 'BUSINESS' | null;
 }): JSX.Element {
-  const canSms = usePermission('messaging:write');
+  const canSms = usePermission('sms:write');
   const [smsTarget, setSmsTarget] = useState<NewSmsPrefill | null>(null);
   const [people, setPeople] = useState<Person[] | null>(null);
   const [roles, setRoles] = useState<RoleEntry[]>([]);
@@ -302,7 +302,7 @@ export function PeopleCard({
                         size="sm"
                         variant="ghost"
                         disabled={busy || !canSms}
-                        title={canSms ? 'Send a text' : 'Needs messaging:write'}
+                        title={canSms ? 'Send a text' : 'Needs sms:write'}
                         onClick={() =>
                           setSmsTarget({
                             to: c?.mobile ?? phone ?? '',

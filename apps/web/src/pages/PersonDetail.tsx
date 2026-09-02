@@ -535,7 +535,7 @@ function TextingRow({
   onSaved: (msg: string) => void;
   onError: (m: string) => void;
 }): JSX.Element | null {
-  const canSms = usePermission('messaging:write');
+  const canSms = usePermission('sms:write');
   const [showNew, setShowNew] = useState(false);
   const number = person.mobile ?? person.phone ?? null;
   async function recordConsent(): Promise<void> {
@@ -579,7 +579,7 @@ function TextingRow({
           size="sm"
           variant="secondary"
           disabled={!canSms}
-          title={canSms ? undefined : 'Needs messaging:write'}
+          title={canSms ? undefined : 'Needs sms:write'}
           onClick={() => void recordConsent()}
         >
           Record verbal consent
@@ -590,9 +590,7 @@ function TextingRow({
           size="sm"
           variant="secondary"
           disabled={!canSms || person.smsOptOut}
-          title={
-            !canSms ? 'Needs messaging:write' : person.smsOptOut ? 'Opted out of texts' : undefined
-          }
+          title={!canSms ? 'Needs sms:write' : person.smsOptOut ? 'Opted out of texts' : undefined}
           onClick={() => setShowNew(true)}
         >
           Send text

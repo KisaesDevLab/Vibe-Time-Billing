@@ -138,3 +138,12 @@ gap (webhooks delivered meanwhile are not in the restored DB).
 | OpenSign (e-sign) Mongo + files + signing cert env | Appliance staging cron + off-site (Duplicati); see DISASTER-RECOVERY.md §5.6 |
 | Redis/BullMQ queues | Deliberately not backed up — flush on restore |
 | Caddy internal CA | Regenerates; browsers re-trust on next visit |
+
+### SMS inbox media (0234)
+
+Inbound MMS attachments are fetched from Twilio, stored in the firm's object
+storage under `system/sms-media/<firm>/<conversation>/<message>/<mediaSid>.<ext>`,
+handed to Document Intake (quarantine → received), and then **deleted from
+Twilio**. They are therefore NOT recoverable from Twilio after the fact:
+restore the storage bucket alongside the database (same as client files).
+The `sms_*` tables themselves are in the pg_dump.

@@ -148,6 +148,16 @@ export const PERMISSION_KEYS = [
   'messaging:read',
   'messaging:write',
 
+  // 0234 — two-way SMS inbox. read = see threads + reply composer state;
+  // write = reply / new text / close / spam / templates (own); assign =
+  // reassign + link/unlink client (triage); settings = lines, webhooks,
+  // retention, firm templates (Admin → SMS inbox). partner: all four;
+  // manager: read/write/assign; senior + staff: read/write.
+  'sms:read',
+  'sms:write',
+  'sms:assign',
+  'sms:settings',
+
   // Stage 3 — client requests (document/info requests fulfilled by
   // staff or the client). 'manage' covers create/update/dismiss.
   'requests:read',
@@ -264,6 +274,10 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'crypto:rotate',
     'messaging:read',
     'messaging:write',
+    'sms:read',
+    'sms:write',
+    'sms:assign',
+    'sms:settings',
     'requests:read',
     'requests:manage',
     'retainer:tier_config:read',
@@ -329,6 +343,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:file:delete',
     'messaging:read',
     'messaging:write',
+    'sms:read',
+    'sms:write',
+    'sms:assign',
     'requests:read',
     'requests:manage',
     // R1 — manager can see tier configs + read retainers but cannot
@@ -374,6 +391,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:file:unpublish',
     'messaging:read',
     'messaging:write',
+    'sms:read',
+    'sms:write',
     'requests:read',
     'requests:manage',
     // CP12 — senior can see appointments on their engagements.
@@ -399,6 +418,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'storage:file:unpublish',
     'messaging:read',
     'messaging:write',
+    'sms:read',
+    'sms:write',
     'requests:read',
     // CP12 — staff see appointments on their assigned engagements.
     'appointment:read',

@@ -56,7 +56,7 @@ export function TriagePanel({
             size="sm"
             variant="secondary"
             disabled={!canAssign}
-            title={canAssign ? undefined : 'Needs messaging:write'}
+            title={canAssign ? undefined : 'Needs sms:assign'}
             onClick={() => void link(c)}
           >
             Link

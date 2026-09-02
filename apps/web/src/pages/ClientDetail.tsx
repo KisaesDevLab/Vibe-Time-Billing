@@ -111,8 +111,7 @@ export function ClientDetailPage(): JSX.Element {
   const [allClients, setAllClients] = useState<ClientLite[]>([]);
   const [tab, setTab] = useState<Tab>('home');
   const canViewCredentials = usePermission('client:credential:read');
-  // 0234 — SMS inbox rides on messaging:read until Phase 11 adds sms:*.
-  const canSms = usePermission('messaging:read');
+  const canSms = usePermission('sms:read');
   // 0207 — header "▶ Timer" context-aware start (client pre-filled).
   const timers = useTimersOptional();
   const [staff, setStaff] = useState<StaffUser[]>([]);

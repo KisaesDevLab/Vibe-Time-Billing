@@ -41,6 +41,8 @@ restored is just a file — this proves yours actually restore.
 
 ---
 
+**Text-message attachments** (SMS inbox, 0234) live in the same object storage as client files, under `system/sms-media/`; the conversations and messages are in the database backup. Twilio's copies are deleted after import, so the storage bucket is the only copy.
+
 ## 2. The Recovery Kit sheet — the one thing YOU must do
 
 Everything above is automatic **except one thing**: the passphrases that unlock

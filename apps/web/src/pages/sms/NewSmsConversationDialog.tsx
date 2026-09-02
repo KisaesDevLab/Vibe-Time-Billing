@@ -53,8 +53,8 @@ export function NewSmsConversationDialog({
   onClose: () => void;
   onCreated: (conversationId: string) => void;
 }): JSX.Element {
-  const canWrite = usePermission('messaging:write');
-  const canSettings = usePermission('firm:settings:write');
+  const canWrite = usePermission('sms:write');
+  const canSettings = usePermission('sms:settings');
   const [lines, setLines] = useState<LineRow[]>([]);
   const [lineId, setLineId] = useState('');
   const [clients, setClients] = useState<ClientPick[]>([]);

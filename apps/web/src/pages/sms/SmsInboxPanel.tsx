@@ -69,8 +69,8 @@ export function SmsInboxPanel(): JSX.Element {
   const narrow = useIsNarrow();
   const { me } = useAuth();
   const meId = me?.appUserId ?? null;
-  const canWrite = usePermission('messaging:write');
-  const canSettings = usePermission('firm:settings:write');
+  const canWrite = usePermission('sms:write');
+  const canSettings = usePermission('sms:settings');
   const stream = useSmsStream();
 
   const filterParam = params.get('filter') as SmsFilter | null;
@@ -264,7 +264,7 @@ export function SmsInboxPanel(): JSX.Element {
               <Button
                 size="sm"
                 disabled={!canWrite}
-                title={canWrite ? undefined : 'Needs messaging:write'}
+                title={canWrite ? undefined : 'Needs sms:write'}
                 onClick={() => setShowNew(true)}
               >
                 New text
@@ -336,7 +336,7 @@ export function SmsInboxPanel(): JSX.Element {
                   size="sm"
                   variant="secondary"
                   disabled={bulkBusy || !canWrite}
-                  title={canWrite ? undefined : 'Needs messaging:write'}
+                  title={canWrite ? undefined : 'Needs sms:write'}
                   onClick={() => void bulk('assign')}
                 >
                   Assign

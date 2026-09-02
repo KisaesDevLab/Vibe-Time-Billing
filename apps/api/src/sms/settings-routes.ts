@@ -172,7 +172,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
 
   // ----- settings ---------------------------------------------------
 
-  router.get('/', requirePermission(deps, 'firm:settings:read'), async (req, res) => {
+  router.get('/', requirePermission(deps, 'sms:settings'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     if (!firmId || !deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
@@ -191,7 +191,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
     });
   });
 
-  router.put('/', requirePermission(deps, 'firm:settings:write'), async (req, res) => {
+  router.put('/', requirePermission(deps, 'sms:settings'), async (req, res) => {
     const parsed = SettingsPatch.safeParse(req.body ?? {});
     if (!parsed.success) {
       res.status(400).json({ error: 'invalid_sms_settings', issues: parsed.error.issues });
@@ -240,7 +240,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
 
   // Verify credentials + Messaging Service. Body: { config?: SmsConfig } —
   // a proposed (unsaved) twilio config, or omitted to test the saved one.
-  router.post('/test', requirePermission(deps, 'firm:settings:write'), async (req, res) => {
+  router.post('/test', requirePermission(deps, 'sms:settings'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     if (!firmId || !deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
@@ -327,7 +327,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
 
   // ----- lines ------------------------------------------------------
 
-  router.get('/lines', requirePermission(deps, 'firm:settings:read'), async (req, res) => {
+  router.get('/lines', requirePermission(deps, 'sms:settings'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     if (!firmId || !deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
@@ -336,7 +336,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
     res.json({ items: await loadLines(deps.db, firmId) });
   });
 
-  router.post('/lines/sync', requirePermission(deps, 'firm:settings:write'), async (req, res) => {
+  router.post('/lines/sync', requirePermission(deps, 'sms:settings'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     if (!firmId || !deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
@@ -369,7 +369,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
     res.json({ ok: true, ...result, items: await loadLines(db, firmId) });
   });
 
-  router.patch('/lines/:id', requirePermission(deps, 'firm:settings:write'), async (req, res) => {
+  router.patch('/lines/:id', requirePermission(deps, 'sms:settings'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     const id = req.params['id'] ?? '';
     if (!firmId || !deps.db) {
@@ -427,7 +427,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
     res.json({ ok: true, items: await loadLines(db, firmId) });
   });
 
-  router.delete('/lines/:id', requirePermission(deps, 'firm:settings:write'), async (req, res) => {
+  router.delete('/lines/:id', requirePermission(deps, 'sms:settings'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     const id = req.params['id'] ?? '';
     if (!firmId || !deps.db) {
@@ -458,7 +458,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
 
   // ----- health + a2p -----------------------------------------------
 
-  router.get('/health', requirePermission(deps, 'firm:settings:read'), async (req, res) => {
+  router.get('/health', requirePermission(deps, 'sms:read'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     if (!firmId || !deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
@@ -472,7 +472,7 @@ export function createSmsSettingsRouter(deps: SmsSettingsRoutesDeps): Router {
     res.json(healthView(row));
   });
 
-  router.post('/a2p/refresh', requirePermission(deps, 'firm:settings:write'), async (req, res) => {
+  router.post('/a2p/refresh', requirePermission(deps, 'sms:settings'), async (req, res) => {
     const firmId = req.staffSession?.firmId;
     if (!firmId || !deps.db) {
       res.status(503).json({ error: 'db_unavailable' });
