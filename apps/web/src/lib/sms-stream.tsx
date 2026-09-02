@@ -66,6 +66,7 @@ export function SmsStreamProvider({
   onInbound?: (
     evt: Extract<SmsStreamEvent, { type: 'sms.message.created' }>,
     ctx: { activeConversationId: string | null },
+    notifyEnabled: boolean,
   ) => void;
   children: ReactNode;
 }): JSX.Element {
@@ -78,6 +79,8 @@ export function SmsStreamProvider({
   const activeRef = useRef<string | null>(null);
   const onInboundRef = useRef(onInbound);
   onInboundRef.current = onInbound;
+  const notifyRef = useRef(notifyEnabled);
+  notifyRef.current = notifyEnabled;
 
   const emit = useCallback((evt: SmsStreamEvent) => {
     for (const fn of listeners.current) {
@@ -137,9 +140,11 @@ export function SmsStreamProvider({
       emit(evt);
       if (type === 'sms.message.created') {
         refreshUnread();
-        onInboundRef.current?.(evt as Extract<SmsStreamEvent, { type: 'sms.message.created' }>, {
-          activeConversationId: activeRef.current,
-        });
+        onInboundRef.current?.(
+          evt as Extract<SmsStreamEvent, { type: 'sms.message.created' }>,
+          { activeConversationId: activeRef.current },
+          notifyRef.current,
+        );
       } else if (type === 'sms.conversation.updated') {
         refreshUnread();
       }

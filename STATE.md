@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 8 — complete (milestone 2).** Next: Phase 9 (engagement / client / desktop surfaces).
+**Phase 9 — complete.** Next: Phase 10 (compliance).
 
 ## Phase checklist
 
@@ -115,3 +115,10 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - `LinkClientDialog.tsx` — client picker → client's people → optional engagement → "also save this number as mobile/phone".
 - Auto-read: an unread thread is marked read 1.5 s after it's visible unless "Mark unread" armed it. Threads reload on `sms.message.created|status` for their conversation.
 - `apps/web/src/pages/messaging/styles.ts` — shared `composerTextareaStyle`.
+
+## Phase 9 notes
+
+- Engagement → Activity card: `EngagementSmsPanel` (last 5 texts across the engagement's threads, "Open thread →", "Text client"). Client page: sibling **SMS** tab → `ClientSmsCard` (threads for the client + embedded thread pane). Contacts: `PeopleCard` row "Text" button; `PersonDetail` "Texting" row (opt-out / consent pill, "Record verbal consent" → `POST /api/staff/people/:id/sms-consent` — Phase 10 backend, "Send text").
+- `NewSmsConversationDialog` — line picker (only surface with one; hidden when a single line), client → people-with-numbers picker or a typed number, engagement picker, `SmsComposer mode="new"`, 409 → consent/opt-out/A2P banners; used by the inbox "New text", the client tab, the engagement panel, and contact records. `GET /api/staff/sms/lines` (read permission) backs the picker.
+- Desktop notifications (D13a): `tauri-plugin-notification` added to `apps/desktop` (Cargo.toml, `.plugin(...)` in `lib.rs`, `notification:default` capability — CI-built, not compiled here); `apps/web/src/lib/desktop.ts` gains `notificationsSupported` / `requestNotifyPermission` / `notifyDesktop` (Tauri plugin commands via the global, browser `Notification` fallback). `Shell` hooks the stream's `onInbound`: fetches the conversation, applies `shouldNotifyInbound` (dedupe + assigned-to-me-or-unassigned), skips when that thread is open and visible, click navigates to the thread. Preference toggle: Account → Notifications (`SmsNotificationsCard`, localStorage, default on in the desktop shell).
+- Merged to `main` (fast-forward, local) at the end of Phase 8 — milestones 1 and 2. Not pushed.

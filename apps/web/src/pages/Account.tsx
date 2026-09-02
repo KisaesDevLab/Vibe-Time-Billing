@@ -13,6 +13,7 @@ import { api } from '../api-client';
 import { useAuth } from '../auth-context';
 import { MyCalendarsCard } from './account/MyCalendars';
 import { DesktopDownloadCard } from './account/DesktopDownloadCard';
+import { SmsNotificationsCard } from './account/SmsNotificationsCard';
 
 interface CredentialRow {
   id: string;
@@ -224,6 +225,8 @@ export function AccountPage(): JSX.Element {
 
       <MyCalendarsCard />
       <DesktopDownloadCard />
+
+      <SmsNotificationsCard />
 
       <Card title="Sessions">
         <p style={{ fontSize: 13, color: tokens.color.textMuted }}>Sign out the current session.</p>

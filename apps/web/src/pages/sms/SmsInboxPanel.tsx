@@ -9,13 +9,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import { Button, Card, Combobox, EmptyState, Modal, tokens, useIsNarrow } from '@vibe/ui';
+import { Button, Card, Combobox, EmptyState, tokens, useIsNarrow } from '@vibe/ui';
 
 import { api } from '../../api-client';
 import { useAuth, usePermission } from '../../auth-context';
 import { useSmsStream } from '../../lib/sms-stream';
 import { A2pBanner } from './A2pBanner';
 import { ConversationRow, formatPhone } from './ConversationRow';
+import { NewSmsConversationDialog } from './NewSmsConversationDialog';
 import { SmsThreadPane } from './SmsThreadPane';
 import { markRowRead, upsertRow } from './stream-reducer';
 import type { SmsConversation, SmsFilter, SmsStreamEvent } from './types';
@@ -464,24 +465,17 @@ export function SmsInboxPanel(): JSX.Element {
           />
         )}
       </div>
-      {showNew && <NewTextPlaceholder onClose={() => setShowNew(false)} />}
+      {showNew && (
+        <NewSmsConversationDialog
+          onClose={() => setShowNew(false)}
+          onCreated={(id) => {
+            setShowNew(false);
+            void load();
+            open(id);
+          }}
+        />
+      )}
     </>
-  );
-}
-
-// Phase 9 replaces this with NewSmsConversationDialog (line picker, client
-// people picker, composer). Until then the "New text" button explains.
-function NewTextPlaceholder({ onClose }: { onClose: () => void }): JSX.Element {
-  return (
-    <Modal title="New text" onClose={onClose} maxWidth={440}>
-      <p style={{ marginTop: 0, fontSize: 13 }}>
-        Starting a new text conversation from here arrives with the client and contact surfaces
-        (next phase). For now, reply inside an existing thread, or text a contact from their record.
-      </p>
-      <Button size="sm" onClick={onClose}>
-        OK
-      </Button>
-    </Modal>
   );
 }
 

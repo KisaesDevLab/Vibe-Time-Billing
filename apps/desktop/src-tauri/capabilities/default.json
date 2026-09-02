@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Core capability for the main window. The app-defined commands (list_capturable_windows, capture_window) are registered via invoke_handler and are not gated by the plugin ACL, so only core:default is needed here.",
+  "description": "Core capability for the main window. The app-defined commands (list_capturable_windows, capture_window) are registered via invoke_handler and are not gated by the plugin ACL, so only core:default is needed here. notification:default (0234) allows the SMS inbox to raise native notifications via tauri-plugin-notification.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": ["core:default", "notification:default"]
 }

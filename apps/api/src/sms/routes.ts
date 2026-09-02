@@ -1356,6 +1356,27 @@ export function createSmsInboxRouter(deps: SmsInboxRoutesDeps): Router {
   // counts + stream
   // ---------------------------------------------------------------------
 
+  // Lines for the new-conversation line picker (settings own the full CRUD).
+  router.get('/lines', requirePermission(deps, PERM_READ), async (req, res) => {
+    if (!deps.db) {
+      res.json({ items: [] });
+      return;
+    }
+    const s = req.staffSession!;
+    const rows = await deps.db
+      .select({
+        id: smsLines.id,
+        phoneNumberE164: smsLines.phoneNumberE164,
+        label: smsLines.label,
+        isDefault: smsLines.isDefault,
+        ingest: smsLines.ingest,
+      })
+      .from(smsLines)
+      .where(and(eq(smsLines.firmId, s.firmId), eq(smsLines.status, 'ACTIVE')))
+      .orderBy(desc(smsLines.isDefault), asc(smsLines.phoneNumberE164));
+    res.json({ items: rows });
+  });
+
   router.get('/unread-count', requirePermission(deps, PERM_READ), async (req, res) => {
     if (!deps.db) {
       res.json({ unread: 0 });

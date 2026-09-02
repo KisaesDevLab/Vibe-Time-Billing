@@ -62,6 +62,8 @@ fn capture_window(id: u32) -> Result<String, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 0234 — inbound-text notifications (see apps/web/src/lib/desktop.ts).
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             list_capturable_windows,
             capture_window

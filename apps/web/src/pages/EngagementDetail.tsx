@@ -19,6 +19,7 @@ import { EngagementRecurringPlansCard } from './billing/EngagementRecurringPlans
 import { RecurringEngagementsCard } from './clients/RecurringEngagementsCard';
 import { DropOffCard } from './engagements/DropOffCard';
 import { PricingSuggestionPanel } from './engagements/PricingSuggestionPanel';
+import { EngagementSmsPanel } from './sms/EngagementSmsPanel';
 
 const FEE_STRUCTURES = [
   'HOURLY',
@@ -976,6 +977,13 @@ export function EngagementDetailPage(): JSX.Element {
             <Stat label="Paid" value={formatCents(summary.invoicing.paidCents)} />
           </div>
           {id && <PricingSuggestionPanel engagementId={id} />}
+          {id && engagement && (
+            <EngagementSmsPanel
+              engagementId={id}
+              clientId={engagement.clientId}
+              clientName={client?.name ?? null}
+            />
+          )}
         </Card>
       )}
 

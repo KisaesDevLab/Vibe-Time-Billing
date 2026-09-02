@@ -14,6 +14,7 @@ import { ClientCredentialsCard } from './clients/ClientCredentialsCard';
 import { usePermission } from '../auth-context';
 import { useTimersOptional } from '../timer-context';
 import { ClientMessagesCard } from './messaging/ClientMessagesCard';
+import { ClientSmsCard } from './sms/ClientSmsCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
 // File manager v1 removed; v2 (B2-backed, addendum) lands in Phase 10.
 import { ClientFilesTab } from './clients/ClientFilesTab';
@@ -84,6 +85,7 @@ type Tab =
   | 'home'
   | 'communications'
   | 'messages'
+  | 'sms'
   | 'requests'
   | 'notes'
   | 'files'
@@ -109,6 +111,8 @@ export function ClientDetailPage(): JSX.Element {
   const [allClients, setAllClients] = useState<ClientLite[]>([]);
   const [tab, setTab] = useState<Tab>('home');
   const canViewCredentials = usePermission('client:credential:read');
+  // 0234 — SMS inbox rides on messaging:read until Phase 11 adds sms:*.
+  const canSms = usePermission('messaging:read');
   // 0207 — header "▶ Timer" context-aware start (client pre-filled).
   const timers = useTimersOptional();
   const [staff, setStaff] = useState<StaffUser[]>([]);
@@ -300,6 +304,7 @@ export function ClientDetailPage(): JSX.Element {
             ? []
             : [
                 { key: 'messages', label: 'Messages' },
+                ...(canSms ? [{ key: 'sms', label: 'SMS' }] : []),
                 { key: 'requests', label: 'Requests' },
                 { key: 'communications', label: 'Communications' },
                 { key: 'notes', label: 'Notes' },
@@ -360,6 +365,8 @@ export function ClientDetailPage(): JSX.Element {
       )}
 
       {tab === 'messages' && <ClientMessagesCard clientId={client.id} />}
+
+      {tab === 'sms' && <ClientSmsCard clientId={client.id} clientName={client.name} />}
 
       {tab === 'requests' && <ClientRequestsCard clientId={client.id} />}
 

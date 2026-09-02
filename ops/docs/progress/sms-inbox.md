@@ -43,3 +43,8 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 
 - Done: header, composer (templates, segments, banners), triage, link dialog, auto-read.
 - Milestone 2 reached: the inbox is usable end to end (read + reply).
+
+## Phase 9 — engagement, client, desktop surfaces
+
+- Done: engagement panel, client SMS tab, contact actions, new-conversation dialog, Tauri notification plugin + web bridge + Account toggle.
+- Notes: the desktop shell is CI-built (no Rust toolchain here) — the Cargo/capability changes are untested locally.

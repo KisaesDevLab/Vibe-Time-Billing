@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: PolyForm-Small-Business-1.0.0
 import {
-  lazy,
   Suspense,
+  lazy,
+  useCallback,
   useEffect,
+  useRef,
   useState,
   type ComponentType,
   type LazyExoticComponent,
@@ -46,6 +48,8 @@ import {
 
 import { BRAND } from './brand';
 import { api } from './api-client';
+import { isDesktop, notifyDesktop } from './lib/desktop';
+import { shouldNotifyInbound } from './lib/sms-notify';
 import { SmsStreamProvider, useSmsStream } from './lib/sms-stream';
 
 // Firm logo + product name in the shell header. The logo comes from the public
@@ -317,9 +321,58 @@ function RequireAuth({ children }: { children: JSX.Element }): JSX.Element {
 
 function Shell({ children }: { children: ReactNode }): JSX.Element {
   const { me } = useAuth();
+  const navigate = useNavigate();
   const canSmsStream = usePermission('messaging:read');
+  const meId = me?.appUserId ?? null;
+  const seenRef = useRef(new Set<string>());
+  // 0234 / D13a — desktop or browser notification for an inbound text that
+  // is assigned to me (or unassigned), unless that thread is open right now.
+  const onInbound = useCallback(
+    (
+      evt: { conversationId: string; messageId?: string },
+      ctx: { activeConversationId: string | null },
+      enabled: boolean,
+    ): void => {
+      if (!enabled || !meId) return;
+      if (ctx.activeConversationId === evt.conversationId && document.visibilityState === 'visible')
+        return;
+      void api<{
+        assignedUser: { id: string } | null;
+        contact: { name: string } | null;
+        externalNumberE164: string;
+        lastMessagePreview: string;
+      }>(`/api/staff/sms/conversations/${evt.conversationId}`)
+        .then((d) => {
+          if (
+            !shouldNotifyInbound(
+              {
+                conversationId: evt.conversationId,
+                messageId: evt.messageId,
+                assignedUserId: d.assignedUser?.id ?? null,
+              },
+              meId,
+              seenRef.current,
+            )
+          ) {
+            return;
+          }
+          const who = d.contact?.name ?? d.externalNumberE164;
+          void notifyDesktop(`Text from ${who}`, d.lastMessagePreview || '(attachment)', {
+            tag: `sms-${evt.conversationId}`,
+            onClick: () => navigate(`/messages?tab=sms&c=${evt.conversationId}`),
+          });
+        })
+        .catch(() => undefined);
+    },
+    [meId, navigate],
+  );
   return (
-    <SmsStreamProvider enabled={canSmsStream} meId={me?.appUserId ?? null}>
+    <SmsStreamProvider
+      enabled={canSmsStream}
+      meId={meId}
+      defaultNotify={isDesktop()}
+      onInbound={(evt, ctx, enabled) => onInbound(evt, ctx, enabled)}
+    >
       <ShellInner>{children}</ShellInner>
     </SmsStreamProvider>
   );

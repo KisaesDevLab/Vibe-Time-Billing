@@ -17,6 +17,8 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Button, Card, Combobox, Input, Pill, tokens, type ComboboxOption } from '@vibe/ui';
 
 import { api } from '../../api-client';
+import { usePermission } from '../../auth-context';
+import { NewSmsConversationDialog, type NewSmsPrefill } from '../sms/NewSmsConversationDialog';
 import { PersonSearchField, type PersonSearchResult } from './PersonSearchField';
 
 type Role = 'FULL' | 'VIEW_ONLY' | 'PAY_ONLY';
@@ -104,6 +106,8 @@ export function PeopleCard({
   /** INDIVIDUAL clients pre-select Taxpayer / Spouse when adding people. */
   clientType?: 'INDIVIDUAL' | 'BUSINESS' | null;
 }): JSX.Element {
+  const canSms = usePermission('messaging:write');
+  const [smsTarget, setSmsTarget] = useState<NewSmsPrefill | null>(null);
   const [people, setPeople] = useState<Person[] | null>(null);
   const [roles, setRoles] = useState<RoleEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -292,6 +296,24 @@ export function PeopleCard({
                   {p.kind === 'portal_only' && <Pill tone="warning">Not in contacts</Pill>}
 
                   <div style={{ marginLeft: 'auto', display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                    {/* 0234 — text this person from the inbox */}
+                    {(c?.mobile || phone) && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={busy || !canSms}
+                        title={canSms ? 'Send a text' : 'Needs messaging:write'}
+                        onClick={() =>
+                          setSmsTarget({
+                            to: c?.mobile ?? phone ?? '',
+                            personName: nameOf(p),
+                            clientId,
+                          })
+                        }
+                      >
+                        Text
+                      </Button>
+                    )}
                     {/* Invite a contact who has no access */}
                     {!a && !inv && c && (
                       <Button
@@ -417,6 +439,16 @@ export function PeopleCard({
             );
           })}
         </div>
+      )}
+      {smsTarget && (
+        <NewSmsConversationDialog
+          prefill={smsTarget}
+          onClose={() => setSmsTarget(null)}
+          onCreated={(id) => {
+            setSmsTarget(null);
+            window.location.assign(`/messages?tab=sms&c=${id}`);
+          }}
+        />
       )}
     </Card>
   );

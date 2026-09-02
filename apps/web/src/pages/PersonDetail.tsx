@@ -15,6 +15,7 @@ import { Button, Card, Combobox, Pill, tokens, type ComboboxOption } from '@vibe
 
 import { api } from '../api-client';
 import { usePermission } from '../auth-context';
+import { NewSmsConversationDialog } from './sms/NewSmsConversationDialog';
 
 type Role = 'FULL' | 'VIEW_ONLY' | 'PAY_ONLY';
 
@@ -42,6 +43,9 @@ interface PersonDetail {
   mobile: string | null;
   bulkEmailOptOut?: boolean;
   smsOptOut?: boolean;
+  smsOptOutAt?: string | null;
+  smsConsentAt?: string | null;
+  smsConsentSource?: string | null;
   doNotCall?: boolean;
   status: string;
   clients: ClientEntry[];
@@ -513,6 +517,97 @@ function EditHeader({
           {person.doNotCall && <span style={{ color: tokens.color.warning }}>Do not call</span>}
         </div>
       )}
+      {person.kind === 'person' && (
+        <TextingRow person={person} onSaved={onSaved} onError={onError} />
+      )}
     </Card>
+  );
+}
+
+// 0234 — texting status + actions: consent on file (D8a), opt-out, and
+// "Send text" into the SMS inbox. Consent recording is audited server-side.
+function TextingRow({
+  person,
+  onSaved,
+  onError,
+}: {
+  person: PersonDetail;
+  onSaved: (msg: string) => void;
+  onError: (m: string) => void;
+}): JSX.Element | null {
+  const canSms = usePermission('messaging:write');
+  const [showNew, setShowNew] = useState(false);
+  const number = person.mobile ?? person.phone ?? null;
+  async function recordConsent(): Promise<void> {
+    try {
+      await api(`/api/staff/people/${person.id}/sms-consent`, {
+        method: 'POST',
+        body: JSON.stringify({ source: 'verbal' }),
+      });
+      onSaved('Verbal SMS consent recorded.');
+    } catch (e) {
+      onError(e instanceof Error ? e.message : 'consent_failed');
+    }
+  }
+  return (
+    <div
+      style={{
+        display: 'flex',
+        gap: 10,
+        alignItems: 'center',
+        flexWrap: 'wrap',
+        marginTop: 10,
+        paddingTop: 10,
+        borderTop: `1px solid ${tokens.color.border}`,
+        fontSize: 13,
+      }}
+    >
+      <span style={{ color: tokens.color.textMuted }}>Texting:</span>
+      {person.smsOptOut ? (
+        <Pill tone="danger">
+          Opted out{person.smsOptOutAt ? ` ${person.smsOptOutAt.slice(0, 10)}` : ''}
+        </Pill>
+      ) : person.smsConsentAt ? (
+        <Pill tone="success">
+          Consent: {person.smsConsentSource ?? 'recorded'} · {person.smsConsentAt.slice(0, 10)}
+        </Pill>
+      ) : (
+        <Pill tone="neutral">No consent recorded</Pill>
+      )}
+      {!person.smsOptOut && !person.smsConsentAt && (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!canSms}
+          title={canSms ? undefined : 'Needs messaging:write'}
+          onClick={() => void recordConsent()}
+        >
+          Record verbal consent
+        </Button>
+      )}
+      {number && (
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!canSms || person.smsOptOut}
+          title={
+            !canSms ? 'Needs messaging:write' : person.smsOptOut ? 'Opted out of texts' : undefined
+          }
+          onClick={() => setShowNew(true)}
+        >
+          Send text
+        </Button>
+      )}
+      {showNew && (
+        <NewSmsConversationDialog
+          prefill={{ to: number ?? '', personId: person.id, personName: person.fullName }}
+          onClose={() => setShowNew(false)}
+          onCreated={(id) => {
+            setShowNew(false);
+            window.location.assign(`/messages?tab=sms&c=${id}`);
+          }}
+        />
+      )}
+    </div>
   );
 }

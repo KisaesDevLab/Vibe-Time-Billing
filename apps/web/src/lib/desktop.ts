@@ -52,3 +52,67 @@ export function looksLikeUltraTax(w: CapturableWindow): boolean {
   const hay = `${w.title} ${w.appName}`.toLowerCase();
   return hay.includes('ultratax') || /\but20\d{2}\b/.test(hay) || hay.includes('cs ');
 }
+
+// ----- Notifications (0234 — SMS inbox, D13a) ----------------------------
+//
+// In the desktop shell we call tauri-plugin-notification through the
+// global (`plugin:notification|…` commands); in a browser we fall back to
+// the Notification API. Both need a permission grant; the request must
+// come from a user gesture in browsers, so the Account page toggle calls
+// requestNotifyPermission() explicitly.
+
+export function notificationsSupported(): boolean {
+  if (isDesktop()) return true;
+  return typeof window !== 'undefined' && 'Notification' in window;
+}
+
+export async function requestNotifyPermission(): Promise<'granted' | 'denied' | 'unsupported'> {
+  if (isDesktop()) {
+    try {
+      const granted = await invoke<boolean>('plugin:notification|is_permission_granted');
+      if (granted) return 'granted';
+      const r = await invoke<string>('plugin:notification|request_permission');
+      return r === 'granted' ? 'granted' : 'denied';
+    } catch {
+      return 'denied';
+    }
+  }
+  if (!notificationsSupported()) return 'unsupported';
+  if (Notification.permission === 'granted') return 'granted';
+  if (Notification.permission === 'denied') return 'denied';
+  try {
+    return (await Notification.requestPermission()) === 'granted' ? 'granted' : 'denied';
+  } catch {
+    return 'denied';
+  }
+}
+
+export async function notifyDesktop(
+  title: string,
+  body: string,
+  opts: { tag?: string; onClick?: () => void } = {},
+): Promise<'shown' | 'denied' | 'unsupported'> {
+  if (isDesktop()) {
+    try {
+      const granted = await invoke<boolean>('plugin:notification|is_permission_granted');
+      if (!granted) return 'denied';
+      await invoke('plugin:notification|notify', { options: { title, body } });
+      return 'shown';
+    } catch {
+      return 'denied';
+    }
+  }
+  if (!notificationsSupported()) return 'unsupported';
+  if (Notification.permission !== 'granted') return 'denied';
+  try {
+    const n = new Notification(title, { body, tag: opts.tag });
+    n.onclick = () => {
+      window.focus();
+      opts.onClick?.();
+      n.close();
+    };
+    return 'shown';
+  } catch {
+    return 'denied';
+  }
+}
