@@ -39,6 +39,20 @@ interface MaskedSms {
   authTokenMasked?: string | null;
   accessKeyIdMasked?: string | null;
   secretAccessKeyMasked?: string | null;
+  // 0233 — two-way inbox extensions (twilio only).
+  messagingServiceSid?: string | null;
+  apiKeySidMasked?: string | null;
+  apiKeySecretMasked?: string | null;
+  inboxReady?: boolean;
+}
+
+interface VerifyResult {
+  ok: boolean;
+  accountName?: string | null;
+  messagingServiceFound?: boolean;
+  messagingService?: { friendlyName: string } | null;
+  lineCount?: number;
+  error?: string | null;
 }
 
 interface MaskedVoice {
@@ -142,7 +156,15 @@ type EmailDraft =
 
 type SmsDraft =
   | { provider: 'textlink'; apiKey: string }
-  | { provider: 'twilio'; from: string; accountSid: string; authToken: string }
+  | {
+      provider: 'twilio';
+      from: string;
+      accountSid: string;
+      authToken: string;
+      messagingServiceSid: string;
+      apiKeySid: string;
+      apiKeySecret: string;
+    }
   | { provider: 'sns'; region: string; accessKeyId: string; secretAccessKey: string };
 
 function emptyEmailDraft(provider: EmailProvider): EmailDraft {
@@ -179,10 +201,32 @@ function emptySmsDraft(provider: SmsProvider): SmsDraft {
     case 'textlink':
       return { provider: 'textlink', apiKey: '' };
     case 'twilio':
-      return { provider: 'twilio', from: '', accountSid: '', authToken: '' };
+      return {
+        provider: 'twilio',
+        from: '',
+        accountSid: '',
+        authToken: '',
+        messagingServiceSid: '',
+        apiKeySid: '',
+        apiKeySecret: '',
+      };
     case 'sns':
       return { provider: 'sns', region: 'us-east-1', accessKeyId: '', secretAccessKey: '' };
   }
+}
+
+// Re-hydrate the non-secret twilio fields from the masked read so a save
+// that only re-types the auth token keeps the Messaging Service SID.
+function smsDraftFromMasked(masked: MaskedSms): SmsDraft {
+  const empty = emptySmsDraft(masked.provider);
+  if (empty.provider === 'twilio') {
+    return {
+      ...empty,
+      from: masked.from ?? '',
+      messagingServiceSid: masked.messagingServiceSid ?? '',
+    };
+  }
+  return empty;
 }
 
 function buildEmailBody(draft: EmailDraft): unknown {
@@ -206,6 +250,18 @@ function buildEmailBody(draft: EmailDraft): unknown {
 }
 
 function buildSmsBody(draft: SmsDraft): unknown {
+  if (draft.provider === 'twilio') {
+    // Optional fields go out as undefined (not '') so zod's .optional() applies.
+    return {
+      provider: 'twilio',
+      accountSid: draft.accountSid,
+      authToken: draft.authToken,
+      from: draft.from || undefined,
+      messagingServiceSid: draft.messagingServiceSid || undefined,
+      apiKeySid: draft.apiKeySid || undefined,
+      apiKeySecret: draft.apiKeySecret || undefined,
+    };
+  }
   return { ...draft };
 }
 
@@ -237,7 +293,7 @@ function smsTestConfig(draft: SmsDraft): unknown | undefined {
     case 'textlink':
       return draft.apiKey ? { ...draft } : undefined;
     case 'twilio':
-      return draft.authToken ? { ...draft } : undefined;
+      return draft.authToken ? buildSmsBody(draft) : undefined;
     case 'sns':
       return draft.secretAccessKey ? { ...draft } : undefined;
   }
@@ -282,6 +338,7 @@ export function MessagingPage(): JSX.Element {
   const [voiceTo, setVoiceTo] = useState('');
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
   const [smsStatus, setSmsStatus] = useState<string | null>(null);
+  const [verifyStatus, setVerifyStatus] = useState<string | null>(null);
   const [voiceStatus, setVoiceStatus] = useState<string | null>(null);
   const [recentCalls, setRecentCalls] = useState<VoiceCallRow[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -306,7 +363,7 @@ export function MessagingPage(): JSX.Element {
       setSms(r.sms);
       setVoice(r.voice);
       if (r.email) setEmailDraft(emptyEmailDraft(r.email.provider));
-      if (r.sms) setSmsDraft(emptySmsDraft(r.sms.provider));
+      if (r.sms) setSmsDraft(smsDraftFromMasked(r.sms));
       if (r.voice) setVoiceDraft(emptyVoiceDraft(r.voice));
     } catch (e) {
       setError(e instanceof Error ? e.message : 'load_failed');
@@ -434,6 +491,28 @@ export function MessagingPage(): JSX.Element {
       setVoiceStatus(r.ok ? `Calling… (sid ${r.callSid ?? 'n/a'})` : `Failed: ${r.error}`);
     } catch (e) {
       setVoiceStatus(`Failed: ${formatConfigError(e)}`);
+    }
+  }
+
+  // 0233 — verify Twilio credentials + Messaging Service without sending.
+  async function verifySms(): Promise<void> {
+    setVerifyStatus('Checking…');
+    try {
+      const config = smsTestConfig(smsDraft);
+      const r = await api<VerifyResult>('/api/staff/sms/settings/test', {
+        method: 'POST',
+        body: JSON.stringify(config ? { config } : {}),
+      });
+      if (!r.ok) {
+        setVerifyStatus(`Failed: ${r.error ?? 'credentials rejected'}`);
+        return;
+      }
+      const svc = r.messagingServiceFound
+        ? `Messaging Service "${r.messagingService?.friendlyName ?? ''}" · ${r.lineCount ?? 0} number${r.lineCount === 1 ? '' : 's'}`
+        : 'no Messaging Service SID — inbox disabled';
+      setVerifyStatus(`OK · account "${r.accountName ?? ''}" · ${svc}`);
+    } catch (e) {
+      setVerifyStatus(`Failed: ${formatConfigError(e)}`);
     }
   }
 
@@ -651,7 +730,17 @@ export function MessagingPage(): JSX.Element {
             ) : (
               <Pill tone="neutral">Using env defaults</Pill>
             )}
+            {sms?.provider === 'twilio' && (
+              <Pill tone={sms.inboxReady ? 'accent' : 'warning'}>
+                {sms.inboxReady ? 'Inbox ready' : 'Inbox needs a Messaging Service'}
+              </Pill>
+            )}
           </span>
+        }
+        action={
+          <a href="/admin/sms-inbox" style={{ fontSize: 12, color: tokens.color.accent }}>
+            Inbox settings →
+          </a>
         }
       >
         <p style={{ fontSize: 12, color: tokens.color.textMuted, marginBottom: 12 }}>
@@ -687,15 +776,34 @@ export function MessagingPage(): JSX.Element {
 
           {smsDraft.provider === 'twilio' && (
             <>
-              <label style={{ display: 'grid', gap: 4 }}>
-                <span style={labelStyle}>From number (E.164)</span>
-                <input
-                  value={smsDraft.from}
-                  onChange={(e) => setSmsDraft({ ...smsDraft, from: e.target.value })}
-                  placeholder="+12025551212"
-                  style={fieldStyle}
-                />
-              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={labelStyle}>Messaging Service SID (MG…)</span>
+                  <input
+                    value={smsDraft.messagingServiceSid}
+                    onChange={(e) =>
+                      setSmsDraft({ ...smsDraft, messagingServiceSid: e.target.value.trim() })
+                    }
+                    placeholder="MG…"
+                    style={fieldStyle}
+                  />
+                </label>
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={labelStyle}>
+                    From number (E.164) — optional with a Messaging Service
+                  </span>
+                  <input
+                    value={smsDraft.from}
+                    onChange={(e) => setSmsDraft({ ...smsDraft, from: e.target.value })}
+                    placeholder="+12025551212"
+                    style={fieldStyle}
+                  />
+                </label>
+              </div>
+              <p style={{ fontSize: 12, color: tokens.color.textMuted, margin: 0 }}>
+                The two-way SMS inbox sends through the Messaging Service and receives on every
+                number in it. The Auth Token stays required — Twilio signs webhooks with it.
+              </p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
                 <label style={{ display: 'grid', gap: 4 }}>
                   <span style={labelStyle}>Account SID</span>
@@ -712,6 +820,26 @@ export function MessagingPage(): JSX.Element {
                     type="password"
                     value={smsDraft.authToken}
                     onChange={(e) => setSmsDraft({ ...smsDraft, authToken: e.target.value })}
+                    style={fieldStyle}
+                  />
+                </label>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={labelStyle}>API Key SID (SK…) — optional</span>
+                  <input
+                    type="password"
+                    value={smsDraft.apiKeySid}
+                    onChange={(e) => setSmsDraft({ ...smsDraft, apiKeySid: e.target.value.trim() })}
+                    style={fieldStyle}
+                  />
+                </label>
+                <label style={{ display: 'grid', gap: 4 }}>
+                  <span style={labelStyle}>API Key Secret — optional</span>
+                  <input
+                    type="password"
+                    value={smsDraft.apiKeySecret}
+                    onChange={(e) => setSmsDraft({ ...smsDraft, apiKeySecret: e.target.value })}
                     style={fieldStyle}
                   />
                 </label>
@@ -762,6 +890,11 @@ export function MessagingPage(): JSX.Element {
             <Button variant="secondary" onClick={() => void testSms()}>
               Send test
             </Button>
+            {smsDraft.provider === 'twilio' && (
+              <Button variant="secondary" onClick={() => void verifySms()}>
+                Test connection
+              </Button>
+            )}
             <Button onClick={() => void saveSms()}>Save</Button>
             {sms && (
               <Button variant="ghost" onClick={() => void clearSms()}>
@@ -770,6 +903,11 @@ export function MessagingPage(): JSX.Element {
             )}
           </div>
           {smsStatus && <p style={{ fontSize: 12, color: tokens.color.textMuted }}>{smsStatus}</p>}
+          {verifyStatus && (
+            <p style={{ fontSize: 12, color: tokens.color.textMuted }} role="status">
+              {verifyStatus}
+            </p>
+          )}
         </div>
       </Card>
 

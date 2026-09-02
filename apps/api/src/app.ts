@@ -34,6 +34,7 @@ import { createRequestRouter } from './requests/routes';
 import { createFirmUsersRouter } from './staff/firm-users';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
+import { createSmsSettingsRouter } from './sms/settings-routes';
 import { createTemplateRouter } from './admin/templates';
 import { createRequestTemplateRouter } from './requests/templates';
 import { createTaxonomyRouter } from './taxonomy/routes';
@@ -602,6 +603,14 @@ export function createApp(deps: AppDeps): Express {
     fakeUserRoles: deps.fakeUserRoles,
   });
   app.use('/api/staff/admin/messaging', auth.requireAuth, auth.requireCsrf, messagingRouter);
+
+  // 0233 — two-way SMS inbox settings (lines, webhook URLs, health, a2p).
+  app.use(
+    '/api/staff/sms/settings',
+    auth.requireAuth,
+    auth.requireCsrf,
+    createSmsSettingsRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles }),
+  );
 
   const templateRouter = createTemplateRouter({
     db: deps.db,

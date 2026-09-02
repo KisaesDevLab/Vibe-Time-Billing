@@ -12,3 +12,4 @@ export * from './folder-templates';
 export * from './rollforward';
 export * from './pricing';
 export * from './payroll';
+export * from './sms';

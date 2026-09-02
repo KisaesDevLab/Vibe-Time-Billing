@@ -54,7 +54,14 @@ export function buildSmsProvider(cfg: SmsConfig, log: Logger): SmsProvider {
       return createTextLinkSmsProvider({ apiKey: cfg.apiKey }, log);
     case 'twilio':
       return createTwilioSmsProvider(
-        { accountSid: cfg.accountSid, authToken: cfg.authToken, from: cfg.from },
+        {
+          accountSid: cfg.accountSid,
+          authToken: cfg.authToken,
+          from: cfg.from,
+          messagingServiceSid: cfg.messagingServiceSid,
+          apiKeySid: cfg.apiKeySid,
+          apiKeySecret: cfg.apiKeySecret,
+        },
         log,
       );
     case 'sns':

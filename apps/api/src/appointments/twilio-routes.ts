@@ -6,8 +6,6 @@
 // either flips their participant RSVP to 'confirmed', lighting up the
 // Confirmed chips in the staff UI. Every request is Twilio-signature verified.
 
-import crypto from 'node:crypto';
-
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { and, asc, eq, gt, lt } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
@@ -19,49 +17,15 @@ import {
   appointments,
   clientCommunications,
   clientContacts,
-  firmSettings,
   persons,
   voiceCalls,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { logger } from '../logger';
-import { decryptSmsConfig, decryptVoiceConfig } from '../messaging/config';
 import { loadFirmSmsProvider } from '../messaging/sms-resolver';
 import { isSmsOptedOut } from '../people/sms-gate';
-
-/** Decrypt every firm's stored SMS + VOICE configs and collect Twilio auth
- *  tokens, for inbound-webhook signature verification (both are configured
- *  in the DB, not env). Single-firm appliance → usually one of each.
- *  Best-effort; skips undecryptable. */
-async function loadFirmTwilioAuthTokens(db: Database): Promise<string[]> {
-  const rows = await db
-    .select({
-      enc: firmSettings.smsConfigEncrypted,
-      voiceEnc: firmSettings.voiceConfigEncrypted,
-    })
-    .from(firmSettings);
-  const out: string[] = [];
-  for (const r of rows) {
-    if (r.enc) {
-      try {
-        const cfg = decryptSmsConfig(r.enc);
-        if (cfg.provider === 'twilio' && cfg.authToken) out.push(cfg.authToken);
-      } catch {
-        /* skip rows we can't decrypt */
-      }
-    }
-    if (r.voiceEnc) {
-      try {
-        const cfg = decryptVoiceConfig(r.voiceEnc);
-        if (cfg.authToken) out.push(cfg.authToken);
-      } catch {
-        /* skip rows we can't decrypt */
-      }
-    }
-  }
-  return out;
-}
+import { createTwilioTokenResolver, twilioSignatureValid } from '../sms/twilio-signature';
 
 export interface AppointmentTwilioDeps {
   db: Database | null;
@@ -88,28 +52,6 @@ function last10(s: string | null | undefined): string {
   return (s ?? '').replace(/\D/g, '').slice(-10);
 }
 
-/** Twilio request validation: base64(HMAC-SHA1(token, fullUrl + sorted k+v of POST params)). */
-function twilioSignatureValid(
-  tokens: string[],
-  fullUrl: string,
-  params: Record<string, string>,
-  header: string | undefined,
-): boolean {
-  if (!header || tokens.length === 0) return false;
-  const sorted = Object.keys(params).sort();
-  let data = fullUrl;
-  for (const k of sorted) data += k + params[k];
-  for (const token of tokens) {
-    if (!token) continue;
-    const expected = crypto.createHmac('sha1', token).update(data, 'utf8').digest('base64');
-    // Constant-time compare on equal-length buffers.
-    const a = Buffer.from(expected);
-    const b = Buffer.from(header);
-    if (a.length === b.length && crypto.timingSafeEqual(a, b)) return true;
-  }
-  return false;
-}
-
 function twiml(res: Response, body: string): void {
   res.setHeader('Content-Type', 'text/xml; charset=utf-8');
   res.send(`<?xml version="1.0" encoding="UTF-8"?><Response>${body}</Response>`);
@@ -119,23 +61,15 @@ export function createAppointmentTwilioRouter(deps: AppointmentTwilioDeps): Rout
   const router = express.Router();
   router.use(express.urlencoded({ extended: false }));
   const nowFn = deps.now ?? ((): Date => new Date());
-  const envTokens = [
-    process.env['SMS_TWILIO_AUTH_TOKEN'],
-    process.env['VOICE_TWILIO_AUTH_TOKEN'],
-  ].filter((t): t is string => Boolean(t));
 
   // Verification tokens = env creds + the firm's DB-configured Twilio auth
   // token(s) (Admin → Messaging). The latter matters because SMS is configured
   // in the DB, not env. Cached briefly to avoid decrypting on every webhook.
-  let dbTokenCache: { at: number; tokens: string[] } | null = null;
-  async function resolveTokens(): Promise<string[]> {
-    if (deps.authTokens) return deps.authTokens; // test seam
-    const now = nowFn().getTime();
-    if (!dbTokenCache || now - dbTokenCache.at > 30_000) {
-      dbTokenCache = { at: now, tokens: deps.db ? await loadFirmTwilioAuthTokens(deps.db) : [] };
-    }
-    return [...envTokens, ...dbTokenCache.tokens];
-  }
+  const resolveTokens = createTwilioTokenResolver({
+    db: deps.db,
+    authTokens: deps.authTokens,
+    now: () => nowFn().getTime(),
+  });
 
   // Per-IP rate limit.
   router.use((req: Request, res: Response, next: NextFunction) => {

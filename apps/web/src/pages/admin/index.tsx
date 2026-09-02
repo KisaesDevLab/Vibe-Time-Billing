@@ -37,6 +37,7 @@ import { JobsPage } from './Jobs';
 import { SystemInfoPage } from './SystemInfo';
 import { MilestonesPage } from './Milestones';
 import { MessagingPage } from './Messaging';
+import { SmsInboxSettingsPage } from './SmsInbox';
 import { WebhookKeysPage } from './WebhookKeys';
 import { NotificationsPage } from './Notifications';
 import { NotificationTemplatesPage } from './NotificationTemplates';
@@ -148,6 +149,7 @@ const GROUPS: Group[] = [
     label: 'Messaging',
     tabs: [
       { key: 'messaging', label: 'Email + SMS providers', href: '/admin/messaging' },
+      { key: 'sms-inbox', label: 'SMS inbox', href: '/admin/sms-inbox' },
       { key: 'notif-tpl', label: 'Notification templates', href: '/admin/notification-templates' },
       { key: 'notifs', label: 'Notifications log', href: '/admin/notifications' },
       { key: 'webhooks', label: 'Webhooks', href: '/admin/webhooks' },
@@ -379,6 +381,7 @@ export function AdminLayout(): JSX.Element {
         <Route path="permissions" element={<PermissionMatrixPage />} />
         <Route path="roles" element={<RolesPage />} />
         <Route path="messaging" element={<MessagingPage />} />
+        <Route path="sms-inbox" element={<SmsInboxSettingsPage />} />
         <Route path="webhook-keys" element={<WebhookKeysPage />} />
         <Route path="notifications" element={<NotificationsPage />} />
         <Route path="notification-templates" element={<NotificationTemplatesPage />} />

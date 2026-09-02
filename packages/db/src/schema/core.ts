@@ -537,6 +537,28 @@ export const firmSettings = pgTable('firm_settings', {
   mailConfigUpdatedAt: timestamp('mail_config_updated_at', { withTimezone: true }),
   smsConfigUpdatedAt: timestamp('sms_config_updated_at', { withTimezone: true }),
 
+  // 0233 — two-way SMS inbox (Twilio). Non-secret inbox settings; the
+  // Twilio creds + Messaging Service SID stay in sms_config_encrypted.
+  // Health/a2p types live in ./sms (SmsHealth, SmsA2pStatus).
+  smsInboxEnabled: boolean('sms_inbox_enabled').notNull().default(false),
+  smsPublicBaseUrl: text('sms_public_base_url'),
+  smsPollIntervalMinutes: integer('sms_poll_interval_minutes').notNull().default(2),
+  smsUnassignedRetentionDays: integer('sms_unassigned_retention_days').notNull().default(90),
+  smsSpamRetentionDays: integer('sms_spam_retention_days').notNull().default(30),
+  smsDefaultWorkCodeId: uuid('sms_default_work_code_id').references(() => workCodes.id, {
+    onDelete: 'set null',
+  }),
+  smsPiiWarningsEnabled: boolean('sms_pii_warnings_enabled').notNull().default(true),
+  smsConsentEnforced: boolean('sms_consent_enforced').notNull().default(true),
+  smsA2pStatus: text('sms_a2p_status').notNull().default('unknown'), // SmsA2pStatus; CHECK in SQL
+  smsA2pCheckedAt: timestamp('sms_a2p_checked_at', { withTimezone: true }),
+  smsA2pOverrideAllow: boolean('sms_a2p_override_allow').notNull().default(false),
+  smsLastInboundWebhookAt: timestamp('sms_last_inbound_webhook_at', { withTimezone: true }),
+  smsLastStatusWebhookAt: timestamp('sms_last_status_webhook_at', { withTimezone: true }),
+  smsLastPollAt: timestamp('sms_last_poll_at', { withTimezone: true }),
+  smsLastSendAt: timestamp('sms_last_send_at', { withTimezone: true }),
+  smsHealth: jsonb('sms_health').$type<Record<string, unknown>>().notNull().default({}),
+
   // 0178 — AI pricing-suggestion knobs. The engine picks the number
   // deterministically; these only tune inputs. Economic source defaults to
   // MANUAL (no network); "allow LLM to adjust the number" defaults OFF.

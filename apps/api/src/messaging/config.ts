@@ -69,12 +69,27 @@ const TextLinkConfig = z.object({
   apiKey: z.string().min(8).max(255),
 });
 
+// 0233 — the two-way SMS inbox extends the Twilio config in place: a
+// Messaging Service SID (all inbox sends go through it instead of a raw
+// From) and an optional API Key/Secret pair for REST auth. The Auth Token
+// stays REQUIRED either way — it is what Twilio signs webhooks with.
+const TWILIO_ACCOUNT_SID_RE = /^AC[0-9a-fA-F]{32}$/;
+const TWILIO_MESSAGING_SID_RE = /^MG[0-9a-fA-F]{32}$/;
+const TWILIO_API_KEY_SID_RE = /^SK[0-9a-fA-F]{32}$/;
+
 const TwilioConfig = z.object({
   provider: z.literal('twilio'),
-  from: z.string().min(3).max(32),
-  accountSid: z.string().min(8).max(255),
+  from: z.string().min(3).max(32).optional(),
+  accountSid: z.string().regex(TWILIO_ACCOUNT_SID_RE, 'Account SID must look like AC…'),
   authToken: z.string().min(8).max(255),
+  messagingServiceSid: z
+    .string()
+    .regex(TWILIO_MESSAGING_SID_RE, 'Messaging Service SID must look like MG…')
+    .optional(),
+  apiKeySid: z.string().regex(TWILIO_API_KEY_SID_RE, 'API Key SID must look like SK…').optional(),
+  apiKeySecret: z.string().min(8).max(255).optional(),
 });
+export type TwilioSmsConfig = z.infer<typeof TwilioConfig>;
 
 const SnsConfig = z.object({
   provider: z.literal('sns'),
@@ -83,11 +98,28 @@ const SnsConfig = z.object({
   secretAccessKey: z.string().min(8).max(255),
 });
 
-export const SmsConfig = z.discriminatedUnion('provider', [
-  TextLinkConfig,
-  TwilioConfig,
-  SnsConfig,
-]);
+// Cross-field twilio rules live on the union (a discriminatedUnion can't
+// take a refined member): a sender is required (From OR Messaging Service)
+// and the API key pair must be all-or-nothing.
+export const SmsConfig = z
+  .discriminatedUnion('provider', [TextLinkConfig, TwilioConfig, SnsConfig])
+  .superRefine((c, ctx) => {
+    if (c.provider !== 'twilio') return;
+    if (!c.from && !c.messagingServiceSid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['from'],
+        message: 'A From number or a Messaging Service SID is required',
+      });
+    }
+    if (Boolean(c.apiKeySid) !== Boolean(c.apiKeySecret)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['apiKeySid'],
+        message: 'API Key SID and Secret go together',
+      });
+    }
+  });
 export type SmsConfig = z.infer<typeof SmsConfig>;
 
 // ----- Voice (0206) -----
@@ -238,6 +270,12 @@ export interface MaskedSmsConfig {
   authTokenMasked?: string | null;
   accessKeyIdMasked?: string | null;
   secretAccessKeyMasked?: string | null;
+  // 0233 — twilio inbox fields. The Messaging Service SID is not a secret.
+  messagingServiceSid?: string | null;
+  apiKeySidMasked?: string | null;
+  apiKeySecretMasked?: string | null;
+  /** true when the config can drive the two-way inbox (twilio + MG sid). */
+  inboxReady?: boolean;
 }
 
 export interface MaskedVoiceConfig {
@@ -274,6 +312,10 @@ export function maskSmsConfig(cfg: SmsConfig): MaskedSmsConfig {
         from: cfg.from,
         accountSidMasked: mask(cfg.accountSid),
         authTokenMasked: mask(cfg.authToken),
+        messagingServiceSid: cfg.messagingServiceSid ?? null,
+        apiKeySidMasked: mask(cfg.apiKeySid),
+        apiKeySecretMasked: mask(cfg.apiKeySecret),
+        inboxReady: Boolean(cfg.messagingServiceSid),
       };
     case 'sns':
       return {

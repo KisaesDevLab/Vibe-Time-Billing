@@ -30,13 +30,27 @@ interface StoredSmsConfig {
   from?: string;
   accountSid?: string;
   authToken?: string;
+  // 0233 — inbox extensions (see messaging/config.ts TwilioConfig).
+  messagingServiceSid?: string;
+  apiKeySid?: string;
+  apiKeySecret?: string;
 }
 
-export async function loadFirmSmsProvider(
+/** Decrypted Twilio config sufficient to drive the two-way inbox. */
+export interface FirmTwilioInboxConfig {
+  accountSid: string;
+  authToken: string;
+  messagingServiceSid: string;
+  from?: string;
+  apiKeySid?: string;
+  apiKeySecret?: string;
+}
+
+async function loadStoredSmsConfig(
   db: Database,
   firmId: string,
   log: Logger,
-): Promise<SmsProvider | null> {
+): Promise<StoredSmsConfig | null> {
   const [row] = await db
     .select({ enc: firmSettings.smsConfigEncrypted })
     .from(firmSettings)
@@ -48,17 +62,67 @@ export async function loadFirmSmsProvider(
     log.warn({ firmId }, 'sms config present but KMS_KEY unset; cannot decrypt');
     return null;
   }
-  let cfg: StoredSmsConfig;
   try {
-    cfg = core.decryptJson<StoredSmsConfig>(row.enc, core.resolveKey(keyRaw));
+    return core.decryptJson<StoredSmsConfig>(row.enc, core.resolveKey(keyRaw));
   } catch (err) {
     log.warn({ err, firmId }, 'sms config decrypt failed');
     return null;
   }
+}
+
+/**
+ * 0233 — the inbox needs Twilio + a Messaging Service SID. Returns null
+ * for every other provider / incomplete config so callers can fall back
+ * to the plain send path. Worker-safe (no zod).
+ */
+export async function loadFirmTwilioInboxConfig(
+  db: Database,
+  firmId: string,
+  log: Logger,
+): Promise<FirmTwilioInboxConfig | null> {
+  const cfg = await loadStoredSmsConfig(db, firmId, log);
+  if (
+    !cfg ||
+    cfg.provider !== 'twilio' ||
+    !cfg.accountSid ||
+    !cfg.authToken ||
+    !cfg.messagingServiceSid
+  ) {
+    return null;
+  }
+  return {
+    accountSid: cfg.accountSid,
+    authToken: cfg.authToken,
+    messagingServiceSid: cfg.messagingServiceSid,
+    from: cfg.from,
+    apiKeySid: cfg.apiKeySid,
+    apiKeySecret: cfg.apiKeySecret,
+  };
+}
+
+export async function loadFirmSmsProvider(
+  db: Database,
+  firmId: string,
+  log: Logger,
+): Promise<SmsProvider | null> {
+  const cfg = await loadStoredSmsConfig(db, firmId, log);
+  if (!cfg) return null;
   try {
-    if (cfg.provider === 'twilio' && cfg.accountSid && cfg.authToken && cfg.from) {
+    if (
+      cfg.provider === 'twilio' &&
+      cfg.accountSid &&
+      cfg.authToken &&
+      (cfg.from || cfg.messagingServiceSid)
+    ) {
       return createTwilioSmsProvider(
-        { accountSid: cfg.accountSid, authToken: cfg.authToken, from: cfg.from },
+        {
+          accountSid: cfg.accountSid,
+          authToken: cfg.authToken,
+          from: cfg.from,
+          messagingServiceSid: cfg.messagingServiceSid,
+          apiKeySid: cfg.apiKeySid,
+          apiKeySecret: cfg.apiKeySecret,
+        },
         log,
       );
     }

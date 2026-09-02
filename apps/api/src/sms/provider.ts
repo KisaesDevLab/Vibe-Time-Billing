@@ -39,7 +39,14 @@ export function createConsoleSmsProvider(log: Logger): SmsProvider {
 export interface TwilioOptions {
   accountSid: string;
   authToken: string;
-  from: string;
+  /** Raw sender. Optional once a Messaging Service is configured. */
+  from?: string;
+  /** 0233 — when set, sends go through the Messaging Service (Twilio picks
+   *  the number, applies Advanced Opt-Out, queues for rate limits). */
+  messagingServiceSid?: string;
+  /** Optional REST auth pair (SK…/secret); falls back to SID:AuthToken. */
+  apiKeySid?: string;
+  apiKeySecret?: string;
   fetchImpl?: typeof fetch;
 }
 
@@ -50,8 +57,13 @@ export function createTwilioSmsProvider(opts: TwilioOptions, log: Logger): SmsPr
     async send(msg) {
       try {
         const url = `https://api.twilio.com/2010-04-01/Accounts/${opts.accountSid}/Messages.json`;
-        const body = new URLSearchParams({ To: toE164(msg.to), From: opts.from, Body: msg.body });
-        const auth = Buffer.from(`${opts.accountSid}:${opts.authToken}`).toString('base64');
+        const body = new URLSearchParams({ To: toE164(msg.to), Body: msg.body });
+        if (opts.messagingServiceSid) body.set('MessagingServiceSid', opts.messagingServiceSid);
+        else if (opts.from) body.set('From', opts.from);
+        else return { ok: false, error: 'twilio: no From number or Messaging Service configured' };
+        const user = opts.apiKeySid && opts.apiKeySecret ? opts.apiKeySid : opts.accountSid;
+        const pass = opts.apiKeySid && opts.apiKeySecret ? opts.apiKeySecret : opts.authToken;
+        const auth = Buffer.from(`${user}:${pass}`).toString('base64');
         const res = await fetchImpl(url, {
           method: 'POST',
           headers: {
