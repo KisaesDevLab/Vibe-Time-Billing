@@ -24,6 +24,7 @@ import {
   threadMembers,
   threads,
   timeEntries,
+  smsConversations,
 } from '@vibe/db/schema';
 
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
@@ -131,6 +132,7 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
         approvals: 0,
         notifications: 0,
         bookingRequests: 0,
+        sms: 0,
       };
       if (!deps.db) {
         res.json(empty);
@@ -225,6 +227,21 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
         .from(bookingRequests)
         .where(and(eq(bookingRequests.firmId, firmId), eq(bookingRequests.status, 'PENDING')));
 
+      // 0234 — unread SMS conversations I can act on (assigned to me or
+      // unassigned). Restricted-client exclusion is applied in the inbox
+      // itself; this is a coarse badge.
+      const smsUnread = await deps.db
+        .select({ c: sql<number>`count(*)::int` })
+        .from(smsConversations)
+        .where(
+          and(
+            eq(smsConversations.firmId, firmId),
+            eq(smsConversations.status, 'open'),
+            sql`${smsConversations.unreadCount} > 0`,
+            sql`(${smsConversations.assignedUserId} IS NULL OR ${smsConversations.assignedUserId} = ${appUserId})`,
+          ),
+        );
+
       res.json({
         clientMsg: n(clientMsg),
         teamMsg: n(teamMsg),
@@ -233,6 +250,7 @@ export function createStatsRouter(deps: StatsRoutesDeps): Router {
         approvals: n(approvals),
         notifications: n(notifications),
         bookingRequests: n(bookingReqs),
+        sms: n(smsUnread),
       });
     },
   );

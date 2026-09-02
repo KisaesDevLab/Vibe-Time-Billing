@@ -41,6 +41,7 @@ import { wrapMailWithAudit, wrapSmsWithAudit } from './notifications/audit';
 import { wrapMailWithBranding } from './notifications/branding-mail';
 import { wrapMailWithFirmConfig } from './messaging/mail-resolver';
 import { wrapSmsWithFirmConfig } from './messaging/sms-resolver';
+import { createSmsPublisher } from './sms/events';
 import { createSmsSendService, type SmsSendContext } from './sms/send-service';
 import { firmScope, renderTemplate } from './notifications/templating';
 import type { AiProvider } from '@vibe/core/ai';
@@ -346,11 +347,13 @@ const sendStaffMail = async (args: {
 // land in the client's inbox thread (when the firm has the two-way inbox
 // enabled) and fall back to the plain provider otherwise. Security codes
 // (OTP, step-up) always take the plain path.
+const smsPublish = createSmsPublisher(redis);
 const smsSend = createSmsSendService({
   db,
   log: logger,
   fallback: smsProvider,
   config: { PUBLIC_BASE_URL: config.PUBLIC_BASE_URL, APP_BASE_URL: config.APP_BASE_URL },
+  publish: smsPublish,
 });
 
 const sendPortalSms = async (args: {
@@ -485,6 +488,7 @@ const app = createApp({
   sendStaffMail,
   sendPortalSms,
   smsSend,
+  smsPublish,
   sendStepUpLockoutAlert,
   mailAssetStore,
 });

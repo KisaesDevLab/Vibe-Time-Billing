@@ -22,3 +22,4 @@ export * as signatures from './signatures';
 export * as tasks from './tasks';
 export * as backup from './backup';
 export * as payroll from './payroll';
+export * as sms from './sms';

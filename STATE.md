@@ -6,7 +6,7 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 
 ## Current phase
 
-**Phase 5 — complete (milestone 1).** Next: Phase 6 (association endpoints + inbox API).
+**Phase 6 — complete.** Next: Phase 7 (inbox list UI).
 
 ## Phase checklist
 
@@ -91,3 +91,12 @@ Open questions go to `QUESTIONS.md` (OPEN section). Progress narrative: `ops/doc
 - Admin job catalog + preview note gained `sms-poll`.
 - `apps/api/src/auth/rbac-resolve.ts` — Express-free permission resolvers split out of `rbac-middleware.ts` (which re-exports them) so worker-side code can resolve "who holds X".
 - Health card: `webhookGap` derives from `sms_health.webhook.gapDetectedAt`; the next successful inbound webhook clears it (ingest writes `gapDetectedAt: null`).
+
+## Phase 6 notes
+
+- `apps/api/src/sms/routes.ts` mounted at `/api/staff/sms` (auth + CSRF): `GET /conversations` (filters unread/unassigned/triage/mine/all, `status`, `q` over contact name / number digits / body, `clientId`/`engagementId`, cursor on `last_message_at`, restricted-client exclusion), `GET /conversations/:id` (detail + `candidates`, `consent`, `optOut`, `canReply`/`replyBlockReason`, `templateVars`, `engagementOptions`, `piiWarningsEnabled`), `GET /conversations/:id/messages` (with media descriptors → `/api/staff/sms/media/:id`), `POST /conversations` (manual; staff-picked client = manual link), `POST /conversations/:id/messages` (reply on the thread's line; confirms a suggested/picked engagement — D6), `read`/`unread`, `PATCH` (assign/status/engagement), `link`/`unlink`/`rematch`, `bulk`, templates (user scope private; firm scope needs `firm:settings:write` until Phase 11), `/templates/:id/render`, `/unread-count`, `/stream` (SSE over Redis `sms:events:{firmId}`, blocked clients filtered), `/engagements/:id/conversations`, `/clients/:id/conversations`.
+- Permission keys are constants at the top of the router (`PERM_READ = messaging:read`, `PERM_WRITE/ASSIGN = messaging:write`, `PERM_SETTINGS = firm:settings:write`) for the Phase 11 swap.
+- Events: `apps/api/src/sms/events.ts` (`createSmsPublisher(redis)`, `smsEventChannel`); `server.ts` wires it into the send service and `AppDeps.smsPublish` (ingest + status callback).
+- `GET /api/staff/stats/inbox-counts` gained `sms` (open, unread, assigned to me or unassigned).
+- `packages/core/src/sms` — `countSmsSegments` (GSM-7/UCS-2), `renderSmsTemplate` / `extractSmsTemplateVars` / `firstNameOf` (`@vibe/core/sms`).
+- Send-path 409 vocabulary: `sms_opted_out`, `sms_consent_required`, `sms_a2p_unregistered`, `sms_no_line`, `sms_conversation_closed|spam`; 400 `sms_invalid_number`; 502 `sms_provider_error`; 503 `sms_rate_limited|not_configured`.

@@ -34,6 +34,7 @@ import { createRequestRouter } from './requests/routes';
 import { createFirmUsersRouter } from './staff/firm-users';
 import { buildStorageAdapter } from './files/storage';
 import { createMessagingRouter } from './messaging/routes';
+import { createSmsInboxRouter } from './sms/routes';
 import { createSmsSettingsRouter } from './sms/settings-routes';
 import { ingestInboundMessage, type IngestDeps } from './sms/ingest';
 import { enqueueSmsMedia } from './sms/media-queue';
@@ -619,6 +620,21 @@ export function createApp(deps: AppDeps): Express {
     auth.requireCsrf,
     createSmsSettingsRouter({ db: deps.db, fakeUserRoles: deps.fakeUserRoles }),
   );
+  // 0234 — the staff SMS inbox (conversations, replies, templates, SSE).
+  if (deps.smsSend) {
+    app.use(
+      '/api/staff/sms',
+      auth.requireAuth,
+      auth.requireCsrf,
+      createSmsInboxRouter({
+        db: deps.db,
+        fakeUserRoles: deps.fakeUserRoles,
+        smsSend: deps.smsSend,
+        publish: deps.smsPublish,
+        redisUrl: process.env['REDIS_URL'] ?? null,
+      }),
+    );
+  }
 
   const templateRouter = createTemplateRouter({
     db: deps.db,

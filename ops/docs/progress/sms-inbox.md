@@ -28,3 +28,8 @@ See `STATE.md` at the repo root for the phase checklist and decision log.
 - Done: `sms-poll` worker job (import, cursor/overlap, stuck-status backfill, media retry, gap detection + admin notice, A2P refresh), admin catalog, tests.
 - Surprises: `rbac-middleware.ts` uses the Express `req.staffSession` augmentation, which the worker tsconfig doesn't see → resolvers extracted to `rbac-resolve.ts`.
 - Milestone 1 reached: inbound works end to end (webhook + poll).
+
+## Phase 6 — association engine + inbox API
+
+- Done: inbox router (list/detail/thread/reply/read/assign/link/bulk/templates/stream/surfaces), event publisher, inbox-counts `sms`, core segment/template helpers, tests.
+- Surprises: `audit_log` JSON columns are `before_json/after_json` (`afterJson` in Drizzle).

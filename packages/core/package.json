@@ -35,7 +35,8 @@
     "./rollforward": "./src/rollforward/index.ts",
     "./pricing": "./src/pricing/index.ts",
     "./backup": "./src/backup/index.ts",
-    "./payroll": "./src/payroll/index.ts"
+    "./payroll": "./src/payroll/index.ts",
+    "./sms": "./src/sms/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
