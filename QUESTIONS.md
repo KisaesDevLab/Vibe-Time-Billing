@@ -450,6 +450,12 @@ Context: `TB_SMS_INBOX_TWILIO_ADDENDUM.md` executed on branch `feat/sms-inbox` (
 - **Q70 — Visibility (D11 "mirror Meeting Notes transcript visibility").** No transcript feature exists. **Default:** `sms:read` sees every conversation except those linked to a client restricted from the viewer (`clients.restricted` / `client_access_grant`), matching the client-page rule.
 - Also noted: conversations are per (line, number) — a client who texts two firm lines has two threads (the client SMS tab shows both); splitting a shared-number conversation between two contacts is out of scope; unlinking from a legal-hold client is allowed (audited) since only the link changes.
 
+## Q71 — Engagement videos (staff-uploaded, portal-streamed), 2026-09-03
+Context: built on branch `feat/engagement-videos` (migration 0235, `ops/docs/progress/engagement-videos.md`). Decisions D1–D11 confirmed with the operator before build (engagement-scoped; first-press-of-play; per-video clocks with firm defaults; portal+email+SMS immediate; stream only; MP4/MOV/WebM ≤ 2 GB; keep EXPIRED rows; replies land in the engagement thread).
+
+- **Q71 — Upload size and multipart.** Q40 deferred multipart "until a real large-file need appears". Videos are that need, but B2 single-part PUT covers 2 GB comfortably. **Default: keep single-part with a 2 GB product cap** (`MAX_VIDEO_BYTES`), 60-minute presigned PUT TTL. A dropped connection restarts the upload. Revisit Q40 if the firm needs > 2 GB or resumable uploads.
+- Also noted: no transcoding — playback depends on the viewer's browser codecs (HEVC .mov warning shown at upload); `client_communication.channel='PORTAL'` is reused for the "started watching" timeline row rather than a new enum value; the hourly sweep means a video can outlive its clock by up to ~1 h.
+
 ---
 
 # CHANGE LOG
@@ -465,3 +471,4 @@ Context: `TB_SMS_INBOX_TWILIO_ADDENDUM.md` executed on branch `feat/sms-inbox` (
 - 2026-06-19 — Q43–Q49 added + resolved for the Tax-Season Rollforward addendum. Built to defaults; operator changed Q44 (carry retainer/billing terms) and Q46 (appointment-only opt-in). Q46 + Q48 (wizard inactive toggle) built. Q44 built: billing fields carry on the clone; retainer carried as an intent **note** (retainers are offer-at-billing/payment-gated, so no funded retainer is fabricated).
 - 2026-06-19 — Q50–Q60 added + resolved for the AI Pricing Suggestion addendum (migration 0178). Deterministic engine (÷-margin, burdened-cost base, once-only economic factor, confidence-scaled range, thin-cohort fallback); LLM writes the rationale only with a templated fallback; decisions audit-logged (no fee write). Periodic economic-index worker deferred (manual/admin refresh ships).
 - 2026-09-02 — Q66–Q70 added + built to defaults for the Two-Way SMS Inbox (Twilio) addendum (migrations 0233–0234; `STATE.md`).
+- 2026-09-03 — Q71 added + built to default for engagement videos (migration 0235; `ops/docs/progress/engagement-videos.md`).
