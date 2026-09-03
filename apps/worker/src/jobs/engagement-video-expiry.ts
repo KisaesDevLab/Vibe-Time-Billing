@@ -56,8 +56,32 @@ export async function runEngagementVideoExpiry(
 
   let expired = 0;
   let storageErrors = 0;
+  let reprieved = 0;
   const expiredIds: string[] = [];
   for (const row of due) {
+    // Flip FIRST, and re-check the clock in the predicate. Staff can extend
+    // retention between our SELECT and this row's turn; deleting the object
+    // before checking destroyed a video they had just extended, and the old
+    // status-only guard still marked it EXPIRED with a future expires_at.
+    const flipped = await db
+      .update(engagementVideos)
+      .set({ status: 'EXPIRED', expiredAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(engagementVideos.id, row.id),
+          eq(engagementVideos.status, 'AVAILABLE'),
+          lte(engagementVideos.expiresAt, now),
+        ),
+      )
+      .returning({ id: engagementVideos.id });
+    if (flipped.length === 0) {
+      reprieved += 1;
+      continue;
+    }
+    expired += 1;
+    expiredIds.push(row.id);
+    // Best-effort: the row is already EXPIRED so the portal will 410 even
+    // if the object outlives it.
     if (storage) {
       try {
         await storage.delete(row.storageKey);
@@ -65,18 +89,9 @@ export async function runEngagementVideoExpiry(
         storageErrors += 1;
         log.warn(
           { err, videoId: row.id, storageKey: row.storageKey },
-          'engagement-video-expiry: storage delete failed; expiring row anyway',
+          'engagement-video-expiry: storage delete failed; row already expired',
         );
       }
-    }
-    const flipped = await db
-      .update(engagementVideos)
-      .set({ status: 'EXPIRED', expiredAt: now, updatedAt: now })
-      .where(and(eq(engagementVideos.id, row.id), eq(engagementVideos.status, 'AVAILABLE')))
-      .returning({ id: engagementVideos.id });
-    if (flipped.length > 0) {
-      expired += 1;
-      expiredIds.push(row.id);
     }
   }
 
@@ -96,7 +111,7 @@ export async function runEngagementVideoExpiry(
   }
 
   log.info(
-    { scanned: due.length, expired, storageErrors, at: now.toISOString() },
+    { scanned: due.length, expired, reprieved, storageErrors, at: now.toISOString() },
     'engagement-video-expiry tick complete',
   );
   return { scanned: due.length, expired, storageErrors };

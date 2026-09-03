@@ -20,11 +20,18 @@ let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
 let deleted: string[];
 let failDelete: boolean;
+/** Row status observed at the moment storage.delete was called. */
+let statusAtDelete: Array<string | undefined>;
 
 function storage(): StorageClient {
   return {
     kind: 'mock',
     delete: async (key: string) => {
+      const [row] = await harness.db
+        .select({ status: engagementVideos.status })
+        .from(engagementVideos)
+        .where(eq(engagementVideos.storageKey, key));
+      statusAtDelete.push(row?.status);
       if (failDelete) throw new Error('boom');
       deleted.push(key);
     },
@@ -61,6 +68,7 @@ beforeEach(async () => {
   harness = await buildPgliteHarness();
   seed = await seedMinimalFirm(harness.db);
   deleted = [];
+  statusAtDelete = [];
   failDelete = false;
 });
 afterEach(async () => {
@@ -103,6 +111,34 @@ describe('runEngagementVideoExpiry', () => {
     expect(again.expired).toBe(0);
   });
 
+  it('flips the row to EXPIRED before deleting the object', async () => {
+    // Ordering matters: deleting first meant a retention extension landing
+    // mid-tick destroyed a video staff had just extended, while the
+    // status-only guard still marked it EXPIRED with a future expires_at.
+    await insertVideo({ expiresAt: new Date(Date.now() - 1000) });
+    const r = await runEngagementVideoExpiry(harness.db, storage(), silent);
+    expect(r.expired).toBe(1);
+    expect(statusAtDelete).toEqual(['EXPIRED']);
+  });
+
+  it('leaves a video alone when its clock moved into the future', async () => {
+    const v = await insertVideo({ expiresAt: new Date(Date.now() - 1000) });
+    // Model the extension by moving the clock out before the tick runs; the
+    // update predicate re-checks expires_at, not just the status.
+    await harness.db
+      .update(engagementVideos)
+      .set({ expiresAt: new Date(Date.now() + 30 * DAY) })
+      .where(eq(engagementVideos.id, v.id));
+    const r = await runEngagementVideoExpiry(harness.db, storage(), silent);
+    expect(r.expired).toBe(0);
+    expect(deleted).toEqual([]);
+    const [row] = await harness.db
+      .select()
+      .from(engagementVideos)
+      .where(eq(engagementVideos.id, v.id));
+    expect(row?.status).toBe('AVAILABLE');
+  });
+
   it('still expires the row when the storage delete fails', async () => {
     failDelete = true;
     const due = await insertVideo({ expiresAt: new Date(Date.now() - 1000) });
@@ -125,10 +161,10 @@ describe('runEngagementVideoExpiry', () => {
 });
 
 describe('runPendingVideoUploadSweep', () => {
-  it('hard-deletes stale reservations only', async () => {
+  it('hard-deletes abandoned reservations only', async () => {
     const stale = await insertVideo({
       status: 'PENDING_UPLOAD',
-      uploadedAt: new Date(Date.now() - 3 * 3600 * 1000),
+      uploadedAt: new Date(Date.now() - 13 * 3600 * 1000),
     });
     const fresh = await insertVideo({
       status: 'PENDING_UPLOAD',
@@ -136,7 +172,7 @@ describe('runPendingVideoUploadSweep', () => {
     });
     const live = await insertVideo({
       status: 'AVAILABLE',
-      uploadedAt: new Date(Date.now() - 3 * 3600 * 1000),
+      uploadedAt: new Date(Date.now() - 13 * 3600 * 1000),
     });
     const r = await runPendingVideoUploadSweep(harness.db, storage(), silent);
     expect(r.deleted).toBe(1);
@@ -145,5 +181,27 @@ describe('runPendingVideoUploadSweep', () => {
       (x) => x.id,
     );
     expect(ids.sort()).toEqual([fresh.id, live.id].sort());
+  });
+
+  it('never sweeps an upload that could still be streaming', async () => {
+    // uploaded_at is stamped when the PUT STARTS and a signed PUT keeps
+    // going past its 60-minute expiry, so a 2 GB upload on a slow uplink is
+    // still in flight hours later. The old 60-minute cutoff deleted the row
+    // mid-transfer and orphaned the object.
+    for (const hours of [1.5, 3, 8]) {
+      const inFlight = await insertVideo({
+        status: 'PENDING_UPLOAD',
+        uploadedAt: new Date(Date.now() - hours * 3600 * 1000),
+      });
+      const r = await runPendingVideoUploadSweep(harness.db, storage(), silent);
+      expect(r.deleted).toBe(0);
+      const [row] = await harness.db
+        .select()
+        .from(engagementVideos)
+        .where(eq(engagementVideos.id, inFlight.id));
+      expect(row?.status).toBe('PENDING_UPLOAD');
+      await harness.db.delete(engagementVideos).where(eq(engagementVideos.id, inFlight.id));
+    }
+    expect(deleted).toEqual([]);
   });
 });

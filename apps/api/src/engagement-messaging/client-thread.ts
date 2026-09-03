@@ -5,7 +5,7 @@
 // 0235 video-reply route. Keeps the staff-routing rule in one place so
 // a client message can never land in a thread nobody at the firm sees.
 
-import { and, eq, isNotNull, isNull, ne } from 'drizzle-orm';
+import { and, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -64,7 +64,15 @@ export async function resolveClientThreadStaffIds(
   return staffIds;
 }
 
-async function activeMemberIds(
+/**
+ * Everyone who has EVER been a member of the thread, soft-removed rows
+ * included. Filtering those out would silently re-add someone a staff
+ * member deliberately removed (the unique indexes are partial on
+ * removed_at IS NULL, so the insert succeeds rather than erroring), undoing
+ * a revocation with no audit trail. Re-admitting someone is a deliberate
+ * staff action, never a side effect of a client replying.
+ */
+async function knownMemberIds(
   db: Database,
   threadId: string,
 ): Promise<{ staff: Set<string>; portal: Set<string> }> {
@@ -74,7 +82,7 @@ async function activeMemberIds(
       portalIdentityId: threadMembers.portalIdentityId,
     })
     .from(threadMembers)
-    .where(and(eq(threadMembers.threadId, threadId), isNull(threadMembers.removedAt)));
+    .where(eq(threadMembers.threadId, threadId));
   const staff = new Set<string>();
   const portal = new Set<string>();
   for (const r of rows) {
@@ -86,12 +94,23 @@ async function activeMemberIds(
 
 /**
  * Resolve (creating if needed) the engagement's client-facing thread and
- * make sure both sides can see it: the assigned staff team plus every
- * portal identity with ACTIVE access to the client. Idempotent.
+ * make sure both sides can see it: the assigned staff team plus the portal
+ * identities named in `portalIdentityIds`. Idempotent.
+ *
+ * `portalIdentityIds` is deliberately explicit. Admitting every ACTIVE
+ * contact of the client would mean one contact replying to a video
+ * retroactively opens the whole thread backlog to the entire household,
+ * bypassing the per-identity membership control staff otherwise have.
+ * Callers pass just the person who acted.
  */
 export async function ensureEngagementClientThread(
   db: Database,
-  args: { firmId: string; engagementId: string; creatorAppUserId?: string },
+  args: {
+    firmId: string;
+    engagementId: string;
+    creatorAppUserId?: string;
+    portalIdentityIds?: readonly string[];
+  },
 ): Promise<{ threadId: string; staffIds: Set<string> } | null> {
   const [eng] = await db
     .select({
@@ -126,14 +145,24 @@ export async function ensureEngagementClientThread(
     clientId: eng.clientId,
     partnerInChargeId: eng.partnerInChargeId,
   });
-  const accessRows = await db
-    .select({ identityId: clientPortalAccess.portalIdentityId })
-    .from(clientPortalAccess)
-    .where(
-      and(eq(clientPortalAccess.clientId, eng.clientId), eq(clientPortalAccess.status, 'ACTIVE')),
-    );
+  // Only identities the caller named, and only those that still hold
+  // ACTIVE access to this client.
+  const wanted = args.portalIdentityIds ?? [];
+  const accessRows =
+    wanted.length === 0
+      ? []
+      : await db
+          .select({ identityId: clientPortalAccess.portalIdentityId })
+          .from(clientPortalAccess)
+          .where(
+            and(
+              eq(clientPortalAccess.clientId, eng.clientId),
+              eq(clientPortalAccess.status, 'ACTIVE'),
+              inArray(clientPortalAccess.portalIdentityId, [...wanted]),
+            ),
+          );
 
-  const members = await activeMemberIds(db, threadId);
+  const members = await knownMemberIds(db, threadId);
   for (const sid of staffIds) {
     if (members.staff.has(sid)) continue;
     await db.insert(threadMembers).values({

@@ -370,33 +370,43 @@ export function createPortalVideoRouter(deps: PortalVideoRoutesDeps): Router {
         .returning({ id: engagementVideoPlays.id });
       playId = play!.id;
 
-      // Re-read under the transaction so two identities pressing play at
-      // the same second can't both think they were first.
-      const [fresh] = await tx
-        .select({ firstPlayedAt: engagementVideos.firstPlayedAt })
-        .from(engagementVideos)
-        .where(eq(engagementVideos.id, v.id))
-        .limit(1);
-      firstPlay = !fresh?.firstPlayedAt;
-      const firstPlayedAt = fresh?.firstPlayedAt ?? now;
-      if (firstPlay) {
-        expiresAt = coreVideos.computeVideoExpiresAt({
-          uploadedAt: v.uploadedAt,
-          firstPlayedAt,
-          deleteAfterDays: v.deleteAfterDays,
-          deleteDaysAfterFirstPlay: v.deleteDaysAfterFirstPlay,
-        });
-      }
-      await tx
+      // Claim "first play" with a CONDITIONAL update, not a read-then-write.
+      // READ COMMITTED gives a statement snapshot, not mutual exclusion:
+      // two identities pressing play in the same second would both read
+      // NULL, both believe they were first, and both write a timeline row.
+      // Only the transaction whose UPDATE matches the IS NULL predicate
+      // wins, and the loser leaves the winner's clock intact.
+      const claimedFirst = await tx
         .update(engagementVideos)
         .set({
-          firstPlayedAt,
+          firstPlayedAt: now,
           lastPlayedAt: now,
           playCount: sql`${engagementVideos.playCount} + 1`,
-          ...(firstPlay ? { expiresAt } : {}),
+          expiresAt: coreVideos.computeVideoExpiresAt({
+            uploadedAt: v.uploadedAt,
+            firstPlayedAt: now,
+            deleteAfterDays: v.deleteAfterDays,
+            deleteDaysAfterFirstPlay: v.deleteDaysAfterFirstPlay,
+          }),
           updatedAt: now,
         })
-        .where(eq(engagementVideos.id, v.id));
+        .where(and(eq(engagementVideos.id, v.id), isNull(engagementVideos.firstPlayedAt)))
+        .returning({ expiresAt: engagementVideos.expiresAt });
+      firstPlay = claimedFirst.length > 0;
+      if (firstPlay) {
+        expiresAt = claimedFirst[0]?.expiresAt ?? null;
+      } else {
+        const [after] = await tx
+          .update(engagementVideos)
+          .set({
+            lastPlayedAt: now,
+            playCount: sql`${engagementVideos.playCount} + 1`,
+            updatedAt: now,
+          })
+          .where(eq(engagementVideos.id, v.id))
+          .returning({ expiresAt: engagementVideos.expiresAt });
+        expiresAt = after?.expiresAt ?? null;
+      }
 
       if (firstPlay) {
         const [me] = await tx
@@ -615,24 +625,31 @@ export function createPortalVideoRouter(deps: PortalVideoRoutesDeps): Router {
       return;
     }
     const v = found.video;
+    // Check the archived state BEFORE touching membership. Ensuring the
+    // thread inserts thread_member rows, so doing it first meant a reply
+    // refused with 409 still permanently granted this client read access to
+    // a closed engagement's conversation.
+    const [existingLink] = await db
+      .select({ threadId: engagementThreadLinks.threadId, status: threads.status })
+      .from(engagementThreadLinks)
+      .innerJoin(threads, eq(threads.id, engagementThreadLinks.threadId))
+      .where(eq(engagementThreadLinks.engagementId, v.engagementId))
+      .limit(1);
+    if (existingLink?.status === 'ARCHIVED') {
+      res.status(409).json({ error: 'thread_archived' });
+      return;
+    }
     const ensured = await ensureEngagementClientThread(db, {
       firmId: v.firmId,
       engagementId: v.engagementId,
+      // Only the person replying joins the thread — not every contact.
+      portalIdentityIds: [session.portalIdentityId],
     });
     if (!ensured) {
       res.status(500).json({ error: 'thread_create_failed' });
       return;
     }
     const { threadId, staffIds } = ensured;
-    const [thread] = await db
-      .select({ status: threads.status })
-      .from(threads)
-      .where(eq(threads.id, threadId))
-      .limit(1);
-    if (thread?.status === 'ARCHIVED') {
-      res.status(409).json({ error: 'thread_archived' });
-      return;
-    }
     const body = parsed.data.body;
     let messageId: string | undefined;
     try {

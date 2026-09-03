@@ -56,3 +56,42 @@ Plan of record: `~/.claude/plans/i-want-to-add-abundant-flamingo.md` (decisions 
 - Live B2 smoke (real presigned PUT from Chrome, Range playback on iPhone Safari / Android Chrome, HEVC .mov on Windows).
 - EmailIt + Twilio delivery of `engagement_video_ready`.
 - Deploy: migration 0235, api + worker recreate (`--no-deps`), `init-static` re-run for web + portal, bucket CORS unchanged (PUT/GET already allowed for practice + portal origins).
+
+## Post-review fixes (2026-09-03)
+
+A code review of the branch found nine issues; all are fixed on the branch.
+
+- **Restricted clients (0165) were not enforced** on any of the seven staff
+  video routes — the hidden Videos tab was a UI-only gate, so a blocked
+  staffer could list, upload to and delete a restricted client's videos and
+  read viewer names and emails from the play log. `blockIfClientRestricted`
+  now guards all seven.
+- **A refused reply still granted thread access.** The ARCHIVED check ran
+  after `ensureEngagementClientThread` had inserted members, and the message
+  route never filtered `threads.status`. The archived check now runs first.
+- **One reply promoted every contact.** `ensureEngagementClientThread` took
+  every ACTIVE `client_portal_access` row, so one contact replying opened the
+  thread backlog to the whole household. It now takes an explicit
+  `portalIdentityIds` and the portal passes only the replier.
+- **Soft-removed members were silently re-added** (the unique indexes are
+  partial on `removed_at IS NULL`, so the insert succeeded). Membership is now
+  keyed on *any* row, removed included — re-admitting is a staff action.
+- **A failed notification was recorded as sent.** `notified_at` was stamped
+  before the fire-and-forget producer ran with its error swallowed, so a Redis
+  blip permanently suppressed the client's email/SMS/portal notice. The
+  producer is awaited, `notified_at` is stamped only on success, failures are
+  logged and `notifyFailed` comes back in the response. The status flip is now
+  guarded on `PENDING_UPLOAD` so overlapping completes cannot both notify.
+- **The expiry sweep deleted before it flipped**, and its guard ignored
+  `expires_at` — a retention extension landing mid-tick destroyed the object
+  anyway. It now flips first, guarded on `lte(expires_at, now)`, and deletes
+  only after the flip wins.
+- **The pending-video sweep cutoff equalled the presign TTL** (60 min), so a
+  2 GB upload still streaming past the hour lost its row and orphaned its
+  object. Raised to 12 hours.
+- **First play was a read-then-write** under READ COMMITTED, so simultaneous
+  plays both claimed it and both wrote a timeline row. It is now a conditional
+  `UPDATE … WHERE first_played_at IS NULL … RETURNING`.
+- **Cancel during 'finalizing'** raced `/complete`; the button is disabled
+  once there is nothing left to cancel.
+

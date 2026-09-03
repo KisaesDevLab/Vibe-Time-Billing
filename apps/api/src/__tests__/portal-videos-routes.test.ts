@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import express from 'express';
 import type { Redis } from 'ioredis';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -18,6 +18,7 @@ import {
   messages,
   staffNotifications,
   threadMembers,
+  threads,
 } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
@@ -25,6 +26,7 @@ import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pgli
 import { setApplianceLockState } from '../crypto/boot';
 import { getFirmKeyManager, resetFirmKeyManagerForTests } from '../crypto/manager';
 import { createPortalVideoRouter, deviceKindFromUserAgent } from '../portal/videos';
+import { generateWrappedTDek } from '../engagement-messaging/thread-crypto';
 
 let harness: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
@@ -376,7 +378,9 @@ describe('portal videos', () => {
       .from(threadMembers)
       .where(eq(threadMembers.threadId, threadId));
     const portalMembers = members.filter((m) => m.portalIdentityId).map((m) => m.portalIdentityId);
-    expect(portalMembers.sort()).toEqual([identityId, otherIdentityId].sort());
+    // ONLY the contact who replied joins. Admitting every active contact
+    // would retroactively open the thread's backlog to the whole household.
+    expect(portalMembers).toEqual([identityId]);
     // Fallback routing: partner-in-charge (seed user) gets the thread.
     expect(members.some((m) => m.appUserId === seed.appUserId)).toBe(true);
 
@@ -438,5 +442,80 @@ describe('deviceKindFromUserAgent', () => {
       'desktop',
     );
     expect(deviceKindFromUserAgent(null)).toBe('unknown');
+  });
+});
+
+describe('portal videos — thread membership is not widened by a reply', () => {
+  it('refuses a reply on an archived thread WITHOUT granting membership first', async () => {
+    const id = await insertVideo();
+    // Staff-side conversation exists and the engagement has since closed.
+    const wrapped = generateWrappedTDek(harness.db, seed.firmId);
+    const [t] = await harness.db
+      .insert(threads)
+      .values({
+        firmId: seed.firmId,
+        clientId: seed.clientId,
+        tDekWrapped: wrapped,
+        title: 'Closed engagement',
+        status: 'ARCHIVED',
+      })
+      .returning({ id: threads.id });
+    await harness.db
+      .insert(engagementThreadLinks)
+      .values({ engagementId: seed.engagementId, threadId: t!.id });
+
+    const res = await request(app()).post(`/videos/${id}/reply`).send({ body: 'hello?' });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('thread_archived');
+
+    // The refusal must not have leaked read access to the closed thread.
+    const members = await harness.db
+      .select()
+      .from(threadMembers)
+      .where(eq(threadMembers.threadId, t!.id));
+    expect(members.filter((m) => m.portalIdentityId)).toHaveLength(0);
+
+    const convo = await request(app()).get(`/videos/${id}/messages`);
+    expect(convo.body.threadId).toBeNull();
+    expect(convo.body.items).toEqual([]);
+  });
+
+  it('does not re-add a contact staff deliberately removed from the thread', async () => {
+    const id = await insertVideo();
+    const first = await request(app()).post(`/videos/${id}/reply`).send({ body: 'first' });
+    const threadId = first.body.threadId as string;
+
+    // Staff remove the other contact after an ownership change. (They are
+    // not a member yet, so add then soft-remove to model the revocation.)
+    await harness.db
+      .insert(threadMembers)
+      .values({ threadId, portalIdentityId: otherIdentityId, memberRole: 'client' });
+    await harness.db
+      .update(threadMembers)
+      .set({ removedAt: new Date() })
+      .where(
+        and(
+          eq(threadMembers.threadId, threadId),
+          eq(threadMembers.portalIdentityId, otherIdentityId),
+        ),
+      );
+
+    const again = await request(app({ identity: otherIdentityId }))
+      .post(`/videos/${id}/reply`)
+      .send({ body: 'let me back in' });
+    expect(again.status).toBe(201);
+
+    const rows = await harness.db
+      .select()
+      .from(threadMembers)
+      .where(
+        and(
+          eq(threadMembers.threadId, threadId),
+          eq(threadMembers.portalIdentityId, otherIdentityId),
+        ),
+      );
+    // Still exactly one row, still soft-removed: the revocation stands.
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.removedAt).not.toBeNull();
   });
 });

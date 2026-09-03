@@ -28,6 +28,9 @@ import type { StorageClient } from '@vibe/storage';
 import { incCounter } from '../metrics';
 
 const DEFAULT_MAX_AGE_MINUTES = 30;
+/** Video reservations only: comfortably beyond the 60-minute presigned PUT
+ *  lifetime so a large in-flight upload is never swept out from under. */
+const VIDEO_MIN_AGE_MINUTES = 12 * 60;
 const DEFAULT_BATCH_SIZE = 100;
 
 export interface PendingUploadSweepOpts {
@@ -106,8 +109,14 @@ export async function runPendingVideoUploadSweep(
     opts.maxAgeMinutes ??
     (parseInt(process.env['PENDING_UPLOAD_MAX_AGE_MIN'] ?? '', 10) || DEFAULT_MAX_AGE_MINUTES);
   const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
-  // Presigned PUTs for videos live 60 minutes; never sweep before that.
-  const cutoff = new Date(now.getTime() - Math.max(maxAgeMinutes, 60) * 60_000);
+  // uploaded_at is stamped when the browser STARTS the PUT, and a signed
+  // PUT that began before its 60-minute expiry keeps streaming afterwards.
+  // A 2 GB upload on a slow office uplink — the case the TTL was sized for
+  // — can still be in flight well past the hour, so a 60-minute cutoff
+  // deleted the row mid-transfer, 404'd the completion and orphaned the
+  // object. Give it real headroom; an abandoned reservation is invisible
+  // until then anyway.
+  const cutoff = new Date(now.getTime() - Math.max(maxAgeMinutes, VIDEO_MIN_AGE_MINUTES) * 60_000);
 
   const stale = await db
     .select({ id: engagementVideos.id, storageKey: engagementVideos.storageKey })

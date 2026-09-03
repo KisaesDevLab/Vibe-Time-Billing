@@ -104,6 +104,12 @@ export function VideoUploadDialog({
 
   const busy =
     state.phase === 'reserving' || state.phase === 'uploading' || state.phase === 'finalizing';
+  // Aborting during 'finalizing' fires DELETE against a video whose
+  // /complete is already in flight: either the row is hard-deleted and
+  // complete 404s (a spurious error on a cancel), or complete wins and the
+  // client is emailed about a video that is then deleted. There is nothing
+  // left to cancel by then, so don't offer it.
+  const cancellable = state.phase === 'reserving' || state.phase === 'uploading';
 
   useEffect(() => {
     if (state.phase === 'done') onUploaded();
@@ -261,8 +267,8 @@ export function VideoUploadDialog({
 
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
           {busy ? (
-            <Button size="sm" variant="ghost" type="button" onClick={abort}>
-              Cancel upload
+            <Button size="sm" variant="ghost" type="button" onClick={abort} disabled={!cancellable}>
+              {cancellable ? 'Cancel upload' : 'Finishing…'}
             </Button>
           ) : (
             <>

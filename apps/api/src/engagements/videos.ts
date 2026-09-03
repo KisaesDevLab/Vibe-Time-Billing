@@ -14,7 +14,7 @@
 // defaults) and materialised into expires_at by computeVideoExpiresAt.
 
 import express, { type Request, type Response, type Router } from 'express';
-import { and, desc, eq, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, isNull, ne, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import { videos as coreVideos } from '@vibe/core';
@@ -32,6 +32,8 @@ import {
 import { buildStorageClient, sanitizeForWindows, type StorageClient } from '@vibe/storage';
 
 import { emitAudit } from '../auth/audit';
+import { blockIfClientRestricted } from '../clients/access';
+import { logger } from '../logger';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
 
 export const VIDEO_MIME_TYPES = ['video/mp4', 'video/quicktime', 'video/webm'] as const;
@@ -256,6 +258,7 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
         res.status(404).json({ error: 'engagement_not_found' });
         return;
       }
+      if (await blockIfClientRestricted(deps, req, res, eng.clientId)) return;
       const rows = await deps.db
         .select(LIST_COLUMNS)
         .from(engagementVideos)
@@ -299,6 +302,7 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
         res.status(404).json({ error: 'engagement_not_found' });
         return;
       }
+      if (await blockIfClientRestricted(deps, req, res, eng.clientId)) return;
 
       const body = parsed.data;
       let deleteAfterDays = body.deleteAfterDays;
@@ -425,6 +429,7 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
         res.status(404).json({ error: 'video_not_found' });
         return;
       }
+      if (await blockIfClientRestricted(deps, req, res, row.clientId)) return;
       if (row.status !== 'PENDING_UPLOAD') {
         const current = await loadVideoById(db, firmId, row.id);
         res.json({ ok: true, alreadyComplete: true, video: current ? toRow(current) : null });
@@ -449,7 +454,9 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
         deleteDaysAfterFirstPlay: row.deleteDaysAfterFirstPlay,
       });
       const shouldNotify = row.notifyClient && !row.notifiedAt && !!deps.onVideoReady;
-      await db
+      // Guarded on the pending status so two overlapping completes cannot
+      // both go on to stage a notification.
+      const flipped = await db
         .update(engagementVideos)
         .set({
           etag: meta.etag,
@@ -457,10 +464,15 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
           status: 'AVAILABLE',
           uploadedAt,
           expiresAt,
-          notifiedAt: shouldNotify ? uploadedAt : row.notifiedAt,
           updatedAt: uploadedAt,
         })
-        .where(eq(engagementVideos.id, row.id));
+        .where(and(eq(engagementVideos.id, row.id), eq(engagementVideos.status, 'PENDING_UPLOAD')))
+        .returning({ id: engagementVideos.id });
+      if (flipped.length === 0) {
+        const current = await loadVideoById(db, firmId, row.id);
+        res.json({ ok: true, alreadyComplete: true, video: current ? toRow(current) : null });
+        return;
+      }
 
       await emitAudit(db, {
         action: 'UPDATE',
@@ -472,22 +484,43 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
         userAgent: req.get('user-agent') ?? null,
       }).catch(() => undefined);
 
+      // Stamp notified_at only once the producer has actually staged the
+      // send. Stamping it up front meant a Redis blip silently and
+      // permanently suppressed the client's email/SMS/portal notice while
+      // the row claimed it had gone out, with no retry and no error.
+      let notifyFailed = false;
       if (shouldNotify) {
-        void deps.onVideoReady!({
-          firmId,
-          engagementId: row.engagementId,
-          clientId: row.clientId,
-          videoId: row.id,
-          title: row.title,
-          message: row.message,
-          actorAppUserId: session.appUserId,
-          ip: req.ip ?? null,
-          userAgent: req.get('user-agent') ?? null,
-        }).catch(() => undefined);
+        try {
+          await deps.onVideoReady!({
+            firmId,
+            engagementId: row.engagementId,
+            clientId: row.clientId,
+            videoId: row.id,
+            title: row.title,
+            message: row.message,
+            actorAppUserId: session.appUserId,
+            ip: req.ip ?? null,
+            userAgent: req.get('user-agent') ?? null,
+          });
+          await db
+            .update(engagementVideos)
+            .set({ notifiedAt: new Date(), updatedAt: new Date() })
+            .where(and(eq(engagementVideos.id, row.id), isNull(engagementVideos.notifiedAt)));
+        } catch (err) {
+          notifyFailed = true;
+          logger.error(
+            { err, videoId: row.id, clientId: row.clientId },
+            'video ready notification could not be staged; notified_at left unset',
+          );
+        }
       }
 
       const current = await loadVideoById(db, firmId, row.id);
-      res.json({ ok: true, video: current ? toRow(current) : null });
+      res.json({
+        ok: true,
+        ...(notifyFailed ? { notifyFailed: true } : {}),
+        video: current ? toRow(current) : null,
+      });
     },
   );
 
@@ -511,6 +544,7 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
       res.status(404).json({ error: 'video_not_found' });
       return;
     }
+    if (await blockIfClientRestricted(deps, req, res, before.clientId)) return;
     if (before.status === 'EXPIRED' || before.status === 'DELETED') {
       res.status(409).json({ error: 'video_not_editable', status: before.status });
       return;
@@ -576,6 +610,7 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
         id: engagementVideos.id,
         status: engagementVideos.status,
         storageKey: engagementVideos.storageKey,
+        clientId: engagementVideos.clientId,
       })
       .from(engagementVideos)
       .where(and(eq(engagementVideos.id, id!), eq(engagementVideos.firmId, session.firmId)))
@@ -584,6 +619,7 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
       res.status(404).json({ error: 'video_not_found' });
       return;
     }
+    if (await blockIfClientRestricted(deps, req, res, row.clientId)) return;
     if (row.status === 'DELETED') {
       res.json({ ok: true, alreadyDeleted: true });
       return;
@@ -634,6 +670,7 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
       res.status(404).json({ error: 'video_not_found' });
       return;
     }
+    if (await blockIfClientRestricted(deps, req, res, video.clientId)) return;
     const rows = await deps.db
       .select({
         id: engagementVideoPlays.id,
@@ -680,6 +717,7 @@ export function createEngagementVideoRouters(deps: EngagementVideoRoutesDeps): {
       res.json({ items: [] });
       return;
     }
+    if (await blockIfClientRestricted(deps, req, res, clientId!)) return;
     const rows = await deps.db
       .select({ ...LIST_COLUMNS, engagementName: engagements.name })
       .from(engagementVideos)

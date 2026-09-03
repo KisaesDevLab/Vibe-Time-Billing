@@ -20,6 +20,7 @@ let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
 let objects: Map<string, StorageObjectMeta>;
 let deleted: string[];
 let ready: VideoReadyEvent[];
+let onReadyThrows = false;
 
 function fakeStorage(): StorageClient {
   return {
@@ -46,6 +47,7 @@ function app(userId = seed.appUserId, roles: Array<'admin' | 'staff'> = ['admin'
     storageClient: fakeStorage(),
     fakeUserRoles: new Map([[userId, roles]]),
     onVideoReady: async (e) => {
+      if (onReadyThrows) throw new Error('redis_down');
       ready.push(e);
     },
   });
@@ -82,6 +84,7 @@ beforeEach(async () => {
   objects = new Map();
   deleted = [];
   ready = [];
+  onReadyThrows = false;
 });
 
 afterEach(async () => {
@@ -290,11 +293,76 @@ describe('engagement videos — staff routes', () => {
     expect(res.body.deleteDaysAfterFirstPlay).toBe(3);
   });
 
+  it('leaves notified_at unset and reports notifyFailed when staging throws', async () => {
+    const r = await reserve();
+    await land(r.storageKey);
+    onReadyThrows = true;
+    const done = await request(app()).post(`/videos/${r.videoId}/complete`).send({});
+    expect(done.status).toBe(200);
+    expect(done.body.notifyFailed).toBe(true);
+    expect(done.body.video.status).toBe('AVAILABLE');
+    // Stamping notified_at up front made a transient Redis failure look
+    // like a delivered notification, forever.
+    expect(done.body.video.notifiedAt).toBeNull();
+  });
+
   it('plays endpoint returns the video summary and an empty log', async () => {
     const r = await reserve();
     const res = await request(app()).get(`/videos/${r.videoId}/plays`);
     expect(res.status).toBe(200);
     expect(res.body.video.id).toBe(r.videoId);
     expect(res.body.items).toEqual([]);
+  });
+});
+
+describe('engagement videos — restricted clients (0165)', () => {
+  let blockedUserId: string;
+
+  beforeEach(async () => {
+    const r = (await harness.db.execute(
+      sql`INSERT INTO app_user (firm_id, email, full_name, first_name, last_name)
+          VALUES (${seed.firmId}, 'blocked@t.example', 'Blocked', 'B', 'K') RETURNING id`,
+    )) as unknown as { rows: { id: string }[] };
+    blockedUserId = r.rows[0]!.id;
+    await harness.db.execute(sql`UPDATE client SET restricted = true WHERE id = ${seed.clientId}`);
+  });
+
+  function blocked() {
+    return request(app(blockedUserId, ['staff']));
+  }
+
+  it('403s every staff video surface for a staffer without access', async () => {
+    // Seeded as an admin so the fixture itself is not blocked.
+    const v = await reserve();
+    await land(v.storageKey);
+    await request(app()).post(`/videos/${v.videoId}/complete`).send({});
+
+    const list = await blocked().get(`/engagements/${seed.engagementId}/videos`);
+    expect(list.status).toBe(403);
+    expect(list.body.error).toBe('client_restricted');
+
+    const rollup = await blocked().get(`/clients/${seed.clientId}/videos`);
+    expect(rollup.status).toBe(403);
+
+    // The play log names viewers and their email addresses.
+    const plays = await blocked().get(`/videos/${v.videoId}/plays`);
+    expect(plays.status).toBe(403);
+
+    const upload = await blocked()
+      .post(`/engagements/${seed.engagementId}/videos`)
+      .send(reserveBody);
+    expect(upload.status).toBe(403);
+
+    const patched = await blocked().patch(`/videos/${v.videoId}`).send({ title: 'x' });
+    expect(patched.status).toBe(403);
+
+    const removed = await blocked().delete(`/videos/${v.videoId}`);
+    expect(removed.status).toBe(403);
+  });
+
+  it('still allows the partner-in-charge of the restricted client', async () => {
+    const partner = request(app(seed.appUserId, ['partner']));
+    const list = await partner.get(`/engagements/${seed.engagementId}/videos`);
+    expect(list.status).toBe(200);
   });
 });
