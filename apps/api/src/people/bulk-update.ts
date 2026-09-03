@@ -35,7 +35,7 @@ import { normalizeEmail, normalizePhone } from '@vibe/core/auth';
 
 import { emitAudit } from '../auth/audit';
 import { requirePermission, type RbacDeps } from '../auth/rbac-middleware';
-import { looseNameKey, parseCsv, sniffDelimiter } from '../clients/import';
+import { looseNameKey, parseCsv, sniffDelimiter, suffixConflict } from '../clients/import';
 import { logger } from '../logger';
 
 export interface PeopleBulkUpdateDeps extends RbacDeps {
@@ -108,6 +108,23 @@ export function digitsOnly(s: string | null | undefined): string | null {
   return d.length ? d : null;
 }
 
+/**
+ * Comparable phone key: the last 10 digits.
+ *
+ * Pasted values are normalized to +1XXXXXXXXXX before matching, while
+ * persons.phone holds whatever was typed ("(417) 592-7847") — the base
+ * columns are never normalized on write, which is why the trigger-owned
+ * *_e164 columns exist. Comparing raw digit strings therefore never
+ * matched an 11-digit normalized value against a 10-digit stored one, so
+ * the phone rung was dead for every legacy-formatted row and the
+ * "don't copy the same number into both fields" guard never fired.
+ */
+export function phoneKey(s: string | null | undefined): string | null {
+  const d = digitsOnly(s);
+  if (!d) return null;
+  return d.length > 10 ? d.slice(-10) : d;
+}
+
 // ---------------------------------------------------------------- context
 
 export interface DirectoryPerson {
@@ -116,6 +133,9 @@ export interface DirectoryPerson {
   email: string | null;
   phone: string | null;
   mobile: string | null;
+  /** Non-ACTIVE people are never match targets, but they still own their
+   *  email as far as the unique index is concerned. */
+  active?: boolean;
 }
 
 export interface DirectoryContext {
@@ -124,6 +144,14 @@ export interface DirectoryContext {
   byDigits: Map<string, string[]>;
   byName: Map<string, string[]>;
   byLooseName: Map<string, string[]>;
+  /**
+   * Email → owners across EVERY status. person_firm_email_uk has no status
+   * predicate, so an address held by an archived merge-loser still blocks
+   * the write. Checking only the ACTIVE directory made the preview look
+   * clean and then failed the UPDATE inside the transaction, rolling back
+   * the whole paste with a 409 that named no row.
+   */
+  emailOwners: Map<string, string[]>;
 }
 
 function push(map: Map<string, string[]>, key: string, id: string): void {
@@ -140,11 +168,14 @@ export function buildDirectoryContext(people: DirectoryPerson[]): DirectoryConte
     byDigits: new Map(),
     byName: new Map(),
     byLooseName: new Map(),
+    emailOwners: new Map(),
   };
   for (const p of people) {
+    if (p.email) push(ctx.emailOwners, p.email.trim().toLowerCase(), p.id);
+    if (p.active === false) continue;
     ctx.byId.set(p.id, p);
     if (p.email) push(ctx.byEmail, p.email.trim().toLowerCase(), p.id);
-    for (const d of [digitsOnly(p.phone), digitsOnly(p.mobile)]) if (d) push(ctx.byDigits, d, p.id);
+    for (const d of [phoneKey(p.phone), phoneKey(p.mobile)]) if (d) push(ctx.byDigits, d, p.id);
     const name = p.fullName.trim().toLowerCase();
     if (name) push(ctx.byName, name, p.id);
     const loose = looseNameKey(p.fullName);
@@ -232,7 +263,7 @@ export function matchPerson(
   | null {
   const steps: Array<{ by: MatchedBy; ids: string[] }> = [];
   if (row.email) steps.push({ by: 'email', ids: ctx.byEmail.get(row.email.toLowerCase()) ?? [] });
-  for (const d of [digitsOnly(row.mobile), digitsOnly(row.phone)]) {
+  for (const d of [phoneKey(row.mobile), phoneKey(row.phone)]) {
     if (d) steps.push({ by: 'phone', ids: ctx.byDigits.get(d) ?? [] });
   }
   const nameKey = row.name.trim().toLowerCase();
@@ -249,11 +280,21 @@ export function matchPerson(
       // person of that exact name who ISN'T this one means the row's email
       // or number belongs to somebody else.
       if (step.by === 'email' || step.by === 'phone') {
-        const named = ctx.byName.get(nameKey) ?? [];
+        // Consult the loose index as well: a stored "Jane A Smith" is not
+        // in byName under "jane smith", so an exact-name-only cross-check
+        // let a contact-key match quietly win over a different person of
+        // (nearly) the same name.
+        const named = ctx.byName.get(nameKey) ?? ctx.byLooseName.get(loose) ?? [];
         if (named.length === 1 && named[0] !== person.id) {
           const other = ctx.byId.get(named[0]!);
           if (other) return { conflict: true, keyed: person, named: other };
         }
+      }
+      // Sr and Jr share a loose key by design (so "Robert Moeller Jr"
+      // still matches "Robert Moeller"), but they are not the same person.
+      if (step.by === 'loose_name' && suffixConflict(row.name, person.fullName)) {
+        sawAmbiguous = true;
+        continue;
       }
       return { person, matchedBy: step.by };
     } else if (step.ids.length > 1) sawAmbiguous = true;
@@ -304,7 +345,10 @@ export function validatePeopleRows(
 
     if (!hit) {
       if (!opts.createMissing) return skip('not_in_platform');
-      if (email && (ctx.byEmail.has(email.toLowerCase()) || seenEmails.has(email.toLowerCase())))
+      if (
+        email &&
+        (ctx.emailOwners.has(email.toLowerCase()) || seenEmails.has(email.toLowerCase()))
+      )
         return skip('email_taken');
       if (email) seenEmails.add(email.toLowerCase());
       prepared.push({
@@ -335,7 +379,7 @@ export function validatePeopleRows(
     // Email. The (firm, lower(email)) unique index means a value owned by
     // somebody else can't be written at all — report rather than 409 later.
     if (email) {
-      const owners = ctx.byEmail.get(email.toLowerCase()) ?? [];
+      const owners = ctx.emailOwners.get(email.toLowerCase()) ?? [];
       const otherOwner = owners.find((id) => id !== person.id);
       if (otherOwner) {
         return skip('email_taken', ctx.byId.get(otherOwner)?.fullName ?? undefined);
@@ -361,9 +405,9 @@ export function validatePeopleRows(
       crossWarning: string,
     ): void => {
       if (!next) return;
-      const nd = digitsOnly(next);
-      if (nd && nd === digitsOnly(current)) return; // already exactly this
-      if (nd && nd === digitsOnly(other)) {
+      const nd = phoneKey(next);
+      if (nd && nd === phoneKey(current)) return; // already exactly this
+      if (nd && nd === phoneKey(other)) {
         warnings.push(crossWarning);
         return;
       }
@@ -442,9 +486,11 @@ async function loadDirectory(db: Database, firmId: string): Promise<DirectoryPer
       email: persons.email,
       phone: persons.phone,
       mobile: persons.mobile,
+      status: persons.status,
     })
     .from(persons)
-    .where(and(eq(persons.firmId, firmId), eq(persons.status, 'ACTIVE')));
+    .where(eq(persons.firmId, firmId))
+    .then((rows) => rows.map((r) => ({ ...r, active: r.status === 'ACTIVE' })));
 }
 
 /** Parse + validate; writes the 400 and returns null on failure. */

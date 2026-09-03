@@ -687,6 +687,29 @@ const NAME_SUFFIXES = new Set([
  * record — tax-software preparer names against staff, roster rows against
  * the person directory, and the duplicate-name view.
  */
+/**
+ * The generational suffix on a name, or ''. Two people whose names differ
+ * only by suffix are DIFFERENT people, and looseNameKey deliberately drops
+ * the suffix so "Robert Moeller Jr" still matches "Robert Moeller" — so
+ * callers that write must compare suffixes before trusting a loose match.
+ */
+export function nameSuffix(name: string): string {
+  const parts = name
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+  const last = parts[parts.length - 1];
+  return parts.length > 2 && last && NAME_SUFFIXES.has(last) ? last : '';
+}
+
+/** True when two names carry different generational suffixes (Sr vs Jr). */
+export function suffixConflict(a: string, b: string): boolean {
+  const sa = nameSuffix(a);
+  const sb = nameSuffix(b);
+  return sa !== '' && sb !== '' && sa !== sb;
+}
+
 export function looseNameKey(name: string): string {
   const parts = name
     .toLowerCase()
@@ -857,6 +880,8 @@ interface LookupContext {
   // externalId / lower(name) → existing client id (for upsert-onto-existing).
   clientIdByExternalId: Map<string, string>;
   clientIdByName: Map<string, string>;
+  /** Names held by more than one live client — never auto-matched. */
+  ambiguousClientNames: Set<string>;
   clientById: Map<string, ExistingClient>;
   // lower(role name) / role key → contact_role id.
   roleByName: Map<string, string>;
@@ -1006,6 +1031,9 @@ export function validateImportRows(
     // Existing-client match: external_id (the client id), else name.
     const externalId = cell(row, mapping.external_id);
     const nameKey = name.toLowerCase();
+    if (!externalId && ctx.ambiguousClientNames.has(nameKey)) {
+      return skip('ambiguous_name_match');
+    }
     const existingClientId = externalId
       ? (ctx.clientIdByExternalId.get(externalId) ?? null)
       : (ctx.clientIdByName.get(nameKey) ?? null);
@@ -1346,10 +1374,19 @@ async function buildContext(
   const clientIdByExternalId = new Map<string, string>();
   const clientIdByName = new Map<string, string>();
   const clientById = new Map<string, ExistingClient>();
+  const ambiguousClientNames = new Set<string>();
   for (const r of clientRows) {
     if (r.externalId) clientIdByExternalId.set(r.externalId, r.id);
-    if (!clientIdByName.has(r.name.toLowerCase())) clientIdByName.set(r.name.toLowerCase(), r.id);
     clientById.set(r.id, r);
+    // An archived duplicate must never win a name match — first-row-wins
+    // over an unordered query could rewrite the archived twin while the
+    // operator watched the live one, and the "not in your list" gap then
+    // pointed at the live client.
+    if (r.status === 'ARCHIVED') continue;
+    const key = r.name.toLowerCase();
+    const prior = clientIdByName.get(key);
+    if (prior && prior !== r.id) ambiguousClientNames.add(key);
+    else clientIdByName.set(key, r.id);
   }
 
   // Contact roles by name (for the *_role columns) and by key (slot defaults).
@@ -1401,6 +1438,7 @@ async function buildContext(
     officeByName,
     clientIdByExternalId,
     clientIdByName,
+    ambiguousClientNames,
     clientById,
     roleByName,
     roleByKey,

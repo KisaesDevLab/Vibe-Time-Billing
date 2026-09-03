@@ -367,3 +367,79 @@ describe('people bulk update — commit', () => {
     expect(hunterAudits).toHaveLength(0);
   });
 });
+
+describe('matcher does not update the wrong person', () => {
+  it('matches a legacy-formatted stored number (last 10 digits)', () => {
+    const ctx = buildDirectoryContext([
+      { id: 'p1', fullName: 'Dana Lane', email: null, phone: '(417) 592-7847', mobile: null },
+    ]);
+    // Pasted values are normalized to +1XXXXXXXXXX before matching; the
+    // stored value never is, so raw digit-string comparison never matched.
+    const hit = matchPerson(ctx, {
+      name: 'Dana Lane',
+      email: null,
+      mobile: '+14175927847',
+      phone: null,
+    });
+    expect(hit && 'person' in hit && hit.person.id).toBe('p1');
+    expect(hit && 'matchedBy' in hit && hit.matchedBy).toBe('phone');
+  });
+
+  it('refuses to cross a generational suffix on a loose-name match', () => {
+    const ctx = buildDirectoryContext([
+      { id: 'jr', fullName: 'Robert Moeller Jr', email: null, phone: null, mobile: null },
+    ]);
+    // Sr and Jr share a loose key by design so "Moeller Jr" still matches
+    // "Moeller" — but they are different people and must not be written.
+    const hit = matchPerson(ctx, {
+      name: 'Robert Moeller Sr',
+      email: null,
+      mobile: null,
+      phone: null,
+    });
+    expect(hit && 'person' in hit).toBe(false);
+
+    const same = matchPerson(ctx, {
+      name: 'Robert Moeller',
+      email: null,
+      mobile: null,
+      phone: null,
+    });
+    expect(same && 'person' in same && same.person.id).toBe('jr');
+  });
+
+  it('reports a conflict when a number belongs to a differently-spelled name', () => {
+    const ctx = buildDirectoryContext([
+      { id: 'john', fullName: 'John Smith', email: null, phone: '+14170000000', mobile: null },
+      { id: 'jane', fullName: 'Jane A Smith', email: null, phone: null, mobile: null },
+    ]);
+    // "Jane Smith" is not in byName (stored as "Jane A Smith"), so an
+    // exact-name-only cross-check let the phone rung write onto John.
+    const hit = matchPerson(ctx, {
+      name: 'Jane Smith',
+      email: null,
+      mobile: '+14170000000',
+      phone: null,
+    });
+    expect(hit && 'conflict' in hit).toBe(true);
+  });
+
+  it('treats an email held by an archived person as taken', () => {
+    const ctx = buildDirectoryContext([
+      { id: 'live', fullName: 'Dana Lane', email: null, phone: null, mobile: null },
+      {
+        id: 'gone',
+        fullName: 'Old Dupe',
+        email: 'dana@example.com',
+        phone: null,
+        mobile: null,
+        active: false,
+      },
+    ]);
+    // person_firm_email_uk has no status predicate, so the archived
+    // merge-loser still blocks the write — the ACTIVE-only view made the
+    // preview look clean and then rolled the whole paste back.
+    expect(ctx.emailOwners.get('dana@example.com')).toEqual(['gone']);
+    expect(ctx.byId.has('gone')).toBe(false);
+  });
+});
