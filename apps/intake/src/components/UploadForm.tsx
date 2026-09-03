@@ -13,6 +13,8 @@
 
 import { useEffect, useState } from 'react';
 
+import { CameraCapture, PHOTO_CAPTURE_ACCEPT, hasCameraApi } from '@vibe/ui';
+
 import { api, uploadRaw, type ApiError } from '../api-client';
 import {
   Check,
@@ -29,7 +31,6 @@ import {
   primaryButtonStyle,
   subheadStyle,
 } from '../ui';
-import { CameraCapture } from './CameraCapture';
 import { Turnstile } from './Turnstile';
 
 interface PendingFile {
@@ -115,11 +116,19 @@ export function UploadForm({
     setFiles((prev) => [...prev, ...next]);
   }
 
-  function addCapture(blob: Blob): void {
+  function addCapture(blob: Blob, meta?: { filename?: string }): void {
     seq += 1;
+    const mimeType = blob.type || 'image/jpeg';
+    const ext = mimeType === 'image/png' ? 'png' : 'jpg';
     setFiles((prev) => [
       ...prev,
-      { key: `c${seq}`, name: `scan-${seq}.jpg`, mimeType: 'image/jpeg', size: blob.size, blob },
+      {
+        key: `c${seq}`,
+        name: meta?.filename || `scan-${seq}.${ext}`,
+        mimeType,
+        size: blob.size,
+        blob,
+      },
     ]);
   }
 
@@ -369,9 +378,36 @@ export function UploadForm({
                   }}
                 />
               </label>
-              <button type="button" onClick={() => setCamera(true)} style={ghostButtonStyle}>
-                Scan with camera
-              </button>
+              <label
+                style={{
+                  ...ghostButtonStyle,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  cursor: 'pointer',
+                }}
+              >
+                📷 Take a photo
+                {/* Native camera app: works in every phone browser and in-app
+                    WebView, with the phone's own autofocus and resolution. */}
+                <input
+                  type="file"
+                  accept={PHOTO_CAPTURE_ACCEPT}
+                  capture="environment"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    for (const f of Array.from(e.target.files ?? [])) {
+                      addCapture(f, { filename: f.name });
+                    }
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+              {hasCameraApi() && (
+                <button type="button" onClick={() => setCamera(true)} style={ghostButtonStyle}>
+                  Scan pages
+                </button>
+              )}
             </div>
           </div>
 
@@ -477,7 +513,12 @@ export function UploadForm({
 
       <TrustFooter />
 
-      {camera && <CameraCapture onCapture={addCapture} onClose={() => setCamera(false)} />}
+      {camera && (
+        <CameraCapture
+          onCapture={(blob, meta) => addCapture(blob, meta)}
+          onClose={() => setCamera(false)}
+        />
+      )}
     </div>
   );
 }

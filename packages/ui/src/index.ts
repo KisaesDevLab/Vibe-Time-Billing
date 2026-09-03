@@ -69,3 +69,13 @@ export {
   type ColumnFilterValue,
   type SortDir,
 } from './ColumnFilter';
+export { CameraCapture, type CameraCaptureProps } from './CameraCapture';
+export {
+  PHOTO_CAPTURE_ACCEPT,
+  buildScanConstraints,
+  describeCameraError,
+  hasCameraApi,
+  pickRearCamera,
+  type CameraDeviceLike,
+  type CameraErrorCopy,
+} from './camera';

@@ -110,4 +110,15 @@ the sidecar — enable clamd before going live.
   then use the existing tax intake-from-file on the resulting PDF).
 - jscanify auto edge-detection / perspective crop in the phone scanner
   (today: full-frame capture).
+
+## Phone scanner notes (2026-09)
+
+The in-browser scanner (`@vibe/ui` `CameraCapture`, shared with the portal)
+now asks for a readable resolution + continuous focus, prefers the main rear
+lens on multi-camera Android phones, disables the shutter until the first
+frame is decodable, and explains permission / busy-camera errors. A native
+**Take a photo** button (`<input capture="environment">`) sits next to it
+and is the only camera path in in-app browsers (Gmail, Facebook, LinkedIn
+WebViews have no `getUserMedia`). The same native button exists on the
+portal's document-request items and message composers.
 - Retention auto-delete of disposed/rejected sessions.

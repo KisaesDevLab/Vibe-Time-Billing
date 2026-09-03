@@ -76,7 +76,9 @@ export function MessagesPage(): JSX.Element {
   const [newFiles, setNewFiles] = useState<File[]>([]);
   const [starting, setStarting] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const cameraInput = useRef<HTMLInputElement>(null);
   const newFileInput = useRef<HTMLInputElement>(null);
+  const newCameraInput = useRef<HTMLInputElement>(null);
 
   async function uploadOne(threadId: string, f: File): Promise<PendingAttachment> {
     const qs = new URLSearchParams({
@@ -282,6 +284,27 @@ export function MessagesPage(): JSX.Element {
             e.target.value = '';
           }}
         />
+        <input
+          ref={newCameraInput}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          multiple
+          style={{ display: 'none' }}
+          onChange={(e) => {
+            setNewFiles((prev) => [...prev, ...Array.from(e.target.files ?? [])]);
+            e.target.value = '';
+          }}
+        />
+        <Button
+          variant="ghost"
+          onClick={() => newCameraInput.current?.click()}
+          disabled={starting}
+          title="Take a photo with your phone camera"
+          aria-label="Take a photo"
+        >
+          📷
+        </Button>
         <Button
           variant="ghost"
           onClick={() => newFileInput.current?.click()}
@@ -554,6 +577,27 @@ export function MessagesPage(): JSX.Element {
                 e.target.value = '';
               }}
             />
+            <input
+              ref={cameraInput}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              multiple
+              style={{ display: 'none' }}
+              onChange={(e) => {
+                void uploadFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
+            <Button
+              variant="ghost"
+              onClick={() => cameraInput.current?.click()}
+              disabled={uploading || !activeThreadId}
+              title="Take a photo with your phone camera"
+              aria-label="Take a photo"
+            >
+              📷
+            </Button>
             <Button
               variant="ghost"
               onClick={() => fileInput.current?.click()}
