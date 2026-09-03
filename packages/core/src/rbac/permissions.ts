@@ -158,6 +158,13 @@ export const PERMISSION_KEYS = [
   'sms:assign',
   'sms:settings',
 
+  // 0235 — engagement videos. read = list/plays; write = upload, edit,
+  // extend retention; delete = early delete. partner + manager: all
+  // three; senior + staff: read/write (mirrors storage:file:delete).
+  'video:read',
+  'video:write',
+  'video:delete',
+
   // Stage 3 — client requests (document/info requests fulfilled by
   // staff or the client). 'manage' covers create/update/dismiss.
   'requests:read',
@@ -278,6 +285,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'sms:write',
     'sms:assign',
     'sms:settings',
+    'video:read',
+    'video:write',
+    'video:delete',
     'requests:read',
     'requests:manage',
     'retainer:tier_config:read',
@@ -346,6 +356,9 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'sms:read',
     'sms:write',
     'sms:assign',
+    'video:read',
+    'video:write',
+    'video:delete',
     'requests:read',
     'requests:manage',
     // R1 — manager can see tier configs + read retainers but cannot
@@ -393,6 +406,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'messaging:write',
     'sms:read',
     'sms:write',
+    'video:read',
+    'video:write',
     'requests:read',
     'requests:manage',
     // CP12 — senior can see appointments on their engagements.
@@ -420,6 +435,8 @@ export const ROLE_TEMPLATES: Record<RoleSlug, ReadonlySet<PermissionKey>> = {
     'messaging:write',
     'sms:read',
     'sms:write',
+    'video:read',
+    'video:write',
     'requests:read',
     // CP12 — staff see appointments on their assigned engagements.
     'appointment:read',
