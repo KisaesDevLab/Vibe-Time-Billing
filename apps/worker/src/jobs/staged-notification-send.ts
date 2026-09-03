@@ -27,6 +27,7 @@ import {
   clientCommunications,
   clientPortalAccess,
   clients,
+  engagementVideos,
   engagements,
   firms,
   notificationLog,
@@ -218,6 +219,24 @@ export async function runStagedNotificationSend(
         })
         .catch((err: unknown) => log.error({ err }, 'audit emit failed'));
       log.info({ stagedNotificationId: row.id }, 'staged send canceled at fire (state changed)');
+      return { outcome: 'canceled_at_fire' };
+    }
+  }
+
+  // 0235 — a video deleted or expired between upload and send must not
+  // be announced.
+  if (row.triggerKind === 'engagement_video') {
+    const [video] = await db
+      .select({ status: engagementVideos.status })
+      .from(engagementVideos)
+      .where(eq(engagementVideos.id, row.entityId))
+      .limit(1);
+    if (!video || video.status !== 'AVAILABLE') {
+      await db
+        .update(stagedNotifications)
+        .set({ status: 'CANCELED', canceledReason: 'STATE_CHANGED_AT_FIRE', updatedAt: new Date() })
+        .where(eq(stagedNotifications.id, row.id));
+      log.info({ stagedNotificationId: row.id }, 'staged send canceled at fire (video gone)');
       return { outcome: 'canceled_at_fire' };
     }
   }
@@ -494,7 +513,12 @@ async function sendPortalChannel(
   for (const ident of identities) {
     try {
       const title = content.subject ?? 'Update from your accounting firm';
-      const actionUrl = row.entityType === 'engagement' ? '/engagements' : null;
+      const actionUrl =
+        row.entityType === 'engagement'
+          ? '/engagements'
+          : row.entityType === 'engagement_video'
+            ? `/videos/${row.entityId}`
+            : null;
       await db.insert(portalNotifications).values({
         firmId: row.firmId,
         clientId: row.clientId,

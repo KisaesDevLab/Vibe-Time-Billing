@@ -49,6 +49,58 @@ export interface RecipientSnapshot {
   smsOptOut?: boolean;
 }
 
+export interface ContactRecipientRow extends RecipientSnapshot {
+  isBilling: boolean;
+}
+
+export function toRecipientSnapshot(c: ContactRecipientRow): RecipientSnapshot {
+  return {
+    personId: c.personId,
+    name: c.name,
+    email: c.email,
+    phone: c.phone,
+    smsOptOut: c.smsOptOut,
+  };
+}
+
+/**
+ * Every ACTIVE client contact who has not opted out of status
+ * notifications (0166), with the mobile number preferred for SMS/voice
+ * (0206). Shared by the engagement-status and engagement-video producers
+ * so the two can never disagree about who is reachable.
+ */
+export async function loadEligibleContactRecipients(
+  db: Database,
+  clientId: string,
+): Promise<ContactRecipientRow[]> {
+  const allContacts = await db
+    .select({
+      personId: persons.id,
+      name: persons.fullName,
+      email: persons.email,
+      phone: persons.phone,
+      mobile: persons.mobile,
+      isBilling: clientContacts.isBilling,
+      receiveStatusNotifications: clientContacts.receiveStatusNotifications,
+      smsOptOut: persons.smsOptOut,
+    })
+    .from(clientContacts)
+    .innerJoin(persons, eq(persons.id, clientContacts.personId))
+    .where(and(eq(clientContacts.clientId, clientId), eq(clientContacts.status, 'ACTIVE')));
+  // 0166 — a contact opted out of status notifications is never eligible,
+  // regardless of the status config's BILLING_CONTACT/ALL_CONTACTS rule.
+  return allContacts
+    .filter((c) => c.receiveStatusNotifications !== false)
+    .map((c) => ({
+      personId: c.personId,
+      name: c.name,
+      email: c.email,
+      phone: c.mobile ?? c.phone,
+      smsOptOut: c.smsOptOut,
+      isBilling: c.isBilling,
+    }));
+}
+
 export interface StageStatusNotificationArgs {
   firmId: string;
   engagementId: string;
@@ -110,35 +162,11 @@ export async function stageStatusNotification(
   // resolution when no billing contact is flagged — an empty snapshot
   // would stage a row nobody can receive; the approver still sees and
   // can cancel, but a fallback matches dunning's intent.
-  const allContacts = await db
-    .select({
-      personId: persons.id,
-      name: persons.fullName,
-      email: persons.email,
-      phone: persons.phone,
-      // 0206 — prefer the mobile for SMS/voice; person.phone is often a
-      // landline (which voice can still reach, so either works as fallback).
-      mobile: persons.mobile,
-      isBilling: clientContacts.isBilling,
-      receiveStatusNotifications: clientContacts.receiveStatusNotifications,
-      smsOptOut: persons.smsOptOut,
-    })
-    .from(clientContacts)
-    .innerJoin(persons, eq(persons.id, clientContacts.personId))
-    .where(and(eq(clientContacts.clientId, args.clientId), eq(clientContacts.status, 'ACTIVE')));
-  // 0166 — a contact opted out of status notifications is never eligible,
-  // regardless of the status config's BILLING_CONTACT/ALL_CONTACTS rule.
-  const eligible = allContacts.filter((c) => c.receiveStatusNotifications !== false);
+  const eligible = await loadEligibleContactRecipients(db, args.clientId);
   const billing = eligible.filter((c) => c.isBilling);
   const picked =
     cfg.notifyRecipients === 'ALL_CONTACTS' ? eligible : billing.length ? billing : eligible;
-  const recipients: RecipientSnapshot[] = picked.map((c) => ({
-    personId: c.personId,
-    name: c.name,
-    email: c.email,
-    phone: c.mobile ?? c.phone,
-    smsOptOut: c.smsOptOut,
-  }));
+  const recipients: RecipientSnapshot[] = picked.map(toRecipientSnapshot);
 
   // Render snapshot per channel: firm template (enabled) else default.
   const templateKind = statusTemplateKind(args.toState);

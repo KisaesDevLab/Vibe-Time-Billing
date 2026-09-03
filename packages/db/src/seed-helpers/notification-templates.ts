@@ -485,6 +485,25 @@ const DEFAULTS: ReadonlyArray<TemplateDef> = [
     body: '{{ firm.displayName }} shared a file with you: {{ link.url }}',
   },
 
+  // 0235 — engagement video ready (staff uploaded a video) ----------
+  {
+    kind: 'engagement_video_ready',
+    channel: 'EMAIL',
+    subject: 'A new video from {{ firm.displayName }} is ready to watch',
+    body:
+      'Dear {{ client.name }},\n\n' +
+      '{{ firm.displayName }} has shared a video with you for {{ engagement.name }}: "{{ video.title }}".\n\n' +
+      '{{ video.message }}\n\n' +
+      'Watch it securely in your client portal:\n{{ link.url }}\n\n' +
+      'Questions? Contact us at {{ firm.support_email }}.\n\n' +
+      '{{ firm.displayName }}',
+  },
+  {
+    kind: 'engagement_video_ready',
+    channel: 'SMS',
+    body: '{{ firm.displayName }}: a new video is ready for you to watch ({{ engagement.name }}). {{ link.url }}',
+  },
+
   // Calendar reminder (non-appointment events) ---------------------
   {
     kind: 'calendar_reminder',

@@ -97,6 +97,7 @@ const KINDS: ReadonlyArray<KindEntry> = [
   { key: 'tax_payment_reminder', label: 'Tax payment reminder', channels: ['EMAIL', 'SMS'] },
   { key: 'deliverable_unlocked', label: 'Documents ready (paid)', channels: ['EMAIL'] },
   { key: 'share_link', label: 'Secure file share', channels: ['EMAIL', 'SMS'] },
+  { key: 'engagement_video_ready', label: 'Engagement video ready', channels: ['EMAIL', 'SMS'] },
   { key: 'calendar_reminder', label: 'Calendar reminder', channels: ['EMAIL'] },
   { key: 'email_otp', label: 'Email verification code', channels: ['EMAIL'] },
   {

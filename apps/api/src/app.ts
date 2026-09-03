@@ -55,6 +55,7 @@ import { createKanbanViewRouter } from './kanban-views/routes';
 // file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
 import { createEngagementVideoRouters } from './engagements/videos';
+import { stageVideoNotification } from './notifications/staged/video';
 import { createStatusHistoryRouter } from './engagements/status-history';
 import { createStatusOptionsRouter } from './engagements/status-options';
 import { createRouteSheetRouter } from './route-sheets/routes';
@@ -863,6 +864,10 @@ export function createApp(deps: AppDeps): Express {
   const engagementVideoRouters = createEngagementVideoRouters({
     db: deps.db,
     fakeUserRoles: deps.fakeUserRoles,
+    onVideoReady: async (event) => {
+      if (!deps.db) return;
+      await stageVideoNotification(deps.db, { ...event, portalBaseUrl: config.PORTAL_BASE_URL });
+    },
   });
   app.use(
     '/api/staff/engagements',
