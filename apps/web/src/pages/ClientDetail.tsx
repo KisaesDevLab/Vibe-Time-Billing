@@ -18,6 +18,7 @@ import { ClientSmsCard } from './sms/ClientSmsCard';
 import { CommunicationsCard } from './clients/CommunicationsCard';
 // File manager v1 removed; v2 (B2-backed, addendum) lands in Phase 10.
 import { ClientFilesTab } from './clients/ClientFilesTab';
+import { ClientVideosCard } from './clients/ClientVideosCard';
 import { ClientRequestsCard } from './clients/ClientRequestsCard';
 import { ClientTaxReturnsCard } from './clients/ClientTaxReturnsCard';
 import { NotesCard } from './clients/NotesCard';
@@ -89,6 +90,7 @@ type Tab =
   | 'requests'
   | 'notes'
   | 'files'
+  | 'videos'
   | 'tasks'
   | 'engagements'
   | 'appointments'
@@ -308,6 +310,7 @@ export function ClientDetailPage(): JSX.Element {
                 { key: 'communications', label: 'Communications' },
                 { key: 'notes', label: 'Notes' },
                 { key: 'files', label: 'Files' },
+                { key: 'videos', label: 'Videos' },
                 { key: 'tasks', label: 'Tasks' },
                 { key: 'engagements', label: 'Engagements', badge: engagements.length },
                 { key: 'appointments', label: 'Appointments' },
@@ -376,6 +379,8 @@ export function ClientDetailPage(): JSX.Element {
       {tab === 'files' && (
         <ClientFilesTab clientId={client.id} clientName={client.clientFacingName || client.name} />
       )}
+
+      {tab === 'videos' && <ClientVideosCard clientId={client.id} />}
 
       {tab === 'tasks' && <TasksCard clientId={client.id} users={staff} />}
 

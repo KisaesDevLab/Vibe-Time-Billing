@@ -50,6 +50,9 @@ interface Settings {
   aiMonthlyBudgetCents: number;
   estimatedLaborPct: number;
   dropoffDueOffsetDays: number | null;
+  // 0235 — engagement video retention defaults (null = that clock off).
+  videoDefaultDeleteAfterDays: number | null;
+  videoDefaultDeleteDaysAfterPlay: number | null;
   stepUpTimeoutMinutes: number;
   staffSecondFactorRequired: boolean;
   lateEntryAlertDays: number;
@@ -206,6 +209,8 @@ export function FirmSettingsPage(): JSX.Element {
             : {}),
           estimatedLaborPct: s.estimatedLaborPct,
           dropoffDueOffsetDays: s.dropoffDueOffsetDays,
+          videoDefaultDeleteAfterDays: s.videoDefaultDeleteAfterDays,
+          videoDefaultDeleteDaysAfterPlay: s.videoDefaultDeleteDaysAfterPlay,
           stepUpTimeoutMinutes: s.stepUpTimeoutMinutes,
           staffSecondFactorRequired: s.staffSecondFactorRequired,
           lateEntryAlertDays: s.lateEntryAlertDays,
@@ -442,6 +447,42 @@ export function FirmSettingsPage(): JSX.Element {
                 ...s,
                 dropoffDueOffsetDays:
                   e.target.value === '' ? null : Math.max(0, Math.min(365, Number(e.target.value))),
+              })
+            }
+          />
+          <Input
+            label="Videos: delete N days after upload (blank = no limit)"
+            type="number"
+            min={1}
+            max={3650}
+            value={s.videoDefaultDeleteAfterDays ?? ''}
+            placeholder="e.g. 30"
+            hint="Default for new engagement videos; staff can change it per video."
+            onChange={(e) =>
+              setS({
+                ...s,
+                videoDefaultDeleteAfterDays:
+                  e.target.value === ''
+                    ? null
+                    : Math.max(1, Math.min(3650, Number(e.target.value))),
+              })
+            }
+          />
+          <Input
+            label="Videos: delete M days after first play (blank = no limit)"
+            type="number"
+            min={1}
+            max={3650}
+            value={s.videoDefaultDeleteDaysAfterPlay ?? ''}
+            placeholder="e.g. 3"
+            hint="Whichever clock ends first removes the video."
+            onChange={(e) =>
+              setS({
+                ...s,
+                videoDefaultDeleteDaysAfterPlay:
+                  e.target.value === ''
+                    ? null
+                    : Math.max(1, Math.min(3650, Number(e.target.value))),
               })
             }
           />
