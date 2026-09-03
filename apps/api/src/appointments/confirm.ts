@@ -59,6 +59,10 @@ export async function findUpcomingAppointmentForPhone(
   db: Database,
   from: string,
   now: Date,
+  /** Scope to one firm. Optional only so existing callers keep compiling;
+   *  always pass it — without it the scan crosses every firm row and
+   *  returns whichever appointment sorts first. */
+  firmId?: string,
 ): Promise<{ appointmentId: string; contactId: string } | null> {
   const fromKey = last10(from);
   if (fromKey.length < 7) return null;
@@ -79,6 +83,7 @@ export async function findUpcomingAppointmentForPhone(
         eq(appointments.status, 'SCHEDULED'),
         gt(appointments.startsAt, now),
         lt(appointments.startsAt, horizon),
+        ...(firmId ? [eq(persons.firmId, firmId)] : []),
       ),
     )
     .orderBy(asc(appointments.startsAt));

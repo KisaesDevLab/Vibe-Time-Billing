@@ -140,11 +140,19 @@ async function reconcileStuckOutbound(
         }
       }
       if (publish) {
+        // Carry the client so the inbox stream's restricted-client filter
+        // (`if (evt.clientId && blocked.has(evt.clientId))`) can match.
+        const [convForEvent] = await db
+          .select({ clientId: smsConversations.clientId })
+          .from(smsConversations)
+          .where(eq(smsConversations.id, m.conversationId))
+          .limit(1);
         await publish({
           type: 'sms.message.status',
           firmId,
           conversationId: m.conversationId,
           messageId: m.id,
+          clientId: convForEvent?.clientId ?? null,
         });
       }
     } catch (err) {

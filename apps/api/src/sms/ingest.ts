@@ -385,6 +385,7 @@ export async function ingestInboundMessage(
         firmId,
         assignedUserId: conv?.assignedUserId ?? null,
         lineDefaultAssigneeId: line.defaultAssigneeUserId,
+        clientId,
       });
       let who = from;
       if (personId) {

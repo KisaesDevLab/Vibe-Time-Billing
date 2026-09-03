@@ -52,11 +52,19 @@ const IP_WINDOW_SECONDS = 60;
 const IP_MAX_PER_WINDOW = 300; // Twilio egress IPs are shared across customers
 
 const OPT_OUT_ERROR_CODE = 21610;
+/** Persist the invalid-signature counter every Nth rejection. */
+const HEALTH_FLUSH_EVERY = 50;
 
-function clientIp(req: Request): string {
-  const fwd = req.headers['x-forwarded-for'];
-  const first = Array.isArray(fwd) ? fwd[0] : fwd?.split(',')[0];
-  return (first ?? req.ip ?? '0.0.0.0').trim();
+/**
+ * Key for the PRE-AUTHENTICATION rate limiter. X-Forwarded-For is
+ * caller-supplied and the deployed Caddyfile only overwrites X-Real-IP,
+ * so keying on XFF let anyone mint a fresh bucket per request. X-Real-IP
+ * is set by our own ingress; the socket peer is the last resort.
+ */
+function rateLimitKey(req: Request): string {
+  const real = req.headers['x-real-ip'];
+  const realIp = Array.isArray(real) ? real[0] : real;
+  return (realIp ?? req.socket?.remoteAddress ?? '0.0.0.0').trim();
 }
 
 function twiml(res: Response, body = ''): void {
@@ -105,7 +113,7 @@ export function createSmsWebhookRouter(deps: SmsWebhookDeps): Router {
   // Per-IP rate limit.
   router.use((req: Request, res: Response, next: NextFunction) => {
     void checkAndIncrement(deps.redis, {
-      key: `rl:sms-twilio:ip:${clientIp(req)}`,
+      key: `rl:sms-twilio:ip:${rateLimitKey(req)}`,
       windowSeconds: IP_WINDOW_SECONDS,
       max: IP_MAX_PER_WINDOW,
     })
@@ -138,14 +146,21 @@ export function createSmsWebhookRouter(deps: SmsWebhookDeps): Router {
             { path: req.path, candidates: candidates.length, tokens: tokens.length },
             'sms webhook signature rejected',
           );
+          // Count in Redis only. Writing firm_settings here meant every
+          // forged request cost an UPDATE on the single hottest row in the
+          // schema, unauthenticated — dead-tuple and lock pressure for
+          // free. The counter is flushed to sms_health on a sampled basis
+          // so a real misconfiguration still surfaces.
           const firmId = await firmIdForHealth();
           if (deps.db && firmId) {
             const key = `sms:health:invalid-sig:${firmId}`;
             const n = await deps.redis.incr(key);
             if (n === 1) await deps.redis.expire(key, 24 * 3600);
-            await mergeSmsHealth(deps.db, firmId, 'webhook', { invalidSignature24h: n }).catch(
-              () => undefined,
-            );
+            if (n === 1 || n % HEALTH_FLUSH_EVERY === 0) {
+              await mergeSmsHealth(deps.db, firmId, 'webhook', { invalidSignature24h: n }).catch(
+                () => undefined,
+              );
+            }
           }
           res.status(403).send('invalid_signature');
           return;
@@ -178,8 +193,10 @@ export function createSmsWebhookRouter(deps: SmsWebhookDeps): Router {
           firmId: smsMessages.firmId,
           conversationId: smsMessages.conversationId,
           providerStatus: smsMessages.providerStatus,
+          clientId: smsConversations.clientId,
         })
         .from(smsMessages)
+        .leftJoin(smsConversations, eq(smsConversations.id, smsMessages.conversationId))
         .where(eq(smsMessages.providerMessageId, sid))
         .limit(1);
       const ts = nowFn();
@@ -233,6 +250,10 @@ export function createSmsWebhookRouter(deps: SmsWebhookDeps): Router {
               firmId: msg.firmId,
               conversationId: msg.conversationId,
               messageId: msg.id,
+              // The stream's restricted-client filter is
+              // `if (evt.clientId && blocked.has(evt.clientId))`, so an
+              // event without it reaches staff blocked from the client.
+              clientId: msg.clientId ?? null,
             })
             ?.catch?.(() => undefined);
         }

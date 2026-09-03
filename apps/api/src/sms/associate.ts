@@ -171,10 +171,13 @@ export async function associateConversation(
   // Step 2 — reply context (client + engagement), person from phone if unique.
   const ctx = await replyContext(db, conv.firmId, number, now);
   if (ctx?.clientId) {
+    // A unique phone match is only the right person if they actually
+    // belong to the client the reply context resolved. Taking them anyway
+    // filed the thread under client Y with client X's contact named on it,
+    // and cleared needsTriage so nobody ever saw the mismatch.
     const person =
-      matches.length === 1
-        ? matches[0]!
-        : (withClients.find((m) => m.clients.some((c) => c.clientId === ctx.clientId)) ?? null);
+      withClients.find((m) => m.clients.some((c) => c.clientId === ctx.clientId)) ??
+      (matches.length === 1 && matches[0]!.clients.length === 0 ? matches[0]! : null);
     const contact = person?.clients.find((c) => c.clientId === ctx.clientId) ?? null;
     const engagementId = ctx.engagementId ?? (await singleActiveEngagement(db, ctx.clientId));
     const suggested = !ctx.engagementId && Boolean(engagementId);

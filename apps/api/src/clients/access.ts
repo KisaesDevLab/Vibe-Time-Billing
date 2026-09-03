@@ -12,70 +12,14 @@
 // only consult this for the "everything else" surfaces.
 
 import type { Request, Response, NextFunction } from 'express';
-import { and, eq, inArray } from 'drizzle-orm';
 
-import type { Database } from '@vibe/db';
-import { clientAccessGrants, clients } from '@vibe/db/schema';
+import { canAccessClient, getBlockedClientIds, type AccessDeps } from './access-resolve';
 
-import { loadRoleSlugs, type RbacDeps } from '../auth/rbac-middleware';
-
-export interface AccessDeps extends RbacDeps {
-  db: Database | null;
-}
+export { canAccessClient, getBlockedClientIds, type AccessDeps } from './access-resolve';
 
 /** Cache key on the request so a single request resolves the blocked set once. */
 const BLOCKED_CACHE = Symbol('vibeBlockedClientIds');
 
-async function userIsAdmin(deps: AccessDeps, appUserId: string): Promise<boolean> {
-  const slugs = await loadRoleSlugs(deps, appUserId);
-  return slugs.includes('admin');
-}
-
-/**
- * Client ids the user must NOT see the restricted surfaces of. Empty for
- * admins (and when the db is absent — tests/dev with no persistence).
- * Restricted clients where the user is the partner-in-charge or holds a
- * grant are excluded from the blocked set.
- */
-export async function getBlockedClientIds(
-  deps: AccessDeps,
-  appUserId: string,
-  firmId: string,
-): Promise<string[]> {
-  if (!deps.db) return [];
-
-  const restricted = await deps.db
-    .select({ id: clients.id, partnerInChargeId: clients.partnerInChargeId })
-    .from(clients)
-    .where(and(eq(clients.firmId, firmId), eq(clients.restricted, true)));
-  if (restricted.length === 0) return [];
-
-  // A missing user id (e.g. an MCP token with no creator) has no special
-  // access — block every restricted client. Guarded here so the empty
-  // string never reaches a uuid-typed WHERE (which would raise 22P02).
-  if (!appUserId) return restricted.map((c) => c.id);
-  if (await userIsAdmin(deps, appUserId)) return [];
-
-  const grants = await deps.db
-    .select({ clientId: clientAccessGrants.clientId })
-    .from(clientAccessGrants)
-    .where(
-      and(
-        eq(clientAccessGrants.appUserId, appUserId),
-        inArray(
-          clientAccessGrants.clientId,
-          restricted.map((r) => r.id),
-        ),
-      ),
-    );
-  const granted = new Set(grants.map((g) => g.clientId));
-
-  return restricted
-    .filter((c) => c.partnerInChargeId !== appUserId && !granted.has(c.id))
-    .map((c) => c.id);
-}
-
-/** Memoized per-request variant — safe to call from multiple handlers. */
 export async function getBlockedClientIdsCached(
   deps: AccessDeps,
   req: Request,
@@ -94,34 +38,6 @@ export async function getBlockedClientIdsCached(
  * True when the client isn't restricted, or the user is admin /
  * partner-in-charge / granted.
  */
-export async function canAccessClient(
-  deps: AccessDeps,
-  appUserId: string,
-  firmId: string,
-  clientId: string,
-): Promise<boolean> {
-  if (!deps.db) return true;
-  const [client] = await deps.db
-    .select({ restricted: clients.restricted, partnerInChargeId: clients.partnerInChargeId })
-    .from(clients)
-    .where(and(eq(clients.id, clientId), eq(clients.firmId, firmId)))
-    .limit(1);
-  // Unknown / cross-firm client: let the caller's own 404 handling deal
-  // with it (this helper only decides the restriction gate).
-  if (!client) return true;
-  if (!client.restricted) return true;
-  if (client.partnerInChargeId === appUserId) return true;
-  if (await userIsAdmin(deps, appUserId)) return true;
-
-  const [grant] = await deps.db
-    .select({ id: clientAccessGrants.id })
-    .from(clientAccessGrants)
-    .where(
-      and(eq(clientAccessGrants.clientId, clientId), eq(clientAccessGrants.appUserId, appUserId)),
-    )
-    .limit(1);
-  return Boolean(grant);
-}
 
 /**
  * Express helper: 403 if the session user can't access the given client's

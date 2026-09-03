@@ -87,7 +87,7 @@ export interface SmsInboxRoutesDeps extends RbacDeps {
   now?: () => Date;
 }
 
-const UUID_RE = /^[0-9a-fA-F-]{36}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const Filter = z.enum(['unread', 'unassigned', 'triage', 'mine', 'all']);
 
 const ListQuery = z.object({
@@ -613,6 +613,24 @@ export function createSmsInboxRouter(deps: SmsInboxRoutesDeps): Router {
       res.status(400).json({ error: 'sms_invalid_number' });
       return;
     }
+    // The clientId check above is conditional on the caller SUPPLYING one.
+    // Omitting it skipped the guard entirely while the send still landed in
+    // whatever conversation already exists for this number — which may
+    // belong to a restricted client. Resolve that first and gate on it.
+    const [priorConv] = await deps.db
+      .select({ clientId: smsConversations.clientId })
+      .from(smsConversations)
+      .where(
+        and(eq(smsConversations.firmId, s.firmId), eq(smsConversations.externalNumberE164, to)),
+      )
+      .limit(1);
+    if (
+      priorConv?.clientId &&
+      !(await canAccessClient(deps, s.appUserId, s.firmId, priorConv.clientId))
+    ) {
+      res.status(404).json({ error: 'conversation_not_found' });
+      return;
+    }
     const r = await deps.smsSend.send({
       to,
       body: p.body,
@@ -896,6 +914,25 @@ export function createSmsInboxRouter(deps: SmsInboxRoutesDeps): Router {
       actions.push(p.status === 'open' ? 'reopen' : p.status);
     }
     if (p.engagementId !== undefined) {
+      // The /link route validates this pair; PATCH did not, so any
+      // engagement UUID could be stamped onto any conversation — which
+      // then read the engagement's NAME back through the list/detail
+      // joins, disclosing a restricted client's engagement.
+      if (p.engagementId !== null) {
+        if (!conv.clientId) {
+          res.status(400).json({ error: 'engagement_requires_client' });
+          return;
+        }
+        const [onClient] = await deps.db
+          .select({ id: engagements.id })
+          .from(engagements)
+          .where(and(eq(engagements.id, p.engagementId), eq(engagements.clientId, conv.clientId)))
+          .limit(1);
+        if (!onClient) {
+          res.status(400).json({ error: 'engagement_not_on_client' });
+          return;
+        }
+      }
       set.engagementId = p.engagementId;
       set.engagementSuggested = false;
       actions.push('set_engagement');

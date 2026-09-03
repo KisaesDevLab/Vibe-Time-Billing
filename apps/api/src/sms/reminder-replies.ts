@@ -75,7 +75,7 @@ export function createReminderReplyHook(
     let appointmentId = await recentReminderAppointment(db, ctx.firmId, ctx.from, now);
     let contactId = ctx.clientContactId;
     if (!appointmentId) {
-      const found = await findUpcomingAppointmentForPhone(db, ctx.from, now);
+      const found = await findUpcomingAppointmentForPhone(db, ctx.from, now, ctx.firmId);
       if (!found) return { handled: false };
       appointmentId = found.appointmentId;
       contactId = contactId ?? found.contactId;
@@ -105,7 +105,35 @@ export function createReminderReplyHook(
       .where(eq(smsMessages.id, ctx.messageId));
 
     if (intent === 'confirm') {
-      if (contactId) await confirmParticipant(db, appointmentId, contactId, 'sms');
+      // confirmParticipant returns false when it matched no participant
+      // row — which is exactly what happens when the thread is linked to
+      // one contact but the reminder went to another (a spouse). Dropping
+      // the result meant we replied "you're confirmed", marked the thread
+      // read and suppressed the staff notification while the appointment
+      // stayed unconfirmed. Fall back to the appointment's own
+      // participants before giving up.
+      let confirmed = contactId
+        ? await confirmParticipant(db, appointmentId, contactId, 'sms')
+        : false;
+      if (!confirmed) {
+        const participants = await db
+          .select({ contactId: appointmentParticipants.clientContactId })
+          .from(appointmentParticipants)
+          .where(eq(appointmentParticipants.appointmentId, appointmentId));
+        for (const p of participants) {
+          if (!p.contactId || p.contactId === contactId) continue;
+          if (await confirmParticipant(db, appointmentId, p.contactId, 'sms')) {
+            confirmed = true;
+            break;
+          }
+        }
+      }
+      if (!confirmed) {
+        // Nothing was actually confirmed. Leave the message unread and let
+        // the normal inbound notification reach staff rather than telling
+        // the client they are all set.
+        return { handled: false };
+      }
       const firm = await firmScope(db, ctx.firmId);
       const rendered = await renderTemplate({
         db,

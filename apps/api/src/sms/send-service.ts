@@ -202,15 +202,35 @@ export function createSmsSendService(deps: SmsSendServiceDeps): SmsSendService {
     firmId: string | null,
     personId: string | null,
   ): Promise<SmsSendResult> {
-    // Opt-out gate when we know who this is (security codes skip it).
-    if (args.context.kind !== 'security' && personId && deps.db) {
-      const [p] = await deps.db
-        .select({ optOut: persons.smsOptOut })
-        .from(persons)
-        .where(eq(persons.id, personId))
-        .limit(1);
-      if (p?.optOut) {
-        return { ok: false, mode: 'legacy', reason: 'opted_out', personId };
+    // Opt-out gate (security codes skip it). Most callers pass no
+    // personId — sendPortalSms, which backs portal invites, share links,
+    // access requests and portal messaging, builds its context without
+    // one — so relying on it meant STOP was silently ignored for every
+    // one of them whenever the firm ran in legacy mode, which is the
+    // default. Fall back to the number, exactly as inbox mode does.
+    if (args.context.kind !== 'security' && deps.db) {
+      const db = deps.db;
+      let optedOut = false;
+      let blockedPersonId = personId;
+      if (personId) {
+        const [p] = await db
+          .select({ optOut: persons.smsOptOut })
+          .from(persons)
+          .where(eq(persons.id, personId))
+          .limit(1);
+        optedOut = p?.optOut ?? false;
+      } else if (firmId) {
+        const matches = await findPersonsByE164(db, firmId, args.to);
+        // Ambiguous number: any opted-out holder blocks (conservative),
+        // matching the inbox path.
+        const out = matches.find((m) => m.smsOptOut);
+        if (out) {
+          optedOut = true;
+          blockedPersonId = matches.length === 1 ? out.personId : null;
+        }
+      }
+      if (optedOut) {
+        return { ok: false, mode: 'legacy', reason: 'opted_out', personId: blockedPersonId };
       }
     }
     if (!deps.fallback) {
@@ -359,6 +379,8 @@ export function createSmsSendService(deps: SmsSendServiceDeps): SmsSendService {
       let personId = explicitPerson;
       let personOptOut = false;
       let personConsentAt: Date | null = null;
+      /** How many people this number resolved to (0 when unknown). */
+      let identifiedHolders = personId ? 1 : 0;
       if (personId) {
         const [p] = await db
           .select({ optOut: persons.smsOptOut, consentAt: persons.smsConsentAt })
@@ -378,6 +400,11 @@ export function createSmsSendService(deps: SmsSendServiceDeps): SmsSendService {
           if (matches.some((m) => m.smsOptOut)) personOptOut = true;
           if (matches.some((m) => m.smsConsentAt)) personConsentAt = now();
         }
+        // We identified at least one holder of this number even if we
+        // could not pick one. The consent gate below keyed on personId,
+        // so a shared household number sailed past a gate the firm had
+        // deliberately turned on.
+        identifiedHolders = matches.length;
       }
 
       // --- gates: opt-out → consent → A2P --------------------------------
@@ -402,7 +429,7 @@ export function createSmsSendService(deps: SmsSendServiceDeps): SmsSendService {
       const inboundInitiated = Boolean(existingConv?.lastInboundAt);
       if (
         state.consentEnforced &&
-        personId &&
+        (personId || identifiedHolders > 0) &&
         !personConsentAt &&
         !inboundInitiated &&
         ctx.kind !== 'auto_reply'

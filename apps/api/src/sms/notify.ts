@@ -11,6 +11,7 @@ import type { PermissionKey } from '@vibe/core/rbac';
 import type { Database } from '@vibe/db';
 import { appUsers, staffNotifications } from '@vibe/db/schema';
 
+import { getBlockedClientIds } from '../clients/access-resolve';
 import { userHasPermission } from '../auth/rbac-resolve';
 
 export const SMS_INBOX_READ_PERMISSION: PermissionKey = 'sms:read';
@@ -43,11 +44,31 @@ export function _resetInboxReaderCacheForTests(): void {
 
 export async function resolveInboundRecipients(
   db: Database,
-  args: { firmId: string; assignedUserId: string | null; lineDefaultAssigneeId: string | null },
+  args: {
+    firmId: string;
+    assignedUserId: string | null;
+    lineDefaultAssigneeId: string | null;
+    /** Set once the conversation is linked, so the 0165 restricted-client
+     *  rule can be applied to the fan-out. */
+    clientId?: string | null;
+  },
 ): Promise<string[]> {
-  if (args.assignedUserId) return [args.assignedUserId];
-  if (args.lineDefaultAssigneeId) return [args.lineDefaultAssigneeId];
-  return inboxReaderIds(db, args.firmId);
+  const candidates = args.assignedUserId
+    ? [args.assignedUserId]
+    : args.lineDefaultAssigneeId
+      ? [args.lineDefaultAssigneeId]
+      : await inboxReaderIds(db, args.firmId);
+  if (!args.clientId) return candidates;
+  // A notification carries the contact's name and the first 140 characters
+  // of the message. Every /api/staff/sms read route 404s a restricted
+  // client's conversation for a staffer without access — fanning the
+  // content out to them anyway defeated exactly that rule.
+  const blocked = new Set<string>();
+  for (const id of candidates) {
+    const ids = await getBlockedClientIds({ db }, id, args.firmId);
+    if (ids.includes(args.clientId)) blocked.add(id);
+  }
+  return candidates.filter((id) => !blocked.has(id));
 }
 
 export async function insertSmsNotifications(
