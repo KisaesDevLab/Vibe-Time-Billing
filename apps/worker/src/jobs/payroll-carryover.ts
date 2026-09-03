@@ -5,7 +5,7 @@
 // past the cap is forfeited with a negative CARRYOVER_FORFEIT ledger row.
 // Idempotent via period_key 'CY:<closed year>'.
 
-import { and, eq, isNull } from 'drizzle-orm';
+import { and, eq, isNull, like, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -14,7 +14,7 @@ import {
   appUsers,
   timeOffLedger,
 } from '@vibe/db/schema';
-import { computeCarryoverForfeit, yearOf } from '@vibe/core/payroll';
+import { computeCarryoverForfeit, round2, yearOf } from '@vibe/core/payroll';
 
 import type { Logger } from 'pino';
 
@@ -58,18 +58,45 @@ export async function runPayrollCarryover(
       `${closedYear}-12-31`,
     );
     const forfeit = computeCarryoverForfeit(balance, Number(a.policy.carryoverCapHours));
-    if (forfeit >= 0) continue;
+
+    // What we have already forfeited for this year. The ledger is
+    // append-only, so a correction is another row rather than an edit.
+    // Without this the first run's number was frozen forever: December
+    // hours entered afterwards (the late-entry window runs 14 days, and
+    // the job fires while Dec 31 is still in progress in US timezones)
+    // left the employee permanently over-forfeited.
+    const [priorRow] = await db
+      .select({ total: sql<string>`COALESCE(SUM(${timeOffLedger.deltaHours}), 0)` })
+      .from(timeOffLedger)
+      .where(
+        and(
+          eq(timeOffLedger.firmId, a.firmId),
+          eq(timeOffLedger.appUserId, a.appUserId),
+          eq(timeOffLedger.bank, a.policy.bank),
+          eq(timeOffLedger.reason, 'CARRYOVER_FORFEIT'),
+          like(timeOffLedger.periodKey, `CY:${closedYear}%`),
+        ),
+      );
+    const already = Number(priorRow?.total ?? 0);
+    const delta = round2(forfeit - already);
+    if (delta === 0) continue;
+
+    const isCorrection = already !== 0;
     const inserted = await db
       .insert(timeOffLedger)
       .values({
         firmId: a.firmId,
         appUserId: a.appUserId,
         bank: a.policy.bank,
-        deltaHours: forfeit.toString(),
+        deltaHours: delta.toString(),
         reason: 'CARRYOVER_FORFEIT',
         policyId: a.policy.id,
-        periodKey: `CY:${closedYear}`,
-        note: `Year-end carryover cap ${a.policy.carryoverCapHours}h (${a.policy.name})`,
+        // One correction per day, so re-running converges instead of
+        // stacking duplicates.
+        periodKey: isCorrection ? `CY:${closedYear}:TRUEUP:${today}` : `CY:${closedYear}`,
+        note: isCorrection
+          ? `Carryover true-up for ${closedYear} after late entries (cap ${a.policy.carryoverCapHours}h)`
+          : `Year-end carryover cap ${a.policy.carryoverCapHours}h (${a.policy.name})`,
       })
       .onConflictDoNothing()
       .returning({ id: timeOffLedger.id });

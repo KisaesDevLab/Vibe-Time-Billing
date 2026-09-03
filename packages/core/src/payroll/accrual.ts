@@ -129,7 +129,13 @@ export function computeAnnualGrant(
     periodKey = `ANNUAL:${year}`;
   }
   if (ctx.today < dueDate) return null;
-  if (ctx.hiredDate && addDays(ctx.hiredDate, policy.accrualWaitingDays) > dueDate) return null;
+  // The waiting period is measured against TODAY, not the grant date. A
+  // hire late in the year serves their wait in, say, February; comparing
+  // against Jan 1 skipped them for the whole year and only granted the
+  // following Jan 1 — a full year of service with no credit and no
+  // catch-up (the nightly sweep is idempotent on ANNUAL:<year>).
+  const waitEnds = ctx.hiredDate ? addDays(ctx.hiredDate, policy.accrualWaitingDays) : null;
+  if (waitEnds && ctx.today < waitEnds) return null;
   const tenure = tenureYearsAt(ctx.hiredDate, dueDate);
   const rate = resolveTierRate(policy.annualGrantHours ?? 0, ctx.tiers, tenure);
   const grantHours = clampToMax(rate, policy, ctx.currentBalance);

@@ -42,6 +42,7 @@ let h: PgliteHarness;
 let seed: Awaited<ReturnType<typeof seedMinimalFirm>>;
 let approverId: string;
 let sickCodeId: string;
+let ptoCodeId: string;
 
 const log = pino({ level: 'silent' });
 const TODAY = new Date().toISOString().slice(0, 10);
@@ -90,6 +91,18 @@ beforeEach(async () => {
     })
     .returning({ id: workCodes.id });
   sickCodeId = sick!.id;
+  const [pto] = await h.db
+    .insert(workCodes)
+    .values({
+      firmId: seed.firmId,
+      serviceLineId: seed.serviceLineId,
+      key: 'pto_leave',
+      name: 'PTO',
+      billableDefault: false,
+      payrollCategory: 'PTO',
+    })
+    .returning({ id: workCodes.id });
+  ptoCodeId = pto!.id;
   // Firm settings with payroll enabled, weekly periods anchored Monday
   // 2026-01-05, Monday workweeks.
   await h.db.execute(
@@ -351,6 +364,89 @@ describe('time-off request lifecycle', () => {
     );
     expect(r.statusCode).toBe(409);
     expect((r.jsonBody as { error: string }).error).toBe('cannot_self_approve');
+  });
+});
+
+describe('approval is claimed atomically', () => {
+  it('a second concurrent approval 409s and creates no duplicate entries', async () => {
+    const create = await invoke(
+      timeOffRouter(),
+      'post',
+      '/requests',
+      req({ kind: 'PTO', startDate: TODAY, endDate: TODAY, days: [{ day: TODAY, hours: 8 }] }),
+    );
+    const requestId = (create.jsonBody as { id: string }).id;
+
+    // Two approvers racing — or one double-click, since the button is
+    // never disabled while N sequential entry writes run. Both used to
+    // pass the plain PENDING read, both created a full set of entries,
+    // and PTO usage came out doubled.
+    const [a, b] = await Promise.all([
+      invoke(
+        timeOffRouter(),
+        'post',
+        '/requests/:id/approve',
+        req({}, { id: requestId }, approverId),
+      ),
+      invoke(
+        timeOffRouter(),
+        'post',
+        '/requests/:id/approve',
+        req({}, { id: requestId }, approverId),
+      ),
+    ]);
+    const codes = [a.statusCode, b.statusCode].sort();
+    expect(codes).toEqual([200, 409]);
+
+    const entries = await h.db
+      .select()
+      .from(timeEntries)
+      .where(eq(timeEntries.appUserId, seed.appUserId));
+    expect(entries).toHaveLength(1);
+    const bal = await ptoBalanceOf(seed.appUserId);
+    expect(bal.used).toBe(8);
+  });
+});
+
+describe('period review covers departed staff', () => {
+  it('keeps a deactivated employee in the period they actually worked', async () => {
+    // Log an hour, then offboard — which is exactly the order real
+    // offboarding happens in, right before the final period is reviewed.
+    const entry = await invoke(
+      timeRouter(),
+      'post',
+      '/',
+      req({
+        engagementId: seed.engagementId,
+        workCodeId: sickCodeId,
+        entryDate: TODAY,
+        hours: 3,
+        billableFlag: false,
+        description: 'final week',
+      }),
+    );
+    expect(entry.statusCode).toBe(201);
+    await h.db
+      .update(appUsers)
+      .set({ status: 'INACTIVE', leftDate: TODAY })
+      .where(eq(appUsers.id, seed.appUserId));
+
+    const periods = await invoke(payrollRouter(), 'get', '/periods', req({}, {}, approverId));
+    expect(periods.statusCode).toBe(200);
+    const list = (
+      periods.jsonBody as { items: Array<{ id: string; startDate: string; endDate: string }> }
+    ).items;
+    const current = list.find((p) => p.startDate <= TODAY && TODAY <= p.endDate)!;
+    expect(current).toBeTruthy();
+    const review = await invoke(
+      payrollRouter(),
+      'get',
+      '/periods/:id/review',
+      req({}, { id: current.id }, approverId),
+    );
+    expect(review.statusCode).toBe(200);
+    const employees = (review.jsonBody as { employees: Array<{ appUserId: string }> }).employees;
+    expect(employees.map((r) => r.appUserId)).toContain(seed.appUserId);
   });
 });
 
@@ -719,5 +815,72 @@ describe('carryover uses the year-end balance', () => {
       .from(timeOffLedger)
       .where(eq(timeOffLedger.reason, 'CARRYOVER_FORFEIT'));
     expect(rows.length).toBe(0);
+  });
+
+  it('trues the forfeit up when December hours are entered afterwards', async () => {
+    const { runPayrollCarryover } = await import('../../../worker/src/jobs/payroll-carryover');
+    const [policy] = await h.db
+      .insert(accrualPolicies)
+      .values({
+        firmId: seed.firmId,
+        bank: 'PTO',
+        name: 'Capped PTO',
+        method: 'FIXED_PER_PERIOD',
+        hoursPerPeriod: '4',
+        carryoverCapHours: '40',
+      })
+      .returning({ id: accrualPolicies.id });
+    await h.db.insert(accrualPolicyAssignments).values({
+      firmId: seed.firmId,
+      appUserId: seed.appUserId,
+      policyId: policy!.id,
+      bank: 'PTO',
+      effectiveDate: '2026-01-01',
+    });
+    await h.db.insert(timeOffLedger).values({
+      firmId: seed.firmId,
+      appUserId: seed.appUserId,
+      bank: 'PTO',
+      entryDate: '2026-12-31',
+      deltaHours: '60',
+      reason: 'ADJUSTMENT',
+      note: 'year-end balance',
+    });
+
+    // The job fires at 21:30 local on Dec 31 and forfeits 20h.
+    const first = await runPayrollCarryover(h.db, log, '2027-01-01');
+    expect(first.forfeits).toBe(1);
+    const afterFirst = await h.db
+      .select()
+      .from(timeOffLedger)
+      .where(eq(timeOffLedger.reason, 'CARRYOVER_FORFEIT'));
+    expect(afterFirst.reduce((n, r) => n + Number(r.deltaHours), 0)).toBe(-20);
+
+    // 24h of December PTO is logged on Jan 2, inside the late-entry window.
+    // True year-end balance was 36h, so nothing should have been forfeited.
+    await h.db.insert(timeEntries).values({
+      appUserId: seed.appUserId,
+      engagementId: seed.engagementId,
+      workCodeId: ptoCodeId,
+      entryDate: '2026-12-30',
+      hours: '24',
+      billableFlag: false,
+      description: 'late December PTO',
+      standardRateSnapshotCents: 0,
+      standardAmountCents: 0,
+    });
+
+    const second = await runPayrollCarryover(h.db, log, '2027-01-02');
+    expect(second.forfeits).toBe(1);
+    const all = await h.db
+      .select()
+      .from(timeOffLedger)
+      .where(eq(timeOffLedger.reason, 'CARRYOVER_FORFEIT'));
+    // -20 then +20: the employee is made whole rather than left short.
+    expect(all.reduce((n, r) => n + Number(r.deltaHours), 0)).toBe(0);
+
+    // Re-running the same day is a no-op.
+    const third = await runPayrollCarryover(h.db, log, '2027-01-02');
+    expect(third.forfeits).toBe(0);
   });
 });

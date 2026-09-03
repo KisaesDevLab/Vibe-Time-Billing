@@ -9,7 +9,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, gte, inArray, isNull, lte, ne, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, or, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -154,7 +154,31 @@ export async function ensurePayPeriods(
     );
   const stale = existing.filter((p) => !valid.has(`${p.startDate}|${p.endDate}`)).map((p) => p.id);
   if (stale.length > 0) {
-    await db.delete(payPeriods).where(inArray(payPeriods.id, stale));
+    // Only drop rows nothing depends on. A stale period that already
+    // carries approvals or ledger entries is real history, and deleting it
+    // is worse than leaving it: pay_period_employee cascades away
+    // (losing approvals + the frozen totals_snapshot), and because
+    // time_off_ledger is append-only at the DB level, Postgres runs the
+    // FK's ON DELETE SET NULL as an UPDATE that the trigger REJECTS — the
+    // delete throws, and every later GET /periods 500s until someone
+    // repairs data by hand. Reconciling the tiling is not worth that.
+    const [approvals, ledger] = await Promise.all([
+      db
+        .selectDistinct({ id: payPeriodEmployees.payPeriodId })
+        .from(payPeriodEmployees)
+        .where(inArray(payPeriodEmployees.payPeriodId, stale)),
+      db
+        .selectDistinct({ id: timeOffLedger.payPeriodId })
+        .from(timeOffLedger)
+        .where(inArray(timeOffLedger.payPeriodId, stale)),
+    ]);
+    const referenced = new Set<string>();
+    for (const r of approvals) if (r.id) referenced.add(r.id);
+    for (const r of ledger) if (r.id) referenced.add(r.id);
+    const deletable = stale.filter((id) => !referenced.has(id));
+    if (deletable.length > 0) {
+      await db.delete(payPeriods).where(inArray(payPeriods.id, deletable));
+    }
   }
   await db
     .insert(payPeriods)
@@ -228,18 +252,53 @@ export async function computePeriodReview(
   period: PeriodRange,
   config: PayrollFirmConfig,
 ): Promise<EmployeePeriodRow[]> {
+  const employeeCols = {
+    id: appUsers.id,
+    fullName: appUsers.fullName,
+    overtimeExempt: appUsers.overtimeExempt,
+    isFullTime: appUsers.isFullTime,
+    standardHoursPerWeek: appUsers.standardHoursPerWeek,
+    hiredDate: appUsers.hiredDate,
+    leftDate: appUsers.leftDate,
+  };
+  // Anyone employed during the period belongs in it. Filtering to ACTIVE
+  // alone dropped an employee the moment they were deactivated or
+  // archived — which is exactly what happens at offboarding, right before
+  // their FINAL period is reviewed — so their last hours vanished from the
+  // review, the CSV, the report and the frozen lock snapshot.
+  const workedInPeriod = (
+    await db
+      .selectDistinct({ id: timeEntries.appUserId })
+      .from(timeEntries)
+      .innerJoin(appUsers, eq(appUsers.id, timeEntries.appUserId))
+      .where(
+        and(
+          eq(appUsers.firmId, firmId),
+          ne(appUsers.status, 'ACTIVE'),
+          ne(timeEntries.status, 'ARCHIVED'),
+          gte(timeEntries.entryDate, period.start),
+          lte(timeEntries.entryDate, period.end),
+        ),
+      )
+  ).map((r) => r.id);
+  const departedDuringPeriod = and(
+    isNotNull(appUsers.leftDate),
+    gte(appUsers.leftDate, period.start),
+  );
   const users = await db
-    .select({
-      id: appUsers.id,
-      fullName: appUsers.fullName,
-      overtimeExempt: appUsers.overtimeExempt,
-      isFullTime: appUsers.isFullTime,
-      standardHoursPerWeek: appUsers.standardHoursPerWeek,
-      hiredDate: appUsers.hiredDate,
-      leftDate: appUsers.leftDate,
-    })
+    .select(employeeCols)
     .from(appUsers)
-    .where(and(eq(appUsers.firmId, firmId), eq(appUsers.status, 'ACTIVE')))
+    .where(
+      and(
+        eq(appUsers.firmId, firmId),
+        or(
+          eq(appUsers.status, 'ACTIVE'),
+          workedInPeriod.length > 0
+            ? or(departedDuringPeriod, inArray(appUsers.id, workedInPeriod))
+            : departedDuringPeriod,
+        ),
+      ),
+    )
     .orderBy(appUsers.fullName);
   if (users.length === 0) return [];
   const userIds = users.map((u) => u.id);

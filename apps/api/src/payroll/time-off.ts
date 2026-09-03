@@ -10,7 +10,7 @@
 
 import express, { type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -463,6 +463,40 @@ export function createTimeOffRouter(deps: TimeOffRoutesDeps): Router {
       // all apply). A failure on any day aborts before the status flips
       // and archives this attempt's entries so the request stays
       // re-approvable without duplicates.
+      // Claim the request atomically BEFORE creating anything. The PENDING
+      // check earlier is a plain read with no lock, so two approvers — or
+      // one double-click, since the button is never disabled while N
+      // sequential entry writes run — both passed it, both created a full
+      // set of entries, and the bank was deducted twice (usage is derived
+      // by summing time entries). decided_at is null for every PENDING
+      // request, which makes it a usable claim flag without a migration.
+      const claimed = await deps.db
+        .update(timeOffRequests)
+        .set({ decidedAt: new Date(), approverAppUserId: session.appUserId })
+        .where(
+          and(
+            eq(timeOffRequests.id, request.id),
+            eq(timeOffRequests.status, 'PENDING'),
+            isNull(timeOffRequests.decidedAt),
+          ),
+        )
+        .returning({ id: timeOffRequests.id });
+      if (claimed.length === 0) {
+        res.status(409).json({ error: 'not_pending', status: 'DECIDING' });
+        return;
+      }
+      /** Hand the request back so a failed attempt stays approvable. */
+      const db = deps.db;
+      const releaseClaim = async (): Promise<void> => {
+        await db
+          .update(timeOffRequests)
+          .set({ decidedAt: null, approverAppUserId: null })
+          .where(and(eq(timeOffRequests.id, request.id), eq(timeOffRequests.status, 'PENDING')))
+          .catch((err: unknown) =>
+            logger.error({ err, requestId: request.id }, 'approval claim release failed'),
+          );
+      };
+
       const requesterSession = { ...session, appUserId: request.appUserId };
       const created: Array<{ dayId: string; timeEntryId: string }> = [];
       for (const d of days) {
@@ -500,6 +534,7 @@ export function createTimeOffRouter(deps: TimeOffRoutesDeps): Router {
                 logger.error({ err, requestId: request.id }, 'approval rollback archive failed'),
               );
           }
+          await releaseClaim();
           res.status(409).json({
             error: 'entry_create_failed',
             day: d.day,
@@ -526,7 +561,7 @@ export function createTimeOffRouter(deps: TimeOffRoutesDeps): Router {
             decisionNote: typeof req.body?.note === 'string' ? req.body.note.slice(0, 400) : '',
             updatedAt: new Date(),
           })
-          .where(eq(timeOffRequests.id, request.id));
+          .where(and(eq(timeOffRequests.id, request.id), eq(timeOffRequests.status, 'PENDING')));
       });
 
       let warning: string | undefined;

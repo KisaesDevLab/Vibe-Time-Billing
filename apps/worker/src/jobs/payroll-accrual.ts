@@ -8,7 +8,7 @@
 // period_key under a partial unique index, inserted with
 // ON CONFLICT DO NOTHING — re-runs are no-ops.
 
-import { and, eq, gte, inArray, isNull, lte, ne, sql } from 'drizzle-orm';
+import { and, eq, gte, inArray, isNull, like, lte, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '@vibe/db';
 import {
@@ -28,6 +28,7 @@ import {
   computeAnnualGrant,
   computePeriodAccrual,
   generatePayPeriods,
+  round2,
   type AccrualPolicyInput,
   type PayPeriodFrequency,
   type PolicyTier,
@@ -237,15 +238,42 @@ export async function runPayrollAccrual(
             );
           hoursWorked = Number(worked?.total ?? 0);
         }
+        // What this period has already accrued. A period is treated as
+        // complete the morning after it ends, so for PER_HOURS_WORKED the
+        // first pass only ever sees the hours entered by then — and
+        // timesheets submitted late (the common case) were never counted,
+        // permanently, because the PP:<id> key made the first number final.
+        const [priorRow] = await db
+          .select({ total: sql<string>`COALESCE(SUM(${timeOffLedger.deltaHours}), 0)` })
+          .from(timeOffLedger)
+          .where(
+            and(
+              eq(timeOffLedger.firmId, fs.firmId),
+              eq(timeOffLedger.appUserId, a.appUserId),
+              eq(timeOffLedger.bank, a.policy.bank),
+              eq(timeOffLedger.reason, 'ACCRUAL'),
+              like(timeOffLedger.periodKey, `PP:${period.id}%`),
+            ),
+          );
+        const already = Number(priorRow?.total ?? 0);
         const accrued = computePeriodAccrual(policy, {
           hiredDate: a.hiredDate,
           leftDate: a.leftDate,
           periodEnd: period.endDate,
           hoursWorkedInPeriod: hoursWorked,
-          currentBalance: balance,
+          // Exclude this period's own accrual so the max-balance clamp is
+          // evaluated on the same basis as the first pass.
+          currentBalance: round2(balance - already),
           tiers,
         });
-        if (accrued <= 0) continue;
+        // Only hours-based policies can change after the fact. A fixed
+        // per-period amount that differs now means the POLICY changed, and
+        // that must not be applied retroactively.
+        const isTrueUp = already !== 0;
+        if (isTrueUp && a.policy.method !== 'PER_HOURS_WORKED') continue;
+        const delta = isTrueUp ? round2(accrued - already) : accrued;
+        if (delta <= 0 && !isTrueUp) continue;
+        if (delta === 0) continue;
         const inserted = await db
           .insert(timeOffLedger)
           .values({
@@ -253,12 +281,16 @@ export async function runPayrollAccrual(
             appUserId: a.appUserId,
             bank: a.policy.bank,
             entryDate: period.endDate,
-            deltaHours: accrued.toString(),
+            deltaHours: delta.toString(),
             reason: 'ACCRUAL',
             policyId: a.policy.id,
             payPeriodId: period.id,
-            periodKey: `PP:${period.id}`,
-            note: `Accrual ${period.startDate} → ${period.endDate} (${a.policy.name})`,
+            // One correction per day, so re-running converges rather than
+            // stacking duplicates.
+            periodKey: isTrueUp ? `PP:${period.id}:TRUEUP:${today}` : `PP:${period.id}`,
+            note: isTrueUp
+              ? `Accrual true-up ${period.startDate} → ${period.endDate} for hours entered late (${a.policy.name})`
+              : `Accrual ${period.startDate} → ${period.endDate} (${a.policy.name})`,
           })
           .onConflictDoNothing()
           .returning({ id: timeOffLedger.id });

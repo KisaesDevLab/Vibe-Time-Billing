@@ -143,6 +143,32 @@ describe('computeAnnualGrant', () => {
   });
 });
 
+describe('computeAnnualGrant — waiting period', () => {
+  const policy: AccrualPolicyInput = {
+    ...base,
+    method: 'ANNUAL_GRANT',
+    annualGrantTiming: 'CALENDAR_YEAR',
+    annualGrantHours: 80,
+    accrualWaitingDays: 90,
+  };
+
+  it('grants once the wait is served, not the following year', () => {
+    const hire = { hiredDate: '2025-11-15', leftDate: null, currentBalance: 0, tiers: [] };
+    // The wait ends 2026-02-13. Measuring it against the Jan-1 grant date
+    // skipped the whole of 2026 and only paid out on 2027-01-01.
+    expect(computeAnnualGrant(policy, { ...hire, today: '2026-01-05' })).toBeNull();
+    expect(computeAnnualGrant(policy, { ...hire, today: '2026-02-12' })).toBeNull();
+    const granted = computeAnnualGrant(policy, { ...hire, today: '2026-02-13' });
+    expect(granted?.grantHours).toBe(80);
+    expect(granted?.periodKey).toBe('ANNUAL:2026');
+  });
+
+  it('is unchanged for a hire whose wait was already served', () => {
+    const hire = { hiredDate: '2024-03-01', leftDate: null, currentBalance: 0, tiers: [] };
+    expect(computeAnnualGrant(policy, { ...hire, today: '2026-01-01' })?.grantHours).toBe(80);
+  });
+});
+
 describe('carryover, tenure, usage, balances', () => {
   it('forfeits only the excess over the carryover cap', () => {
     expect(computeCarryoverForfeit(55, 40)).toBe(-15);

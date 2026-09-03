@@ -1006,7 +1006,7 @@ const CRON: Record<QueueName, string> = {
   'hour-bank-replenish': '40 1 * * *',
   // 0226 — payroll accrual nightly at 02:10; carryover forfeit Jan 1.
   'payroll-accrual': '10 2 * * *',
-  'payroll-carryover': '30 2 1 1 *',
+  'payroll-carryover': '30 12 1 1 *',
   'approval-escalation': '20 * * * *',
   'approval-sla-monitor': '50 * * * *',
   'payment-retry': '15 2 * * *',
