@@ -29,8 +29,13 @@ export function hasCameraApi(
  *  honours it. `deviceId` pins the lens once we know which one we want. */
 export function buildScanConstraints(deviceId?: string | null): MediaStreamConstraints {
   const video: MediaTrackConstraints = {
-    width: { ideal: 2560, min: 1024 },
-    height: { ideal: 1440, min: 576 },
+    // `ideal` ONLY. `min`/`max` are REQUIRED constraints: a camera that
+    // cannot reach them makes getUserMedia reject with OverconstrainedError
+    // rather than degrade. A 640x480 laptop webcam (the intake page is used
+    // on desktop too) or an older Android sensor would lose the scanner
+    // entirely — the opposite of what this constraint set is for.
+    width: { ideal: 2560 },
+    height: { ideal: 1440 },
     // reason: focusMode is a real MediaTrackConstraint on Android Chrome
     // but not in lib.dom's type yet.
     advanced: [{ focusMode: 'continuous' } as MediaTrackConstraintSet],
@@ -51,9 +56,15 @@ const AVOID_HINT = /\b(ultra|wide|tele|zoom|macro|depth|ir|infrared|bokeh|front|
 
 /**
  * Pick the main rear camera from enumerateDevices(). Labels are only
- * populated after a permission grant, so call this once a stream is
- * live. Returns null when there is no clear winner (keep the current
- * track in that case).
+ * populated after a permission grant, so call this once a stream is live.
+ *
+ * Conservative by design: this only ever moves BETWEEN positively
+ * identified rear lenses. Device labels are empty before permission is
+ * granted and are localised on many Android builds ("Rückkamera",
+ * "후면 카메라"), so without a positive rear match there is no way to tell
+ * a main lens from a selfie camera — guessing there would replace a
+ * working rear stream with a front-facing one. Returns null whenever
+ * there is no clear winner, meaning "keep the current track".
  */
 export function pickRearCamera(
   devices: readonly CameraDeviceLike[],
@@ -61,15 +72,17 @@ export function pickRearCamera(
 ): CameraDeviceLike | null {
   const cams = devices.filter((d) => d.kind === 'videoinput');
   if (cams.length < 2) return null;
+  // Firefox omits deviceId from getSettings(), so we cannot tell which
+  // lens we are already on. Never swap blind.
+  if (!currentDeviceId) return null;
   const rear = cams.filter((d) => REAR_HINT.test(d.label) && !/\bfront\b/i.test(d.label));
-  const pool = rear.length > 0 ? rear : cams;
-  const plain = pool.filter((d) => !AVOID_HINT.test(d.label));
-  const winner = plain[0] ?? pool[0] ?? null;
+  // No label says "rear" — unlabeled or non-English. Keep what we have.
+  if (rear.length === 0) return null;
+  const winner = rear.find((d) => !AVOID_HINT.test(d.label)) ?? null;
   if (!winner || winner.deviceId === currentDeviceId) return null;
-  // Only switch when the current lens looks like a special lens (or is
-  // unknown) — never bounce a good main camera.
+  // Never bounce a lens that already looks like the plain main camera.
   const current = cams.find((d) => d.deviceId === currentDeviceId);
-  if (current && !AVOID_HINT.test(current.label) && REAR_HINT.test(current.label)) return null;
+  if (current && REAR_HINT.test(current.label) && !AVOID_HINT.test(current.label)) return null;
   return winner;
 }
 

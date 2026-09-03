@@ -15,6 +15,8 @@ import { useEffect, useState } from 'react';
 
 import { CameraCapture, PHOTO_CAPTURE_ACCEPT, hasCameraApi } from '@vibe/ui';
 
+import { MIME_EXT, describeUploadError, inferCaptureMime } from '../lib/capture';
+
 import { api, uploadRaw, type ApiError } from '../api-client';
 import {
   Check,
@@ -116,10 +118,19 @@ export function UploadForm({
     setFiles((prev) => [...prev, ...next]);
   }
 
-  function addCapture(blob: Blob, meta?: { filename?: string }): void {
+  function addCapture(
+    blob: Blob,
+    meta?: { source?: 'scanner' | 'native'; filename?: string },
+  ): void {
     seq += 1;
-    const mimeType = blob.type || 'image/jpeg';
-    const ext = mimeType === 'image/png' ? 'png' : 'jpg';
+    // Canvas frames really are JPEG. Files from the phone's camera app are
+    // NOT: some Android WebViews hand back HEIC with an empty type, and
+    // stamping those 'image/jpeg' makes the server accept them and the
+    // worker's pdf-lib embed throw — which loses the assembled PDF for
+    // every page in the session, not just the bad one.
+    const mimeType =
+      meta?.source === 'scanner' ? 'image/jpeg' : inferCaptureMime(blob, meta?.filename);
+    const ext = MIME_EXT[mimeType] ?? 'jpg';
     setFiles((prev) => [
       ...prev,
       {
@@ -193,10 +204,15 @@ export function UploadForm({
         }),
       });
       for (const f of files) {
-        await uploadRaw(`/session/${sessionId}/files`, f.blob, {
-          filename: f.name,
-          mimeType: f.mimeType,
-        });
+        try {
+          await uploadRaw(`/session/${sessionId}/files`, f.blob, {
+            filename: f.name,
+            mimeType: f.mimeType,
+          });
+        } catch (err) {
+          const code = (err as ApiError).message || '';
+          throw new Error(describeUploadError(code, f.name));
+        }
       }
       await api(`/session/${sessionId}/complete`, { method: 'POST' });
       setReference(makeReference());
@@ -397,7 +413,7 @@ export function UploadForm({
                   style={{ display: 'none' }}
                   onChange={(e) => {
                     for (const f of Array.from(e.target.files ?? [])) {
-                      addCapture(f, { filename: f.name });
+                      addCapture(f, { source: 'native', filename: f.name });
                     }
                     e.target.value = '';
                   }}

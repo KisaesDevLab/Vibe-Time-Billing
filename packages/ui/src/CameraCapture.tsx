@@ -34,6 +34,12 @@ export interface CameraCaptureProps {
 
 type Phase = 'starting' | 'ready' | 'error';
 
+/** If no decodable frame arrives within this window we stop pretending the
+ *  camera is coming up and show the guidance + native-camera fallback.
+ *  Some WebViews accept getUserMedia, never fire canplay, and would
+ *  otherwise leave the user on a dark screen with a dead shutter. */
+const START_TIMEOUT_MS = 6000;
+
 export function CameraCapture({
   onCapture,
   onClose,
@@ -42,6 +48,10 @@ export function CameraCapture({
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const nativeInputRef = useRef<HTMLInputElement>(null);
+  const readyRef = useRef(false);
+  const aliveRef = useRef(true);
+  const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [phase, setPhase] = useState<Phase>(() => (hasCameraApi() ? 'starting' : 'error'));
   const [error, setError] = useState<CameraErrorCopy | null>(() =>
     hasCameraApi() ? null : describeCameraError(null),
@@ -54,6 +64,12 @@ export function CameraCapture({
     streamRef.current = null;
   }, []);
 
+  const failStarting = useCallback((err: unknown) => {
+    if (!aliveRef.current || readyRef.current) return;
+    setError(describeCameraError(err));
+    setPhase('error');
+  }, []);
+
   const attach = useCallback(
     async (stream: MediaStream): Promise<void> => {
       stopStream();
@@ -62,13 +78,20 @@ export function CameraCapture({
       if (!video) return;
       video.srcObject = stream;
       // Android Chrome sometimes needs an explicit play() even with
-      // autoplay + muted; a rejection here just means the user must tap.
+      // autoplay + muted. A rejection is not fatal on its own — the frame
+      // may still decode — so the watchdog below is what decides.
       await video.play().catch(() => undefined);
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      watchdogRef.current = setTimeout(() => failStarting(null), START_TIMEOUT_MS);
     },
-    [stopStream],
+    [stopStream, failStarting],
   );
 
   useEffect(() => {
+    // Re-arm on every mount: React StrictMode runs effect -> cleanup ->
+    // effect in dev, and the cleanup flips this false.
+    aliveRef.current = true;
+    readyRef.current = false;
     if (!hasCameraApi()) return;
     let cancelled = false;
     async function start(): Promise<void> {
@@ -108,13 +131,22 @@ export function CameraCapture({
     void start();
     return () => {
       cancelled = true;
+      aliveRef.current = false;
+      if (watchdogRef.current) clearTimeout(watchdogRef.current);
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
       stopStream();
     };
   }, [attach, stopStream]);
 
   function onVideoReady(): void {
     const v = videoRef.current;
-    if (v && v.videoWidth > 0) setPhase('ready');
+    if (!v || v.videoWidth === 0) return;
+    readyRef.current = true;
+    if (watchdogRef.current) {
+      clearTimeout(watchdogRef.current);
+      watchdogRef.current = null;
+    }
+    setPhase('ready');
   }
 
   function snap(): void {
@@ -127,13 +159,15 @@ export function CameraCapture({
     if (!ctx) return;
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
     setFlash(true);
-    setTimeout(() => setFlash(false), 120);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlash(false), 120);
     canvas.toBlob(
       (blob) => {
-        if (blob) {
-          onCapture(blob, { source: 'scanner' });
-          setCount((c) => c + 1);
-        }
+        // Encoding a 2560x1440 frame is async, so the dialog may already be
+        // closed. Dropping the page is right — the user chose Done/Cancel.
+        if (!blob || !aliveRef.current) return;
+        onCapture(blob, { source: 'scanner' });
+        setCount((c) => c + 1);
       },
       'image/jpeg',
       0.92,

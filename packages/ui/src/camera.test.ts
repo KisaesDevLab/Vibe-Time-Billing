@@ -24,6 +24,16 @@ describe('buildScanConstraints', () => {
     expect(v.deviceId).toBeUndefined();
     expect(c.audio).toBe(false);
   });
+  it('never sends min/max, which are required constraints', () => {
+    // A hard min makes getUserMedia reject with OverconstrainedError on any
+    // camera below it (640x480 webcams, older Android sensors) instead of
+    // degrading — that would kill the scanner outright.
+    for (const c of [buildScanConstraints(), buildScanConstraints('abc')]) {
+      const v = c.video as MediaTrackConstraints;
+      expect(v.width).toEqual({ ideal: expect.any(Number) });
+      expect(v.height).toEqual({ ideal: expect.any(Number) });
+    }
+  });
   it('pins a device id exactly when given', () => {
     const v = buildScanConstraints('abc').video as MediaTrackConstraints;
     expect(v.deviceId).toEqual({ exact: 'abc' });
@@ -46,11 +56,28 @@ describe('pickRearCamera', () => {
     // Already on the main lens → no switch.
     expect(pickRearCamera(devices, 'main')).toBeNull();
   });
-  it('does not switch away from an unlabeled current device when labels are empty', () => {
-    const devices = [cam('a', ''), cam('b', '')];
-    // No hints at all: first device wins only if we are not already on it.
-    expect(pickRearCamera(devices, 'a')).toBeNull();
-    expect(pickRearCamera(devices, 'b')?.deviceId).toBe('a');
+  it('never switches when no label positively says "rear"', () => {
+    // Labels are empty before permission is granted, and localised on many
+    // Android builds. Guessing here can hand back the FRONT camera, which is
+    // exactly the failure this helper exists to prevent.
+    const unlabeled = [cam('a', ''), cam('b', '')];
+    expect(pickRearCamera(unlabeled, 'a')).toBeNull();
+    expect(pickRearCamera(unlabeled, 'b')).toBeNull();
+
+    const localised = [cam('f', 'Caméra avant'), cam('r', 'Caméra arrière')];
+    expect(pickRearCamera(localised, 'f')).toBeNull();
+
+    // Front camera enumerated first must never win by position.
+    const frontFirst = [cam('front', 'facing front'), cam('other', '')];
+    expect(pickRearCamera(frontFirst, 'other')).toBeNull();
+  });
+  it('does not swap when the browser hides the current deviceId (Firefox)', () => {
+    const devices = [
+      cam('uw', 'camera2 2, facing back (ultra wide)'),
+      cam('main', 'camera2 0, facing back'),
+    ];
+    expect(pickRearCamera(devices, null)).toBeNull();
+    expect(pickRearCamera(devices, undefined)).toBeNull();
   });
 });
 
