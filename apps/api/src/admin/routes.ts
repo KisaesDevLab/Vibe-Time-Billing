@@ -135,6 +135,10 @@ const FirmSettingsPatchSchema = z.object({
   // 0204 — days after a drop-off date to auto-set an engagement's due date
   // (only when it has none). null = disabled.
   dropoffDueOffsetDays: z.number().int().min(0).max(365).nullable().optional(),
+  // 0235 — engagement video retention defaults (days); null disables
+  // that clock by default. Pre-fills the upload dialog.
+  videoDefaultDeleteAfterDays: z.number().int().min(1).max(3650).nullable().optional(),
+  videoDefaultDeleteDaysAfterPlay: z.number().int().min(1).max(3650).nullable().optional(),
   timeEntryRoundingHours: z.enum(['0.10', '0.25', '0.00']).optional(),
   stepUpTimeoutMinutes: z.number().int().min(5).max(240).optional(),
   // 0151 — firm-level staff second-factor toggle (revises decision #5).
