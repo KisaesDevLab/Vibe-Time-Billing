@@ -29,6 +29,7 @@ import {
   threadMembers,
   threads,
   timeEntryMessageLinks,
+  engagementVideos,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
@@ -382,10 +383,13 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
           excerptPlaintext: messages.excerptPlaintext,
           editOfId: messages.editOfId,
           createdAt: messages.createdAt,
+          videoId: messages.engagementVideoId,
+          videoTitle: engagementVideos.title,
         })
         .from(messages)
         .leftJoin(appUsers, eq(appUsers.id, messages.senderAppUserId))
         .leftJoin(portalIdentity, eq(portalIdentity.id, messages.senderPortalIdentityId))
+        .leftJoin(engagementVideos, eq(engagementVideos.id, messages.engagementVideoId))
         .where(and(eq(messages.threadId, threadId), isNull(messages.deletedAt)))
         .orderBy(asc(messages.createdAt))
         .limit(limit);
@@ -409,6 +413,8 @@ export function createEngagementMessagingRouter(deps: EngagementMessagingDeps): 
           body: plaintexts[i],
           editOfId: r.editOfId,
           createdAt: r.createdAt,
+          videoId: r.videoId,
+          videoTitle: r.videoTitle,
           attachments: attByMsg.get(r.id) ?? [],
         }));
         res.json({ items });

@@ -119,6 +119,7 @@ import { createPortalTaxPaymentRouter } from './portal/tax-payments';
 import { createPortalStepUpRouter } from './portal/step-up';
 import { createPortalLetterRouter } from './portal/letters';
 import { createPortalFileRouter } from './portal/files';
+import { createPortalVideoRouter } from './portal/videos';
 import { createPortalMessagingRouter } from './portal/messaging';
 import { createPortalRequestsRouter } from './portal/requests';
 import { createAdminJobRouter } from './admin/jobs';
@@ -1507,6 +1508,15 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/files', portalFileRouter);
+
+  // 0235 — engagement videos: list, inline stream URL, play logging,
+  // replies into the engagement thread.
+  const portalVideoRouter = createPortalVideoRouter({
+    db: deps.db,
+    redis: deps.redis,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/videos', portalVideoRouter);
 
   // Stage 4 — portal-side messaging and requests.
   const portalMessagingRouter = createPortalMessagingRouter({

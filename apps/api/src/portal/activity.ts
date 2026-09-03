@@ -87,7 +87,8 @@ export function createPortalActivityRouter(deps: PortalActivityDeps): Router {
                 'payment_method',
                 'file',
                 'client_request',
-                'engagement'
+                'engagement',
+                'engagement_video'
               )
             UNION
             -- Staff-initiated events on entities scoped clients own.
