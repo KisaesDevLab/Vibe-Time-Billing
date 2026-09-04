@@ -301,6 +301,32 @@ export function RequestDetailPage(): JSX.Element {
                         }}
                       />
                     </label>
+                    <label
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: 6,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: tokens.color.accent,
+                        cursor: busy ? 'wait' : 'pointer',
+                      }}
+                      title="Open your phone's camera"
+                    >
+                      📷 Take a photo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        disabled={busy !== null || request.status === 'FULFILLED'}
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const f = e.target.files?.[0];
+                          e.target.value = '';
+                          if (f) void uploadForItem(it.id, f);
+                        }}
+                      />
+                    </label>
                     <span style={{ fontSize: 11, color: tokens.color.textMuted }}>
                       lands directly with your firm — no separate attach step
                     </span>

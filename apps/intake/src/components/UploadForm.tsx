@@ -13,6 +13,10 @@
 
 import { useEffect, useState } from 'react';
 
+import { CameraCapture, PHOTO_CAPTURE_ACCEPT, hasCameraApi } from '@vibe/ui';
+
+import { MIME_EXT, describeUploadError, inferCaptureMime } from '../lib/capture';
+
 import { api, uploadRaw, type ApiError } from '../api-client';
 import {
   Check,
@@ -29,7 +33,6 @@ import {
   primaryButtonStyle,
   subheadStyle,
 } from '../ui';
-import { CameraCapture } from './CameraCapture';
 import { Turnstile } from './Turnstile';
 
 interface PendingFile {
@@ -115,11 +118,28 @@ export function UploadForm({
     setFiles((prev) => [...prev, ...next]);
   }
 
-  function addCapture(blob: Blob): void {
+  function addCapture(
+    blob: Blob,
+    meta?: { source?: 'scanner' | 'native'; filename?: string },
+  ): void {
     seq += 1;
+    // Canvas frames really are JPEG. Files from the phone's camera app are
+    // NOT: some Android WebViews hand back HEIC with an empty type, and
+    // stamping those 'image/jpeg' makes the server accept them and the
+    // worker's pdf-lib embed throw — which loses the assembled PDF for
+    // every page in the session, not just the bad one.
+    const mimeType =
+      meta?.source === 'scanner' ? 'image/jpeg' : inferCaptureMime(blob, meta?.filename);
+    const ext = MIME_EXT[mimeType] ?? 'jpg';
     setFiles((prev) => [
       ...prev,
-      { key: `c${seq}`, name: `scan-${seq}.jpg`, mimeType: 'image/jpeg', size: blob.size, blob },
+      {
+        key: `c${seq}`,
+        name: meta?.filename || `scan-${seq}.${ext}`,
+        mimeType,
+        size: blob.size,
+        blob,
+      },
     ]);
   }
 
@@ -184,10 +204,15 @@ export function UploadForm({
         }),
       });
       for (const f of files) {
-        await uploadRaw(`/session/${sessionId}/files`, f.blob, {
-          filename: f.name,
-          mimeType: f.mimeType,
-        });
+        try {
+          await uploadRaw(`/session/${sessionId}/files`, f.blob, {
+            filename: f.name,
+            mimeType: f.mimeType,
+          });
+        } catch (err) {
+          const code = (err as ApiError).message || '';
+          throw new Error(describeUploadError(code, f.name));
+        }
       }
       await api(`/session/${sessionId}/complete`, { method: 'POST' });
       setReference(makeReference());
@@ -369,9 +394,36 @@ export function UploadForm({
                   }}
                 />
               </label>
-              <button type="button" onClick={() => setCamera(true)} style={ghostButtonStyle}>
-                Scan with camera
-              </button>
+              <label
+                style={{
+                  ...ghostButtonStyle,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  cursor: 'pointer',
+                }}
+              >
+                📷 Take a photo
+                {/* Native camera app: works in every phone browser and in-app
+                    WebView, with the phone's own autofocus and resolution. */}
+                <input
+                  type="file"
+                  accept={PHOTO_CAPTURE_ACCEPT}
+                  capture="environment"
+                  multiple
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    for (const f of Array.from(e.target.files ?? [])) {
+                      addCapture(f, { source: 'native', filename: f.name });
+                    }
+                    e.target.value = '';
+                  }}
+                />
+              </label>
+              {hasCameraApi() && (
+                <button type="button" onClick={() => setCamera(true)} style={ghostButtonStyle}>
+                  Scan pages
+                </button>
+              )}
             </div>
           </div>
 
@@ -477,7 +529,12 @@ export function UploadForm({
 
       <TrustFooter />
 
-      {camera && <CameraCapture onCapture={addCapture} onClose={() => setCamera(false)} />}
+      {camera && (
+        <CameraCapture
+          onCapture={(blob, meta) => addCapture(blob, meta)}
+          onClose={() => setCamera(false)}
+        />
+      )}
     </div>
   );
 }

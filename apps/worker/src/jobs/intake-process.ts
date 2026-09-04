@@ -69,19 +69,40 @@ async function readObject(storage: StorageClient, key: string): Promise<Buffer> 
   return Buffer.concat(chunks);
 }
 
-/** Combine JPG/PNG page images into a single PDF, one image per page. */
+/**
+ * Combine JPG/PNG page images into a single PDF, one image per page.
+ *
+ * Each embed is guarded: a phone that reports HEIC bytes as image/jpeg
+ * (some Android WebViews do) would otherwise throw and cost the visitor
+ * the assembled PDF for EVERY page, not just the bad one. A page that
+ * cannot be embedded is skipped and still reaches staff as a loose file.
+ * Returns null when nothing could be embedded.
+ */
 async function assembleImagesToPdf(
   images: Array<{ buf: Buffer; mimeType: string }>,
-): Promise<Buffer> {
+  log: Logger,
+): Promise<{ pdf: Buffer; embedded: number; skipped: number } | null> {
   const pdf = await PDFDocument.create();
+  let embeddedCount = 0;
+  let skipped = 0;
   for (const img of images) {
-    const embedded =
-      img.mimeType === 'image/png' ? await pdf.embedPng(img.buf) : await pdf.embedJpg(img.buf);
-    const page = pdf.addPage([embedded.width, embedded.height]);
-    page.drawImage(embedded, { x: 0, y: 0, width: embedded.width, height: embedded.height });
+    try {
+      const isPng = img.mimeType.toLowerCase() === 'image/png';
+      const embedded = isPng ? await pdf.embedPng(img.buf) : await pdf.embedJpg(img.buf);
+      const page = pdf.addPage([embedded.width, embedded.height]);
+      page.drawImage(embedded, { x: 0, y: 0, width: embedded.width, height: embedded.height });
+      embeddedCount += 1;
+    } catch (err) {
+      skipped += 1;
+      log.warn(
+        { err, mimeType: img.mimeType, bytes: img.buf.byteLength },
+        'intake-process: page could not be embedded; skipping it and keeping the rest',
+      );
+    }
   }
+  if (embeddedCount === 0) return null;
   const out = await pdf.save();
-  return Buffer.from(out);
+  return { pdf: Buffer.from(out), embedded: embeddedCount, skipped };
 }
 
 export async function runIntakeProcess(
@@ -182,19 +203,32 @@ export async function runIntakeProcess(
   let assembledPdf = false;
   if (cleanImages.length > 0) {
     try {
-      const pdfBytes = await assembleImagesToPdf(cleanImages);
-      const objectKey = `${RECEIVED_PREFIX}/${sessionId}/assembled-${cleanImages.length}p.pdf`;
-      await storage.put(objectKey, pdfBytes, { contentType: 'application/pdf' });
-      await db.insert(intakeFiles).values({
-        sessionId,
-        objectKey,
-        assembledPdfObjectKey: objectKey,
-        mimeType: 'application/pdf',
-        byteSize: pdfBytes.byteLength,
-        kind: 'scan',
-        scanStatus: 'clean',
-      });
-      assembledPdf = true;
+      const built = await assembleImagesToPdf(cleanImages, log);
+      if (!built) {
+        log.warn(
+          { sessionId, pages: cleanImages.length },
+          'intake-process: no page could be embedded; originals kept, no PDF',
+        );
+      } else {
+        const objectKey = `${RECEIVED_PREFIX}/${sessionId}/assembled-${built.embedded}p.pdf`;
+        await storage.put(objectKey, built.pdf, { contentType: 'application/pdf' });
+        await db.insert(intakeFiles).values({
+          sessionId,
+          objectKey,
+          assembledPdfObjectKey: objectKey,
+          mimeType: 'application/pdf',
+          byteSize: built.pdf.byteLength,
+          kind: 'scan',
+          scanStatus: 'clean',
+        });
+        assembledPdf = true;
+        if (built.skipped > 0) {
+          log.warn(
+            { sessionId, embedded: built.embedded, skipped: built.skipped },
+            'intake-process: some pages were not embeddable; they remain as loose files',
+          );
+        }
+      }
     } catch (err) {
       // Non-fatal: the originals are clean + available; just skip assembly.
       log.error({ err, sessionId }, 'intake-process: PDF assembly failed (originals kept)');
