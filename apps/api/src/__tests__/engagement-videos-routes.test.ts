@@ -6,6 +6,7 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { auditLog, engagementVideos, firmSettings } from '@vibe/db/schema';
+import type { RoleSlug } from '@vibe/core/rbac';
 import type { StorageClient, StorageObjectMeta } from '@vibe/storage';
 
 import { buildPgliteHarness, seedMinimalFirm, type PgliteHarness } from './_pglite-harness';
@@ -35,7 +36,7 @@ function fakeStorage(): StorageClient {
   } as unknown as StorageClient;
 }
 
-function app(userId = seed.appUserId, roles: Array<'admin' | 'staff'> = ['admin']) {
+function app(userId = seed.appUserId, roles: RoleSlug[] = ['admin']) {
   const a = express();
   a.use(express.json());
   a.use((req: Request, _res: Response, next: NextFunction) => {
