@@ -6,6 +6,7 @@
 // never sees ciphertext or holds any encryption material.
 
 import { useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import {
   Button,
@@ -43,6 +44,9 @@ interface MessageRow {
   body: string;
   createdAt: string;
   attachments?: Attachment[];
+  /** 0235 — set when the message was a reply from the video player. */
+  videoId?: string | null;
+  videoTitle?: string | null;
 }
 
 interface PendingAttachment {
@@ -61,7 +65,9 @@ function fmtSize(n: number): string {
 export function MessagesPage(): JSX.Element {
   const narrow = useIsNarrow();
   const [threads, setThreads] = useState<ThreadRow[]>([]);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  // 0235 — the video player deep-links to its engagement thread.
+  const [searchParams] = useSearchParams();
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(searchParams.get('thread'));
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
@@ -475,6 +481,11 @@ export function MessagesPage(): JSX.Element {
                       <span>{isStaff ? (m.senderName ?? 'Your accountant') : 'You'}</span>
                       <span>{new Date(m.createdAt).toLocaleString()}</span>
                     </div>
+                    {m.videoId && (
+                      <div style={{ marginBottom: 4 }}>
+                        <Pill tone="accent">Re: video · {m.videoTitle ?? 'Video'}</Pill>
+                      </div>
+                    )}
                     <div style={{ fontSize: 13, whiteSpace: 'pre-wrap' }}>{m.body}</div>
                     {m.attachments && m.attachments.length > 0 && (
                       <div style={{ display: 'grid', gap: 6, marginTop: 6 }}>

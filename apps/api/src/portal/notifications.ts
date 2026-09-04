@@ -25,6 +25,8 @@ import {
   portalNotifications,
   threadMembers,
   threads,
+  engagementVideoPlays,
+  engagementVideos,
 } from '@vibe/db/schema';
 
 import { addUuidIdGuard } from '../lib/uuid-guard';
@@ -77,7 +79,13 @@ export function createPortalNotificationRouter(deps: PortalNotificationDeps): Ro
   router.get('/attention', deps.requireAuth, async (req: Request, res: Response) => {
     const session = req.portalSession!;
     if (!deps.db) {
-      res.json({ unreadMessages: 0, openRequests: 0, lettersAwaiting: 0, newFiles: 0 });
+      res.json({
+        unreadMessages: 0,
+        openRequests: 0,
+        lettersAwaiting: 0,
+        newFiles: 0,
+        newVideos: 0,
+      });
       return;
     }
     const db = deps.db;
@@ -85,6 +93,7 @@ export function createPortalNotificationRouter(deps: PortalNotificationDeps): Ro
     let openRequests = 0;
     let lettersAwaiting = 0;
     let newFiles = 0;
+    let newVideos = 0;
 
     try {
       // Staff-authored messages in this identity's visible client threads
@@ -169,7 +178,29 @@ export function createPortalNotificationRouter(deps: PortalNotificationDeps): Ro
       /* best-effort */
     }
 
-    res.json({ unreadMessages, openRequests, lettersAwaiting, newFiles });
+    try {
+      // 0235 — available engagement videos this identity has not played.
+      const [row] = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(engagementVideos)
+        .where(
+          and(
+            eq(engagementVideos.firmId, session.firmId),
+            eq(engagementVideos.clientId, session.activeClientId),
+            eq(engagementVideos.status, 'AVAILABLE'),
+            sql`NOT EXISTS (
+              SELECT 1 FROM ${engagementVideoPlays} p
+              WHERE p.video_id = ${engagementVideos.id}
+                AND p.portal_identity_id = ${session.portalIdentityId}::uuid
+            )`,
+          ),
+        );
+      newVideos = row?.count ?? 0;
+    } catch {
+      /* best-effort */
+    }
+
+    res.json({ unreadMessages, openRequests, lettersAwaiting, newFiles, newVideos });
   });
 
   router.get('/unread-count', deps.requireAuth, async (req: Request, res: Response) => {

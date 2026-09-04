@@ -18,6 +18,7 @@ import { EngagementStatusHistoryCard } from './EngagementStatusHistoryCard';
 import { EngagementRecurringPlansCard } from './billing/EngagementRecurringPlansCard';
 import { RecurringEngagementsCard } from './clients/RecurringEngagementsCard';
 import { DropOffCard } from './engagements/DropOffCard';
+import { EngagementVideosCard } from './engagements/EngagementVideosCard';
 import { PricingSuggestionPanel } from './engagements/PricingSuggestionPanel';
 import { EngagementSmsPanel } from './sms/EngagementSmsPanel';
 
@@ -1006,6 +1007,7 @@ export function EngagementDetailPage(): JSX.Element {
       )}
 
       {id && <DropOffCard engagementId={id} />}
+      {id && <EngagementVideosCard engagementId={id} />}
 
       {milestones.length > 0 && (
         <Card title={`Milestones (${milestones.length})`}>

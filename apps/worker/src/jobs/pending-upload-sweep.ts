@@ -22,12 +22,15 @@ import { and, eq, lt } from 'drizzle-orm';
 import type { Logger } from 'pino';
 
 import type { Database } from '@vibe/db';
-import { files } from '@vibe/db/schema';
+import { engagementVideos, files } from '@vibe/db/schema';
 import type { StorageClient } from '@vibe/storage';
 
 import { incCounter } from '../metrics';
 
 const DEFAULT_MAX_AGE_MINUTES = 30;
+/** Video reservations only: comfortably beyond the 60-minute presigned PUT
+ *  lifetime so a large in-flight upload is never swept out from under. */
+const VIDEO_MIN_AGE_MINUTES = 12 * 60;
 const DEFAULT_BATCH_SIZE = 100;
 
 export interface PendingUploadSweepOpts {
@@ -86,5 +89,64 @@ export async function runPendingUploadSweep(
     'pending-upload-sweep tick complete',
   );
 
+  return { scanned: stale.length, deleted, storageErrors };
+}
+
+/**
+ * 0235 — same janitor for engagement videos: a reservation the browser
+ * never completed (PENDING_UPLOAD older than the window) is hard-deleted
+ * along with any partial object. Nothing user-visible is lost — the row
+ * only ever existed to hold the presigned PUT.
+ */
+export async function runPendingVideoUploadSweep(
+  db: Database,
+  storage: StorageClient,
+  log: Logger,
+  opts: PendingUploadSweepOpts = {},
+  now = new Date(),
+): Promise<PendingUploadSweepResult> {
+  const maxAgeMinutes =
+    opts.maxAgeMinutes ??
+    (parseInt(process.env['PENDING_UPLOAD_MAX_AGE_MIN'] ?? '', 10) || DEFAULT_MAX_AGE_MINUTES);
+  const batchSize = opts.batchSize ?? DEFAULT_BATCH_SIZE;
+  // uploaded_at is stamped when the browser STARTS the PUT, and a signed
+  // PUT that began before its 60-minute expiry keeps streaming afterwards.
+  // A 2 GB upload on a slow office uplink — the case the TTL was sized for
+  // — can still be in flight well past the hour, so a 60-minute cutoff
+  // deleted the row mid-transfer, 404'd the completion and orphaned the
+  // object. Give it real headroom; an abandoned reservation is invisible
+  // until then anyway.
+  const cutoff = new Date(now.getTime() - Math.max(maxAgeMinutes, VIDEO_MIN_AGE_MINUTES) * 60_000);
+
+  const stale = await db
+    .select({ id: engagementVideos.id, storageKey: engagementVideos.storageKey })
+    .from(engagementVideos)
+    .where(
+      and(eq(engagementVideos.status, 'PENDING_UPLOAD'), lt(engagementVideos.uploadedAt, cutoff)),
+    )
+    .limit(batchSize);
+
+  let deleted = 0;
+  let storageErrors = 0;
+  for (const row of stale) {
+    try {
+      await storage.delete(row.storageKey);
+    } catch (err) {
+      storageErrors += 1;
+      log.warn(
+        { err, videoId: row.id, storageKey: row.storageKey },
+        'pending-video-upload-sweep: storage delete failed; continuing with row removal',
+      );
+    }
+    await db
+      .delete(engagementVideos)
+      .where(and(eq(engagementVideos.id, row.id), eq(engagementVideos.status, 'PENDING_UPLOAD')));
+    deleted += 1;
+  }
+  if (deleted > 0) incCounter('storage_pending_uploads_swept_total', undefined, deleted);
+  log.info(
+    { scanned: stale.length, deleted, storageErrors, cutoff: cutoff.toISOString() },
+    'pending-video-upload-sweep tick complete',
+  );
   return { scanned: stale.length, deleted, storageErrors };
 }

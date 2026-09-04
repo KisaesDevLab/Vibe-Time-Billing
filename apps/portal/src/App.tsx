@@ -59,6 +59,7 @@ const AppointmentsPage = lazyPage(() => import('./pages/Appointments'), 'Appoint
 const EngagementsPage = lazyPage(() => import('./pages/Engagements'), 'EngagementsPage');
 const FilePreviewPage = lazyPage(() => import('./pages/FilePreview'), 'FilePreviewPage');
 const FilesPage = lazyPage(() => import('./pages/Files'), 'FilesPage');
+const VideoPlayerPage = lazyPage(() => import('./pages/VideoPlayer'), 'VideoPlayerPage');
 const AcceptInvitationPage = lazyPage(
   () => import('./pages/AcceptInvitation'),
   'AcceptInvitationPage',
@@ -167,6 +168,7 @@ function PortalRoutes(): JSX.Element {
                   <Route path="/letters" element={<LettersPage />} />
                   <Route path="/files" element={<FilesPage />} />
                   <Route path="/files/:id" element={<FilePreviewPage />} />
+                  <Route path="/videos/:id" element={<VideoPlayerPage />} />
                   <Route path="/statement" element={<StatementPage />} />
                   <Route path="/payment-methods" element={<PaymentMethodsPage />} />
                   <Route path="/alt-contacts" element={<AltContactsPage />} />

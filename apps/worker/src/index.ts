@@ -112,7 +112,8 @@ import { runSavedReportEmail } from './jobs/saved-report-email';
 import { runEmailIn } from './jobs/email-in';
 import { runStorageSyncTick } from './jobs/storage-sync';
 import { runHashFileTick } from './jobs/hash-file';
-import { runPendingUploadSweep } from './jobs/pending-upload-sweep';
+import { runPendingUploadSweep, runPendingVideoUploadSweep } from './jobs/pending-upload-sweep';
+import { runEngagementVideoExpiry } from './jobs/engagement-video-expiry';
 import { runFolderRename, type FolderRenamePayload } from './jobs/folder-rename';
 import { runIntakeProcess } from './jobs/intake-process';
 import { runFilerRoute, type FilerRouteJob } from './jobs/filer-route';
@@ -418,6 +419,7 @@ const QUEUES = [
   'storage-sync',
   'hash-file',
   'pending-upload-sweep',
+  'engagement-video-expiry',
   'request-suggestion-sweep',
   'shield-healthcheck',
   'retainer-expiry-sweep',
@@ -756,6 +758,20 @@ const handlers: Record<QueueName, (job: Job<JobPayload>) => Promise<void>> = {
     }
     const result = await runPendingUploadSweep(db, storage, logger);
     logger.info({ jobId: job.id, ...result }, 'pending-upload-sweep complete');
+    // 0235 — same tick also reaps abandoned engagement-video reservations.
+    const videos = await runPendingVideoUploadSweep(db, storage, logger);
+    logger.info({ jobId: job.id, ...videos }, 'pending-video-upload-sweep complete');
+  },
+  'engagement-video-expiry': async (job) => {
+    if (!db) {
+      logger.warn({ jobId: job.id }, 'engagement-video-expiry: no DB configured');
+      return;
+    }
+    if (!storage) {
+      logger.warn({ jobId: job.id }, 'engagement-video-expiry: no storage client configured');
+    }
+    const result = await runEngagementVideoExpiry(db, storage, logger);
+    logger.info({ jobId: job.id, ...result }, 'engagement-video-expiry complete');
   },
   'request-suggestion-sweep': async (job) => {
     if (!db) {
@@ -1032,6 +1048,7 @@ const CRON: Record<QueueName, string> = {
   // sweep. Runs every 5 min; deletes any pending_upload row older than
   // PENDING_UPLOAD_MAX_AGE_MIN (default 30) whose body never landed.
   'pending-upload-sweep': '*/5 * * * *',
+  'engagement-video-expiry': '20 * * * *',
   // Stage 3 — expire stale client-request time-entry suggestions
   // hourly. The window is firm-configurable (firm_config.
   // suggestion_expiration_days; default 7) but the sweep cadence is

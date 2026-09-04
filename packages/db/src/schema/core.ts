@@ -550,6 +550,11 @@ export const firmSettings = pgTable('firm_settings', {
   }),
   smsPiiWarningsEnabled: boolean('sms_pii_warnings_enabled').notNull().default(true),
   smsConsentEnforced: boolean('sms_consent_enforced').notNull().default(true),
+
+  // 0235 — engagement video retention defaults (days). Pre-fill the
+  // upload dialog; null disables that clock by default.
+  videoDefaultDeleteAfterDays: integer('video_default_delete_after_days').default(30),
+  videoDefaultDeleteDaysAfterPlay: integer('video_default_delete_days_after_play').default(3),
   smsA2pStatus: text('sms_a2p_status').notNull().default('unknown'), // SmsA2pStatus; CHECK in SQL
   smsA2pCheckedAt: timestamp('sms_a2p_checked_at', { withTimezone: true }),
   smsA2pOverrideAllow: boolean('sms_a2p_override_allow').notNull().default(false),
@@ -1553,6 +1558,101 @@ export const files = pgTable(
     pendingUploadIdx: index('idx_files_pending_upload')
       .on(t.uploadedAt)
       .where(sql`pending_upload = true`),
+  }),
+);
+
+// =====================================================================
+// 0235 — engagement videos. Staff upload a video against an engagement;
+// the engagement's client streams it in the portal. expires_at is
+// app-maintained (see @vibe/core videos.computeVideoExpiresAt): the
+// earlier of uploaded_at + delete_after_days and first_played_at +
+// delete_days_after_first_play, either clock nullable. Rows are kept as
+// EXPIRED / DELETED after the object is gone so the play history stays
+// visible to staff. Storage keys live under system/engagement-videos/…,
+// never inside a client folder, so they never surface in the Files tab.
+// =====================================================================
+
+export type EngagementVideoStatus = 'PENDING_UPLOAD' | 'AVAILABLE' | 'EXPIRED' | 'DELETED';
+export type EngagementVideoMime = 'video/mp4' | 'video/quicktime' | 'video/webm';
+
+export const engagementVideos = pgTable(
+  'engagement_video',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    firmId: uuid('firm_id')
+      .notNull()
+      .references(() => firms.id, { onDelete: 'cascade' }),
+    engagementId: uuid('engagement_id')
+      .notNull()
+      .references(() => engagements.id, { onDelete: 'cascade' }),
+    clientId: uuid('client_id')
+      .notNull()
+      .references(() => clients.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    message: text('message'),
+    originalFilename: text('original_filename').notNull(),
+    mimeType: text('mime_type').$type<EngagementVideoMime>().notNull(),
+    sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+    storageKey: text('storage_key').notNull(),
+    etag: text('etag'),
+    status: text('status').$type<EngagementVideoStatus>().notNull().default('PENDING_UPLOAD'),
+    uploadedBy: uuid('uploaded_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    uploadedAt: timestamp('uploaded_at', { withTimezone: true }).notNull().defaultNow(),
+    deleteAfterDays: integer('delete_after_days'),
+    deleteDaysAfterFirstPlay: integer('delete_days_after_first_play'),
+    expiresAt: timestamp('expires_at', { withTimezone: true }),
+    notifyClient: boolean('notify_client').notNull().default(false),
+    notifiedAt: timestamp('notified_at', { withTimezone: true }),
+    firstPlayedAt: timestamp('first_played_at', { withTimezone: true }),
+    lastPlayedAt: timestamp('last_played_at', { withTimezone: true }),
+    playCount: integer('play_count').notNull().default(0),
+    maxProgressPct: real('max_progress_pct'),
+    expiredAt: timestamp('expired_at', { withTimezone: true }),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+    deletedBy: uuid('deleted_by').references(() => appUsers.id, { onDelete: 'set null' }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    firmKeyUk: uniqueIndex('engagement_video_firm_storage_key_uk').on(t.firmId, t.storageKey),
+    engagementIdx: index('engagement_video_engagement_idx').on(t.engagementId, t.status),
+    clientIdx: index('engagement_video_client_idx')
+      .on(t.clientId, t.status)
+      .where(sql`deleted_at IS NULL`),
+    expiryIdx: index('engagement_video_expiry_idx')
+      .on(t.expiresAt)
+      .where(sql`status = 'AVAILABLE' AND expires_at IS NOT NULL`),
+    pendingIdx: index('engagement_video_pending_idx')
+      .on(t.uploadedAt)
+      .where(sql`status = 'PENDING_UPLOAD'`),
+  }),
+);
+
+// One row per playback session. portal_identity_id is a loose uuid here
+// (FK enforced by the migration) to avoid a core.ts → portal.ts import
+// cycle — same posture as engagements.autopayMethodId.
+export const engagementVideoPlays = pgTable(
+  'engagement_video_play',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    videoId: uuid('video_id')
+      .notNull()
+      .references(() => engagementVideos.id, { onDelete: 'cascade' }),
+    portalIdentityId: uuid('portal_identity_id').notNull(),
+    startedAt: timestamp('started_at', { withTimezone: true }).notNull().defaultNow(),
+    lastHeartbeatAt: timestamp('last_heartbeat_at', { withTimezone: true }).notNull().defaultNow(),
+    furthestSeconds: real('furthest_seconds').notNull().default(0),
+    durationSeconds: real('duration_seconds'),
+    completed: boolean('completed').notNull().default(false),
+    ip: text('ip'),
+    userAgent: text('user_agent'),
+    deviceKind: text('device_kind'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    videoIdx: index('engagement_video_play_video_idx').on(t.videoId, t.startedAt),
+    identityIdx: index('engagement_video_play_identity_idx').on(t.portalIdentityId, t.videoId),
   }),
 );
 
@@ -4533,6 +4633,10 @@ export const messages = pgTable(
     bodyCiphertext: bytea('body_ciphertext').notNull(),
     excerptPlaintext: text('excerpt_plaintext'),
     editOfId: uuid('edit_of_id'),
+    // 0235 — set when the message is a client reply posted from the
+    // portal video player; loose uuid (engagement_video is declared later
+    // in this file). FK enforced by the migration.
+    engagementVideoId: uuid('engagement_video_id'),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedReason: text('deleted_reason'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),

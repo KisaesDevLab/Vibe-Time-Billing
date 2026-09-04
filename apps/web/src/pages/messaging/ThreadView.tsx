@@ -9,7 +9,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { Button, Combobox, Paperclip, tokens } from '@vibe/ui';
+import { Button, Combobox, Paperclip, Pill, tokens } from '@vibe/ui';
 
 import { api, getCsrfToken } from '../../api-client';
 
@@ -33,6 +33,9 @@ export interface ThreadMessage {
   body: string;
   createdAt: string;
   attachments?: MessageAttachment[];
+  /** 0235 — set when the client replied from the portal video player. */
+  videoId?: string | null;
+  videoTitle?: string | null;
 }
 
 interface PendingAttachment {
@@ -230,6 +233,11 @@ export function ThreadView({
                   </span>
                   <span>{new Date(m.createdAt).toLocaleString()}</span>
                 </div>
+                {m.videoId && (
+                  <div style={{ marginBottom: 4 }}>
+                    <Pill tone="accent">Re: video · {m.videoTitle ?? 'Video'}</Pill>
+                  </div>
+                )}
                 <div style={{ fontSize: 13, whiteSpace: 'pre-wrap', color: tokens.color.text }}>
                   {m.body}
                 </div>

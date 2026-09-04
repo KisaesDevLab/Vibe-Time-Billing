@@ -54,6 +54,8 @@ import { createKanbanViewRouter } from './kanban-views/routes';
 // internal-files + folder-templates routers removed in Phase 0 of the
 // file-manager rebuild. Replacements ship in Phases 4 + 10.
 import { createEngagementRouter } from './engagements/routes';
+import { createEngagementVideoRouters } from './engagements/videos';
+import { stageVideoNotification } from './notifications/staged/video';
 import { createStatusHistoryRouter } from './engagements/status-history';
 import { createStatusOptionsRouter } from './engagements/status-options';
 import { createRouteSheetRouter } from './route-sheets/routes';
@@ -117,6 +119,7 @@ import { createPortalTaxPaymentRouter } from './portal/tax-payments';
 import { createPortalStepUpRouter } from './portal/step-up';
 import { createPortalLetterRouter } from './portal/letters';
 import { createPortalFileRouter } from './portal/files';
+import { createPortalVideoRouter } from './portal/videos';
 import { createPortalMessagingRouter } from './portal/messaging';
 import { createPortalRequestsRouter } from './portal/requests';
 import { createAdminJobRouter } from './admin/jobs';
@@ -857,6 +860,30 @@ export function createApp(deps: AppDeps): Express {
   });
   app.use('/api/staff/engagements', auth.requireAuth, auth.requireCsrf, engagementRouter);
 
+  // 0235 — engagement videos (staff side). Storage client is built from
+  // process.env per request (same posture as clients/files.ts).
+  const engagementVideoRouters = createEngagementVideoRouters({
+    db: deps.db,
+    fakeUserRoles: deps.fakeUserRoles,
+    onVideoReady: async (event) => {
+      if (!deps.db) return;
+      await stageVideoNotification(deps.db, { ...event, portalBaseUrl: config.PORTAL_BASE_URL });
+    },
+  });
+  app.use(
+    '/api/staff/engagements',
+    auth.requireAuth,
+    auth.requireCsrf,
+    engagementVideoRouters.engagementScoped,
+  );
+  app.use('/api/staff/videos', auth.requireAuth, auth.requireCsrf, engagementVideoRouters.byId);
+  app.use(
+    '/api/staff/clients',
+    auth.requireAuth,
+    auth.requireCsrf,
+    engagementVideoRouters.clientScoped,
+  );
+
   // Firm-wide engagement progress-status change history report. Distinct
   // mount so it never collides with the engagements /:id routes.
   const statusHistoryRouter = createStatusHistoryRouter({
@@ -1481,6 +1508,15 @@ export function createApp(deps: AppDeps): Express {
     requireAuth: portal.requireAuth,
   });
   app.use('/api/portal/files', portalFileRouter);
+
+  // 0235 — engagement videos: list, inline stream URL, play logging,
+  // replies into the engagement thread.
+  const portalVideoRouter = createPortalVideoRouter({
+    db: deps.db,
+    redis: deps.redis,
+    requireAuth: portal.requireAuth,
+  });
+  app.use('/api/portal/videos', portalVideoRouter);
 
   // Stage 4 — portal-side messaging and requests.
   const portalMessagingRouter = createPortalMessagingRouter({

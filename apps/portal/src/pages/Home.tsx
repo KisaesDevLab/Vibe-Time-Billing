@@ -69,6 +69,17 @@ interface ActiveEngagementSummary {
   awaitingFromYou: number;
 }
 
+// 0235 — engagement videos shared with this client.
+interface PortalVideoSummary {
+  id: string;
+  engagementName: string;
+  clientName?: string;
+  title: string;
+  uploadedAt: string;
+  expiresAt: string | null;
+  playedByMe: boolean;
+}
+
 const formatCents = (c: number): string =>
   `$${(c / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -79,6 +90,7 @@ export function HomePage(): JSX.Element {
   const [taxReturns, setTaxReturns] = useState<ReleasedReturnSummary[]>([]);
   const [engagements, setEngagements] = useState<ActiveEngagementSummary[]>([]);
   const [appointments, setAppointments] = useState<AppointmentSummary[]>([]);
+  const [videos, setVideos] = useState<PortalVideoSummary[]>([]);
   // 0222 — action items ("needs your attention").
   const [attention, setAttention] = useState<{
     unreadMessages: number;
@@ -93,7 +105,7 @@ export function HomePage(): JSX.Element {
       // allSettled, not all: each section loads independently so one
       // failing endpoint (e.g. a 500 from appointments) can't blank every
       // other card on the overview.
-      const [inv, tax, ret, eng, apt, att] = await Promise.allSettled([
+      const [inv, tax, ret, eng, apt, att, vid] = await Promise.allSettled([
         api<{ open: InvoiceSummary[] }>('/api/portal/invoices'),
         api<{ items: PortalTaxPaymentSummary[] }>('/api/portal/tax-payments'),
         api<{ items: ReleasedReturnSummary[] }>('/api/portal/tax/returns'),
@@ -105,6 +117,7 @@ export function HomePage(): JSX.Element {
           lettersAwaiting: number;
           newFiles: number;
         }>('/api/portal/notifications/attention'),
+        api<{ items: PortalVideoSummary[] }>('/api/portal/videos'),
       ]);
       if (inv.status === 'fulfilled') setOpenInvoices(inv.value.open ?? []);
       if (tax.status === 'fulfilled') setTaxPayments(tax.value.items ?? []);
@@ -112,6 +125,7 @@ export function HomePage(): JSX.Element {
       if (eng.status === 'fulfilled') setEngagements(eng.value.items ?? []);
       if (apt.status === 'fulfilled') setAppointments(apt.value.items ?? []);
       if (att.status === 'fulfilled') setAttention(att.value);
+      if (vid.status === 'fulfilled') setVideos(vid.value.items ?? []);
       setLoaded(true);
     })();
   }, [me?.activeClientId]);
@@ -182,6 +196,71 @@ export function HomePage(): JSX.Element {
             </div>
           </section>
         )}
+
+      {videos.length > 0 && (
+        <section>
+          <SectionHeading
+            title="Videos from your firm"
+            description="Watch on any device. Each video is available until the date shown."
+          />
+          <Card>
+            <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'grid', gap: 8 }}>
+              {[...videos]
+                .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt))
+                .map((v) => (
+                  <li key={v.id}>
+                    <Link
+                      to={`/videos/${v.id}`}
+                      style={{
+                        display: 'flex',
+                        gap: 12,
+                        alignItems: 'center',
+                        padding: '10px 12px',
+                        border: `1px solid ${tokens.color.border}`,
+                        borderRadius: tokens.radius.md,
+                        textDecoration: 'none',
+                        color: tokens.color.text,
+                      }}
+                    >
+                      <span aria-hidden style={{ fontSize: 22 }}>
+                        🎬
+                      </span>
+                      <span style={{ flex: 1, minWidth: 0 }}>
+                        <span
+                          style={{
+                            display: 'flex',
+                            gap: 8,
+                            alignItems: 'center',
+                            flexWrap: 'wrap',
+                            fontWeight: 500,
+                            fontSize: 14,
+                          }}
+                        >
+                          {v.title}
+                          {!v.playedByMe && <Pill tone="accent">New</Pill>}
+                        </span>
+                        <span
+                          style={{
+                            display: 'block',
+                            fontSize: 12,
+                            color: tokens.color.textMuted,
+                            marginTop: 2,
+                          }}
+                        >
+                          {[v.clientName, v.engagementName].filter(Boolean).join(' · ')}
+                          {v.expiresAt
+                            ? ` · Available until ${new Date(v.expiresAt).toLocaleDateString()}`
+                            : ''}
+                        </span>
+                      </span>
+                      <span style={{ color: tokens.color.accent }}>▶</span>
+                    </Link>
+                  </li>
+                ))}
+            </ul>
+          </Card>
+        </section>
+      )}
 
       <section>
         <SectionHeading

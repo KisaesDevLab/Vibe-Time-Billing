@@ -19,6 +19,7 @@ import {
 import {
   clientCommunications,
   clientPortalAccess,
+  engagementVideos,
   engagements,
   notificationLog,
   portalIdentity,
@@ -44,6 +45,8 @@ async function insertRow(opts: {
   status?: 'PENDING_APPROVAL' | 'SCHEDULED' | 'SENT' | 'CANCELED' | 'FAILED';
   channels?: string[];
   workflowState?: string;
+  /** 0235 — override the trigger to stage an engagement-video notice. */
+  video?: { id: string };
   recipients?: Array<{
     personId: string;
     name: string;
@@ -56,15 +59,19 @@ async function insertRow(opts: {
     .values({
       firmId: seed.firmId,
       clientId: seed.clientId,
-      triggerKind: 'engagement_status',
-      entityType: 'engagement',
-      entityId: seed.engagementId,
-      triggerContext: {
-        workflowState: opts.workflowState ?? 'WITH_CLIENT',
-        fromState: 'IN_PROGRESS',
-        statusLabel: 'With client',
-      },
-      supersedeKey: `engagement_status:${seed.engagementId}`,
+      triggerKind: opts.video ? 'engagement_video' : 'engagement_status',
+      entityType: opts.video ? 'engagement_video' : 'engagement',
+      entityId: opts.video ? opts.video.id : seed.engagementId,
+      triggerContext: opts.video
+        ? { engagementId: seed.engagementId, videoTitle: 'Walkthrough' }
+        : {
+            workflowState: opts.workflowState ?? 'WITH_CLIENT',
+            fromState: 'IN_PROGRESS',
+            statusLabel: 'With client',
+          },
+      supersedeKey: opts.video
+        ? `engagement_video:${opts.video.id}`
+        : `engagement_status:${seed.engagementId}`,
       mode: 'STAGED',
       status: opts.status ?? 'SCHEDULED',
       channels: opts.channels ?? ['EMAIL'],
@@ -258,5 +265,70 @@ describe('runStagedNotificationSend', () => {
       .from(stagedNotifications)
       .where(eq(stagedNotifications.id, id));
     expect(row!.status).toBe('CANCELED');
+  });
+  // 0235 — engagement video notices.
+  async function insertVideo(status: 'AVAILABLE' | 'DELETED'): Promise<string> {
+    const [v] = await harness.db
+      .insert(engagementVideos)
+      .values({
+        firmId: seed.firmId,
+        engagementId: seed.engagementId,
+        clientId: seed.clientId,
+        title: 'Walkthrough',
+        originalFilename: 'w.mp4',
+        mimeType: 'video/mp4',
+        sizeBytes: 10,
+        storageKey: `system/engagement-videos/${seed.firmId}/${seed.engagementId}/${crypto.randomUUID()}/w.mp4`,
+        status,
+      })
+      .returning({ id: engagementVideos.id });
+    return v!.id;
+  }
+
+  it('video notice: portal notification deep-links to the player', async () => {
+    const videoId = await insertVideo('AVAILABLE');
+    const [ident] = await harness.db
+      .insert(portalIdentity)
+      .values({ firmId: seed.firmId, fullName: 'Lisa Vance', primaryEmail: 'lisa@example.com' })
+      .returning({ id: portalIdentity.id });
+    await harness.db.insert(clientPortalAccess).values({
+      portalIdentityId: ident!.id,
+      clientId: seed.clientId,
+      role: 'FULL',
+      status: 'ACTIVE',
+    });
+    const id = await insertRow({ channels: ['PORTAL'], video: { id: videoId } });
+    const r = await runStagedNotificationSend(harness.db, silent, {}, { stagedNotificationId: id });
+    expect(r.outcome).toBe('sent');
+    const notes = await harness.db
+      .select()
+      .from(portalNotifications)
+      .where(eq(portalNotifications.portalIdentityId, ident!.id));
+    expect(notes).toHaveLength(1);
+    expect(notes[0]!.actionUrl).toBe(`/videos/${videoId}`);
+    expect(notes[0]!.type).toBe('ENGAGEMENT_VIDEO');
+  });
+
+  it('video notice: cancels at fire time when the video is no longer available', async () => {
+    const videoId = await insertVideo('DELETED');
+    const id = await insertRow({ channels: ['EMAIL'], video: { id: videoId } });
+    const emails: string[] = [];
+    const r = await runStagedNotificationSend(
+      harness.db,
+      silent,
+      {
+        sendEmail: async (a) => {
+          emails.push(a.to);
+        },
+      },
+      { stagedNotificationId: id },
+    );
+    expect(r.outcome).toBe('canceled_at_fire');
+    expect(emails).toHaveLength(0);
+    const [row] = await harness.db
+      .select({ status: stagedNotifications.status })
+      .from(stagedNotifications)
+      .where(eq(stagedNotifications.id, id));
+    expect(row?.status).toBe('CANCELED');
   });
 });

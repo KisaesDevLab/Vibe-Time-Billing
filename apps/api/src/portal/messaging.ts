@@ -11,7 +11,7 @@
 
 import express, { type NextFunction, type Request, type Response, type Router } from 'express';
 import { z } from 'zod';
-import { and, asc, desc, eq, isNotNull, isNull, ne, or } from 'drizzle-orm';
+import { and, asc, desc, eq, isNull, or } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 
 import { checkAndIncrement } from '@vibe/core/auth';
@@ -20,7 +20,6 @@ import {
   appUsers,
   clientPortalAccess,
   clients,
-  engagementAssignments,
   engagementThreadLinks,
   engagements,
   messageReadReceipts,
@@ -29,10 +28,12 @@ import {
   staffNotifications,
   threadMembers,
   threads,
+  engagementVideos,
 } from '@vibe/db/schema';
 
 import { emitAudit } from '../auth/audit';
 import { addUuidIdGuard } from '../lib/uuid-guard';
+import { resolveClientThreadStaffIds } from '../engagement-messaging/client-thread';
 import { logger } from '../logger';
 import {
   batchDecryptForThread,
@@ -237,41 +238,13 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
       .where(eq(portalIdentity.id, portalIdentityId))
       .limit(1);
 
-    // Resolve the staff recipients (the "assigned team").
-    const staffIds = new Set<string>();
-    if (client.partnerInChargeId) staffIds.add(client.partnerInChargeId);
-    const teamRows = await db
-      .selectDistinct({ appUserId: threadMembers.appUserId })
-      .from(threadMembers)
-      .innerJoin(threads, eq(threads.id, threadMembers.threadId))
-      .where(
-        and(
-          eq(threads.clientId, activeClientId),
-          eq(threads.firmId, firmId),
-          isNull(threadMembers.removedAt),
-          isNotNull(threadMembers.appUserId),
-        ),
-      );
-    for (const r of teamRows) if (r.appUserId) staffIds.add(r.appUserId);
-
-    // …plus staff assigned to the client's non-archived engagements — they
-    // are part of the working team even if they haven't messaged yet.
-    const assignedRows = await db
-      .selectDistinct({ appUserId: engagementAssignments.appUserId })
-      .from(engagementAssignments)
-      .innerJoin(engagements, eq(engagements.id, engagementAssignments.engagementId))
-      .where(and(eq(engagements.clientId, activeClientId), ne(engagements.status, 'ARCHIVED')));
-    for (const r of assignedRows) staffIds.add(r.appUserId);
-
-    if (staffIds.size === 0) {
-      // No partner-in-charge and no prior team — fall back to every active
-      // staff user so a client message is never invisible to the firm.
-      const allStaff = await db
-        .select({ id: appUsers.id })
-        .from(appUsers)
-        .where(and(eq(appUsers.firmId, firmId), eq(appUsers.status, 'ACTIVE')));
-      for (const s of allStaff) staffIds.add(s.id);
-    }
+    // Resolve the staff recipients (the "assigned team") — shared with
+    // the 0235 video-reply path.
+    const staffIds = await resolveClientThreadStaffIds(db, {
+      firmId,
+      clientId: activeClientId,
+      partnerInChargeId: client.partnerInChargeId,
+    });
 
     const wrapped = generateWrappedTDek(db, firmId);
     // Date suffix keeps repeat conversations from the same contact
@@ -388,9 +361,12 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
         bodyCiphertext: messages.bodyCiphertext,
         senderName: appUsers.fullName,
         createdAt: messages.createdAt,
+        videoId: messages.engagementVideoId,
+        videoTitle: engagementVideos.title,
       })
       .from(messages)
       .leftJoin(appUsers, eq(appUsers.id, messages.senderAppUserId))
+      .leftJoin(engagementVideos, eq(engagementVideos.id, messages.engagementVideoId))
       .where(and(eq(messages.threadId, threadId), isNull(messages.deletedAt)))
       .orderBy(asc(messages.createdAt))
       .limit(limit);
@@ -412,6 +388,8 @@ export function createPortalMessagingRouter(deps: PortalMessagingDeps): Router {
         senderName: r.senderName,
         body: plaintexts[i],
         createdAt: r.createdAt,
+        videoId: r.videoId,
+        videoTitle: r.videoTitle,
         // From the client's view, staff-sent messages are "theirs" (right
         // side handled in the UI); expose mine for parity.
         mine:
